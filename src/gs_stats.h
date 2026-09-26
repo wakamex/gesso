@@ -26,7 +26,8 @@ typedef struct {
 
 void gs_stats_frame_begin(gs_stats *s);
 void gs_stats_frame_end(gs_stats *s);
-// `note` (may be NULL) is one more line, such as gs_pace_describe's.
+// `note` (may be NULL) is one more line, such as gs_pace_describe's. (x, y) is the box's top left;
+// a negative x or y measures from the right or bottom edge instead. The box always stays on screen.
 void gs_stats_draw(const gs_stats *s, SDL_Renderer *r, float x, float y, const char *note);
 
 // Process figures on their own, for logging: resident memory in bytes and CPU time in ns

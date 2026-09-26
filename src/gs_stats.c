@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L  // clock_gettime, sysconf
 #include "gs_stats.h"
 
+#include <math.h>
 #include <stdio.h>
 
 #include "gs_mix.h"
@@ -126,7 +127,10 @@ void gs_stats_draw(const gs_stats *s, SDL_Renderer *r, float x, float y, const c
     const float ch = SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE, pad = 4, lead = ch + 3;
     size_t widest = 0;
     for (int i = 0; i < n; i++) widest = SDL_strlen(lines[i]) > widest ? SDL_strlen(lines[i]) : widest;
-    SDL_FRect box = { x / scale, y / scale, widest * ch + 2 * pad, n * lead - 3 + 2 * pad };
+    float w = widest * ch + 2 * pad, h = n * lead - 3 + 2 * pad, ow_s = ow / scale, oh_s = oh / scale;
+    float bx = x < 0 ? ow_s + x / scale - w : x / scale, by = y < 0 ? oh_s + y / scale - h : y / scale;
+    bx = fminf(bx, ow_s - w), by = fminf(by, oh_s - h);  // stays on screen
+    SDL_FRect box = { fmaxf(0, bx), fmaxf(0, by), w, h };
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(r, 0, 0, 0, 170);
     SDL_RenderFillRect(r, &box);
