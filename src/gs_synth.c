@@ -1,5 +1,6 @@
 #include "gs_synth.h"
 
+#include <SDL3/SDL.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -95,21 +96,38 @@ typedef struct {
     zoneset z;
 } preset_t;
 
+// One rendering of a sample. Voices count themselves in `refs` (on the audio thread), so a retired
+// take is freed only when the last voice playing it has ended.
+typedef struct take {
+    float *data;  // len + 1 floats, the last 0 so interpolation can read one past the end
+    int len, loop_start, loop_end;  // loops in frames from the start of data
+    int refs;
+    bool retired;
+    struct take *next;  // in the pending or dead list
+    int sample;         // while pending: the slot it is for
+} take_t;
+
 typedef struct {
-    float *data;
-    int len, rate, root, correction;
-    int loop_start, loop_end;  // in frames from the start of data
+    int rate, root, correction;
+    take_t *takes[GS_BANK_TAKES];
+    int ntakes;
+    SDL_AtomicU32 last_used;
 } sample_t;
 
 struct gs_bank {
     preset_t *presets;
-    int npresets;
+    int npresets, cap_presets;
     zoneset *inst;
-    int ninst;
+    int ninst, cap_inst;
     sample_t *samples;
-    int nsamples;
-    zone_t *zones;
+    int nsamples, cap_samples;
+    zone_t *zones;      // zones read from a file
+    zone_t **extra;     // zone arrays added in code
+    int nextra;
     mod_t *mods;
+    SDL_Mutex *lock;    // guards pending and dead
+    take_t *pending, *dead;
+    SDL_AtomicInt npending;
 };
 
 typedef struct { const uint8_t *p; uint32_t size; } chunk;
@@ -166,30 +184,40 @@ static zoneset with_global(zone_t *zones, int n) {
     return (zoneset){ NULL, zones, n };
 }
 
+static take_t *new_take(float *data, int len, int loop_start, int loop_end) {
+    take_t *t = calloc(1, sizeof *t);
+    data[len] = 0;
+    *t = (take_t){ data, len, loop_start, loop_end, 0, false, NULL, -1 };
+    return t;
+}
+
 static bool decode_sample(sample_t *s, const uint8_t *smpl, uint32_t smpl_size, const uint8_t *h) {
     uint32_t start = u32(h + 20), end = u32(h + 24), ls = u32(h + 28), le = u32(h + 32);
     s->rate = (int)u32(h + 36);
     s->root = h[40];
     s->correction = (int8_t)h[41];
+    float *data;
+    int len, loop_start, loop_end;
     if (u16(h + 44) & 0x10) {  // compressed: an Ogg Vorbis file at byte offsets, loops relative to it
         if (end > smpl_size || start >= end) return false;
         int channels = 0, rate = 0;
         short *pcm = NULL;
         int frames = stb_vorbis_decode_memory(smpl + start, (int)(end - start), &channels, &rate, &pcm);
         if (frames <= 0) return false;
-        s->data = malloc(sizeof(float) * ((size_t)frames + 1));
-        for (int i = 0; i < frames; i++) s->data[i] = pcm[(size_t)i * channels] / 32768.0f;
+        data = malloc(sizeof(float) * ((size_t)frames + 1));
+        for (int i = 0; i < frames; i++) data[i] = pcm[(size_t)i * channels] / 32768.0f;
         free(pcm);
-        s->len = frames;
-        s->loop_start = (int)ls, s->loop_end = (int)le;
+        len = frames;
+        loop_start = (int)ls, loop_end = (int)le;
     } else {  // 16-bit PCM frames in smpl
         if ((uint64_t)end * 2 > smpl_size || start > end) return false;
-        s->len = (int)(end - start);
-        s->data = malloc(sizeof(float) * ((size_t)s->len + 1));
-        for (int i = 0; i < s->len; i++) s->data[i] = (int16_t)u16(smpl + 2 * ((size_t)start + i)) / 32768.0f;
-        s->loop_start = (int)(ls - start), s->loop_end = (int)(le - start);
+        len = (int)(end - start);
+        data = malloc(sizeof(float) * ((size_t)len + 1));
+        for (int i = 0; i < len; i++) data[i] = (int16_t)u16(smpl + 2 * ((size_t)start + i)) / 32768.0f;
+        loop_start = (int)(ls - start), loop_end = (int)(le - start);
     }
-    s->data[s->len] = 0;  // lets interpolation read one past the end
+    s->takes[0] = new_take(data, len, loop_start, loop_end);
+    s->ntakes = 1;
     return true;
 }
 
@@ -205,21 +233,21 @@ gs_bank *gs_bank_load(const void *data, size_t len) {
     chunk imod = find(pdta.p, pe, "imod"), igen = find(pdta.p, pe, "igen"), shdr = find(pdta.p, pe, "shdr");
     if (!smpl.p || !phdr.p || !pbag.p || !pgen.p || !inst.p || !ibag.p || !igen.p || !shdr.p) return NULL;
 
-    gs_bank *b = calloc(1, sizeof *b);
+    gs_bank *b = gs_bank_new();
     int npm;
     b->mods = read_mods(pmod, imod, &npm);
     mod_t *pmods = b->mods, *imods = b->mods + npm;
     b->zones = calloc(pbag.size / 4 + ibag.size / 4 + 2, sizeof *b->zones);
     int nz = 0;
 
-    b->ninst = (int)(inst.size / 22) - 1;
+    b->ninst = b->cap_inst = (int)(inst.size / 22) - 1;
     b->inst = calloc((size_t)(b->ninst > 0 ? b->ninst : 1), sizeof *b->inst);
     for (int i = 0; i < b->ninst; i++) {
         int first = nz;
         build_zones(&ibag, &igen, imods, u16(inst.p + 22 * i + 20), u16(inst.p + 22 * (i + 1) + 20), G_SAMPLE_ID, b->zones, &nz);
         b->inst[i] = with_global(b->zones + first, nz - first);
     }
-    b->npresets = (int)(phdr.size / 38) - 1;
+    b->npresets = b->cap_presets = (int)(phdr.size / 38) - 1;
     b->presets = calloc((size_t)(b->npresets > 0 ? b->npresets : 1), sizeof *b->presets);
     for (int i = 0; i < b->npresets; i++) {
         const uint8_t *h = phdr.p + 38 * i;
@@ -227,22 +255,129 @@ gs_bank *gs_bank_load(const void *data, size_t len) {
         build_zones(&pbag, &pgen, pmods, u16(h + 24), u16(h + 38 + 24), G_INSTRUMENT, b->zones, &nz);
         b->presets[i] = (preset_t){ u16(h + 20), u16(h + 22), with_global(b->zones + first, nz - first) };
     }
-    b->nsamples = (int)(shdr.size / 46) - 1;
+    b->nsamples = b->cap_samples = (int)(shdr.size / 46) - 1;
     b->samples = calloc((size_t)(b->nsamples > 0 ? b->nsamples : 1), sizeof *b->samples);
     for (int i = 0; i < b->nsamples; i++)
         if (!decode_sample(&b->samples[i], smpl.p, smpl.size, shdr.p + 46 * i)) b->samples[i] = (sample_t){ 0 };
     return b;
 }
 
+gs_bank *gs_bank_new(void) {
+    gs_bank *b = calloc(1, sizeof *b);
+    b->lock = SDL_CreateMutex();
+    return b;
+}
+
+static void free_takes(take_t *t) {
+    while (t) {
+        take_t *next = t->next;
+        free(t->data);
+        free(t);
+        t = next;
+    }
+}
+
 void gs_bank_free(gs_bank *b) {
     if (!b) return;
-    for (int i = 0; i < b->nsamples; i++) free(b->samples[i].data);
+    for (int i = 0; i < b->nsamples; i++)
+        for (int k = 0; k < b->samples[i].ntakes; k++) b->samples[i].takes[k]->next = NULL, free_takes(b->samples[i].takes[k]);
+    free_takes(b->pending);
+    free_takes(b->dead);
+    for (int i = 0; i < b->nextra; i++) free(b->extra[i]);
+    free(b->extra);
     free(b->samples);
     free(b->presets);
     free(b->inst);
     free(b->zones);
     free(b->mods);
+    SDL_DestroyMutex(b->lock);
     free(b);
+}
+
+#define GROW(ptr, n, cap) \
+    do { if ((n) == (cap)) (cap) = (cap) ? 2 * (cap) : 16, (ptr) = realloc((ptr), sizeof *(ptr) * (size_t)(cap)); } while (0)
+
+int gs_bank_add_sample(gs_bank *b, int rate, int root) {
+    GROW(b->samples, b->nsamples, b->cap_samples);
+    b->samples[b->nsamples] = (sample_t){ .rate = rate, .root = root };
+    return b->nsamples++;
+}
+
+void gs_bank_add_preset(gs_bank *b, int bank, int program, const gs_zone_spec *zones, int nzones) {
+    // One instrument with a zone per spec, and a preset with one zone over the whole instrument.
+    zone_t *iz = calloc((size_t)nzones + 1, sizeof *iz), *pz = iz + nzones;
+    for (int i = 0; i < nzones; i++) {
+        const gs_zone_spec *z = &zones[i];
+        iz[i].gen[G_KEY_RANGE] = (int16_t)(z->key_lo | z->key_hi << 8);
+        iz[i].gen[G_SAMPLE_ID] = (int16_t)z->sample;
+        iz[i].has = 1ull << G_KEY_RANGE | 1ull << G_SAMPLE_ID;
+        for (int k = 0; k < z->ngens; k++)
+            if (z->gens[k].gen < G_COUNT) iz[i].gen[z->gens[k].gen] = z->gens[k].value, iz[i].has |= 1ull << z->gens[k].gen;
+        iz[i].ref = z->sample;
+    }
+    b->extra = realloc(b->extra, sizeof *b->extra * (size_t)(b->nextra + 1));
+    b->extra[b->nextra++] = iz;
+    GROW(b->inst, b->ninst, b->cap_inst);
+    b->inst[b->ninst] = (zoneset){ NULL, iz, nzones };
+    pz->ref = b->ninst++;
+    GROW(b->presets, b->npresets, b->cap_presets);
+    b->presets[b->npresets++] = (preset_t){ program, bank, { NULL, pz, 1 } };
+}
+
+void gs_bank_offer_take(gs_bank *b, int sample, float *data, int len, int loop_start, int loop_end) {
+    take_t *t = new_take(data, len, loop_start, loop_end);
+    t->sample = sample;
+    SDL_LockMutex(b->lock);
+    t->next = b->pending;
+    b->pending = t;
+    SDL_UnlockMutex(b->lock);
+    SDL_AddAtomicInt(&b->npending, 1);
+}
+
+int gs_bank_sample_count(const gs_bank *b) { return b->nsamples; }
+
+uint32_t gs_bank_last_used(const gs_bank *b, int sample) {
+    return sample >= 0 && sample < b->nsamples ? SDL_GetAtomicU32(&b->samples[sample].last_used) : 0;
+}
+
+void gs_bank_collect(gs_bank *b) {
+    SDL_LockMutex(b->lock);
+    take_t *dead = b->dead;
+    b->dead = NULL;
+    SDL_UnlockMutex(b->lock);
+    free_takes(dead);
+}
+
+static void bury(gs_bank *b, take_t *t) {
+    SDL_LockMutex(b->lock);
+    t->next = b->dead;
+    b->dead = t;
+    SDL_UnlockMutex(b->lock);
+}
+
+// On the audio thread: installs offered takes, retiring each slot's oldest beyond GS_BANK_TAKES.
+static void install_takes(gs_bank *b) {
+    if (!SDL_GetAtomicInt(&b->npending)) return;
+    SDL_LockMutex(b->lock);
+    take_t *t = b->pending;
+    b->pending = NULL;
+    SDL_SetAtomicInt(&b->npending, 0);
+    SDL_UnlockMutex(b->lock);
+    while (t) {
+        take_t *next = t->next;
+        t->next = NULL;
+        sample_t *s = t->sample >= 0 && t->sample < b->nsamples ? &b->samples[t->sample] : NULL;
+        if (!s) { bury(b, t); t = next; continue; }
+        if (s->ntakes == GS_BANK_TAKES) {
+            take_t *old = s->takes[0];
+            memmove(s->takes, s->takes + 1, sizeof *s->takes * (GS_BANK_TAKES - 1));
+            s->ntakes--;
+            if (old->refs) old->retired = true;
+            else bury(b, old);
+        }
+        s->takes[s->ntakes++] = t;
+        t = next;
+    }
 }
 
 // ---- Voices ----
@@ -254,7 +389,9 @@ typedef struct {
     bool on, released, filtered;
     int channel, note;
     uint64_t serial;
-    const sample_t *s;
+    uint32_t tag;
+    take_t *take;
+    int rate;  // the sample's
     double pos, step, t, dt;  // position in frames, base step, time since note-on, seconds per frame
     bool loop;
     double loop_start, loop_end;
@@ -273,6 +410,7 @@ typedef struct {
 } voice_t;
 
 #define MAX_VOICES 64
+#define WET 0.44  // the reverb's level at mix 1, calibrated against the Web Audio player
 #define CONTROL 32  // frames between pitch and filter updates
 
 // Freeverb: parallel combs into series allpasses, per channel, with a small stereo offset.
@@ -285,13 +423,16 @@ typedef struct {
 } delay_t;
 
 struct gs_synth {
-    const gs_bank *bank;
+    gs_bank *bank;
     int rate;
-    uint64_t serial;
+    uint64_t serial, rng;
+    uint32_t tag;
     voice_t v[MAX_VOICES];
-    struct { uint8_t cc[128]; int bank, program; } ch[16];
+    struct { uint8_t cc[128]; int bank, program; float gain, target; } ch[16];
     delay_t comb[2][NCOMB], all[2][NALL];
-    float feedback, damp, wet, mix;
+    // The room, each value gliding towards its target: comb feedback (the decay), wet level, mute.
+    double feedback, feedback_to, wet, wet_to, glide, wet_gain, wet_gain_to;
+    float damp;
     float *rev_in;  // stereo scratch for the reverb send
     int rev_cap;
 };
@@ -375,10 +516,20 @@ static int merge_mods(const zone_t *global, const zone_t *local, mod_t *out) {
     return n;
 }
 
-static void start_voice(gs_synth *sy, int ch, int note, int vel, const preset_t *p, const zone_t *pz, const zone_t *iz) {
-    const gs_bank *b = sy->bank;
-    if (iz->ref < 0 || iz->ref >= b->nsamples || !b->samples[iz->ref].data) return;
-    const sample_t *s = &b->samples[iz->ref];
+// Ends a voice: its take may now be freed if it was retired.
+static void end_voice(gs_synth *sy, voice_t *v) {
+    v->on = false;
+    if (v->take && --v->take->refs == 0 && v->take->retired) bury(sy->bank, v->take);
+    v->take = NULL;
+}
+
+static bool start_voice(gs_synth *sy, int ch, int note, int vel, const preset_t *p, const zone_t *pz, const zone_t *iz) {
+    gs_bank *b = sy->bank;
+    if (iz->ref < 0 || iz->ref >= b->nsamples || !b->samples[iz->ref].ntakes) return false;
+    sample_t *s = &b->samples[iz->ref];
+    sy->rng = sy->rng * 6364136223846793005ull + 1442695040888963407ull;
+    take_t *take = s->takes[(sy->rng >> 33) % (uint64_t)s->ntakes];
+    SDL_SetAtomicU32(&s->last_used, (uint32_t)SDL_GetTicks() | 1);
 
     double g[G_COUNT] = { 0 };
     g[G_FILTER_FC] = 13500;
@@ -426,22 +577,25 @@ static void start_voice(gs_synth *sy, int ch, int note, int vel, const preset_t 
     for (int pass = 0; pass < 2 && !vo; pass++)
         for (int i = 0; i < MAX_VOICES; i++)
             if ((pass || sy->v[i].released) && (!vo || sy->v[i].serial < vo->serial)) vo = &sy->v[i];
+    if (vo->on) end_voice(sy, vo);  // stolen
     memset(vo, 0, sizeof *vo);
     vo->on = true;
-    vo->channel = ch, vo->note = note, vo->serial = ++sy->serial;
-    vo->s = s;
+    vo->channel = ch, vo->note = note, vo->serial = ++sy->serial, vo->tag = sy->tag;
+    vo->take = take;
+    take->refs++;
+    vo->rate = s->rate;
     vo->dt = 1.0 / sy->rate;
 
     int root = g[G_ROOT_KEY] >= 0 ? (int)g[G_ROOT_KEY] : s->root;
     double cents = (key - root) * g[G_SCALE_TUNING] + g[G_COARSE_TUNE] * 100 + g[G_FINE_TUNE] + s->correction;
-    vo->step = pow(2, cents / 1200) * s->rate / sy->rate;
+    vo->step = pow(2, cents / 1200) * s->rate / sy->rate;  // (the slot's rate)
     vo->pos = fmax(0, g[G_START_OFFSET] + 32768 * g[G_START_COARSE]);
     if ((int)g[G_SAMPLE_MODES] & 1) {
         vo->loop = true;
-        vo->loop_start = s->loop_start + g[G_START_LOOP_OFFSET] + 32768 * g[G_START_LOOP_COARSE];
-        vo->loop_end = s->loop_end + g[G_END_LOOP_OFFSET] + 32768 * g[G_END_LOOP_COARSE];
-        if (!(vo->loop_start >= 0 && vo->loop_start < vo->loop_end && vo->loop_end <= s->len))
-            vo->loop_start = 0, vo->loop_end = s->len;  // as Web Audio does with invalid loop points
+        vo->loop_start = take->loop_start + g[G_START_LOOP_OFFSET] + 32768 * g[G_START_LOOP_COARSE];
+        vo->loop_end = take->loop_end + g[G_END_LOOP_OFFSET] + 32768 * g[G_END_LOOP_COARSE];
+        if (!(vo->loop_start >= 0 && vo->loop_start < vo->loop_end && vo->loop_end <= take->len))
+            vo->loop_start = 0, vo->loop_end = take->len;  // as Web Audio does with invalid loop points
     }
 
     double fc = g[G_FILTER_FC];
@@ -479,6 +633,7 @@ static void start_voice(gs_synth *sy, int ch, int note, int vel, const preset_t 
     vo->t_decay = vo->t_peak + secs(g[G_HOLD_VOL] + g[G_KEY_TO_HOLD] * (60 - key));
     vo->decay_time = secs(g[G_DECAY_VOL] + g[G_KEY_TO_DECAY] * (60 - key)) * sustain_db / 100;
     vo->release = secs(g[G_RELEASE_VOL]);
+    return true;
 }
 
 static const preset_t *find_preset(const gs_synth *sy, int ch) {
@@ -492,16 +647,20 @@ static const preset_t *find_preset(const gs_synth *sy, int ch) {
     return NULL;
 }
 
-static void note_on(gs_synth *sy, int ch, int note, int vel) {
+static uint32_t note_on(gs_synth *sy, int ch, int note, int vel) {
+    install_takes(sy->bank);
     const preset_t *p = find_preset(sy, ch);
-    if (!p) return;
+    if (!p) return 0;
+    if (!++sy->tag) sy->tag = 1;
+    bool any = false;
     for (int i = 0; i < p->z.n; i++) {
         const zone_t *pz = &p->z.zones[i];
         if (!in_range(pz, note, vel) || pz->ref < 0 || pz->ref >= sy->bank->ninst) continue;
         const zoneset *inst = &sy->bank->inst[pz->ref];
         for (int j = 0; j < inst->n; j++)
-            if (in_range(&inst->zones[j], note, vel)) start_voice(sy, ch, note, vel, p, pz, &inst->zones[j]);
+            if (in_range(&inst->zones[j], note, vel)) any |= start_voice(sy, ch, note, vel, p, pz, &inst->zones[j]);
     }
+    return any ? sy->tag : 0;
 }
 
 static void reset_channels(gs_synth *sy) {
@@ -518,7 +677,7 @@ void gs_synth_midi(gs_synth *sy, uint8_t status, uint8_t a, uint8_t b) {
     int ch = status & 15;
     switch (status & 0xf0) {
     case 0x80: break;
-    case 0x90: if (b) { note_on(sy, ch, a, b); return; } break;
+    case 0x90: if (b) { note_on(sy, ch, a, b); return; } break;  // (tag unused)
     case 0xb0: if (a == 0) sy->ch[ch].bank = ch == 9 ? 128 : b; else sy->ch[ch].cc[a & 127] = b; return;
     case 0xc0: sy->ch[ch].program = a; return;
     default: return;
@@ -527,12 +686,45 @@ void gs_synth_midi(gs_synth *sy, uint8_t status, uint8_t a, uint8_t b) {
         if (sy->v[i].on && sy->v[i].channel == ch && sy->v[i].note == a) release(&sy->v[i]);
 }
 
+uint32_t gs_synth_note_on(gs_synth *sy, int channel, int note, int velocity) {
+    return note_on(sy, channel & 15, note & 127, velocity & 127);
+}
+
+void gs_synth_note_off_tag(gs_synth *sy, uint32_t tag) {
+    if (!tag) return;
+    for (int i = 0; i < MAX_VOICES; i++)
+        if (sy->v[i].on && sy->v[i].tag == tag) release(&sy->v[i]);
+}
+
+void gs_synth_release_all(gs_synth *sy) {
+    for (int i = 0; i < MAX_VOICES; i++)
+        if (sy->v[i].on) release(&sy->v[i]);
+}
+
 void gs_synth_all_off(gs_synth *sy) {
-    for (int i = 0; i < MAX_VOICES; i++) sy->v[i].on = false;
+    for (int i = 0; i < MAX_VOICES; i++)
+        if (sy->v[i].on) end_voice(sy, &sy->v[i]);
     reset_channels(sy);
 }
 
-void gs_synth_set_reverb(gs_synth *sy, float mix) { sy->mix = mix; }
+void gs_synth_set_mute(gs_synth *sy, int channel, bool on) { sy->ch[channel & 15].target = on ? 0 : 1; }
+void gs_synth_set_reverb_mute(gs_synth *sy, bool on) { sy->wet_gain_to = on ? 0 : 1; }
+
+// Comb feedback for a hall `seconds` long: a convolution hall of noise fading as (1 - t)^4, as the
+// Web Audio player's, decays by 60 dB in about 0.94 of its length (fitted from -5 to -35 dB), and
+// Freeverb's combs, 31 ms long on average, lose 60 dB in 3 * 31 ms / -log10(feedback).
+static double feedback_for(double seconds) {
+    double rt60 = 0.94 * (seconds > 0.1 ? seconds : 0.1);
+    double g = pow(10, -3 * 0.03125 / rt60);
+    return g > 0.985 ? 0.985 : g;
+}
+
+void gs_synth_set_room(gs_synth *sy, double seconds, double mix, double fade) {
+    sy->feedback_to = feedback_for(seconds);
+    sy->wet_to = WET * mix;
+    sy->glide = fade > 0 ? fade / 3 : 0;  // as Web Audio's setTargetAtTime with a time constant of fade / 3
+    if (!sy->glide) sy->feedback = sy->feedback_to, sy->wet = sy->wet_to;
+}
 
 int gs_synth_active_voices(const gs_synth *sy) {
     int n = 0;
@@ -542,8 +734,9 @@ int gs_synth_active_voices(const gs_synth *sy) {
 
 // Renders one voice, adding into lr and the reverb send. Returns false when the voice has ended.
 static bool render_voice(gs_synth *sy, voice_t *v, float *lr, float *rev, int frames) {
-    const float *d = v->s->data;
-    int len = v->s->len;
+    const float *d = v->take->data;
+    int len = v->take->len;
+    float chg = sy->ch[v->channel].gain;
     for (int i = 0; i < frames; i++) {
         if (i % CONTROL == 0) {
             double cents = 0, me = v->mod_env ? mod_envelope(v, v->t) : 0;
@@ -566,7 +759,7 @@ static bool render_voice(gs_synth *sy, voice_t *v, float *lr, float *rev, int fr
             v->x2 = v->x1, v->x1 = x, v->y2 = v->y1, v->y1 = y;
             x = y;
         }
-        float out = (float)(x * envelope(v, v->t));
+        float out = (float)(x * envelope(v, v->t)) * chg;
         lr[2 * i] += out * v->gl;
         lr[2 * i + 1] += out * v->gr;
         if (v->send > 0) rev[2 * i] += out * v->gl * v->send, rev[2 * i + 1] += out * v->gr * v->send;
@@ -599,27 +792,38 @@ void gs_synth_render(gs_synth *sy, float *lr, int frames) {
     }
     float *rev = sy->rev_in;
     memset(rev, 0, sizeof(float) * 2 * (size_t)frames);
+    install_takes(sy->bank);
+    // Channel mutes fade with a 20 ms time constant, block by block.
+    double span = (double)frames / sy->rate, k20 = 1 - exp(-span / 0.02);
+    for (int c = 0; c < 16; c++) sy->ch[c].gain += (float)((sy->ch[c].target - sy->ch[c].gain) * k20);
     for (int i = 0; i < MAX_VOICES; i++)
-        if (sy->v[i].on && !render_voice(sy, &sy->v[i], lr, rev, frames)) sy->v[i].on = false;
+        if (sy->v[i].on && !render_voice(sy, &sy->v[i], lr, rev, frames)) end_voice(sy, &sy->v[i]);
+    double kg = sy->glide > 0 ? 1 - exp(-span / sy->glide) : 1;
+    sy->feedback += (sy->feedback_to - sy->feedback) * kg;
+    sy->wet += (sy->wet_to - sy->wet) * kg;
+    sy->wet_gain += (sy->wet_gain_to - sy->wet_gain) * k20;
+    float fb = (float)sy->feedback, wet = (float)(sy->wet * sy->wet_gain);
     for (int i = 0; i < frames; i++) {
         float in = (rev[2 * i] + rev[2 * i + 1]) * 0.015f;
         for (int c = 0; c < 2; c++) {
             float y = 0;
-            for (int k = 0; k < NCOMB; k++) y += delay_comb(&sy->comb[c][k], in, sy->feedback, sy->damp);
+            for (int k = 0; k < NCOMB; k++) y += delay_comb(&sy->comb[c][k], in, fb, sy->damp);
             for (int k = 0; k < NALL; k++) y = delay_allpass(&sy->all[c][k], y);
-            lr[2 * i + c] += y * sy->wet * sy->mix;
+            lr[2 * i + c] += y * wet;
         }
     }
 }
 
-gs_synth *gs_synth_new(const gs_bank *b, int rate) {
+gs_synth *gs_synth_new(gs_bank *b, int rate) {
     static const int comb_len[NCOMB] = { 1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617 };
     static const int all_len[NALL] = { 556, 441, 341, 225 };
     gs_synth *sy = calloc(1, sizeof *sy);
     sy->bank = b;
     sy->rate = rate;
-    // A plain hall of about two seconds, darkening as it fades.
-    sy->feedback = 0.84f, sy->damp = 0.3f, sy->wet = 0.56f, sy->mix = 1;  // wet level calibrated against a convolution hall
+    sy->damp = 0.3f;  // the hall darkens as it fades
+    sy->wet_gain = sy->wet_gain_to = 1;
+    sy->rng = (uint64_t)(uintptr_t)sy ^ SDL_GetTicksNS();
+    gs_synth_set_room(sy, 2.2, 1, 0);
     for (int c = 0; c < 2; c++) {
         for (int k = 0; k < NCOMB; k++) {
             sy->comb[c][k].len = (comb_len[k] + 23 * c) * rate / 44100;
@@ -631,11 +835,14 @@ gs_synth *gs_synth_new(const gs_bank *b, int rate) {
         }
     }
     reset_channels(sy);
+    for (int c = 0; c < 16; c++) sy->ch[c].gain = sy->ch[c].target = 1;
     return sy;
 }
 
 void gs_synth_free(gs_synth *sy) {
     if (!sy) return;
+    for (int i = 0; i < MAX_VOICES; i++)
+        if (sy->v[i].on) end_voice(sy, &sy->v[i]);
     for (int c = 0; c < 2; c++) {
         for (int k = 0; k < NCOMB; k++) free(sy->comb[c][k].buf);
         for (int k = 0; k < NALL; k++) free(sy->all[c][k].buf);

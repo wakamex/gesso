@@ -36,3 +36,14 @@ static inline float gs_noise2(float x, float y, uint32_t seed) {
     float c = gs_hash2(xi, yi + 1, seed) * s, d = gs_hash2(xi + 1, yi + 1, seed) * s;
     return (a + (b - a) * fx) + ((c + (d - c) * fx) - (a + (b - a) * fx)) * fy;
 }
+
+// Mulberry32, bit for bit the common JavaScript generator (32-bit state, results in [0, 1)), so
+// seeded music and instruments ported from JavaScript play exactly the same.
+typedef struct { uint32_t s; } gs_mulberry;
+
+static inline double gs_mulberry_next(gs_mulberry *m) {
+    m->s += 0x6d2b79f5u;
+    uint32_t t = (m->s ^ (m->s >> 15)) * (1u | m->s);
+    t = (t + ((t ^ (t >> 7)) * (61u | t))) ^ t;
+    return (double)(t ^ (t >> 14)) / 4294967296.0;
+}

@@ -9,11 +9,14 @@ Gesso is the chalk ground a painter lays on a panel before painting: the layer e
 | `gs_pix` | Indexed-colour frames in the VGA manner: Floyd-Steinberg dithering onto a palette, palette expansion to RGBA, colour-cycling ramps, highlight lookup tables |
 | `gs_text` | Fonts through stb_truetype and a glyph atlas per SDL renderer; draws glyphs with an angle, a colour and a left-to-right reveal, or plain kerned UTF-8 lines |
 | `gs_mix` | Audio output: one SDL stream summing any number of sources, each a function that adds stereo frames; the same mix renders offline for tests and exports |
-| `gs_synth` | SoundFont 2 / SF3 synthesizer: zones, generators and modulators, envelopes, vibrato, low-pass filter, pan, loops, reverb |
+| `gs_synth` | SoundFont 2 / SF3 synthesizer: zones, generators and modulators, envelopes, vibrato, low-pass filter, pan, loops, a reverb whose room length and level crossfade, per-channel mute, tagged notes (release exactly one note's voices); banks can also be built in code, with several renderings ("takes") per sample swapped in while playing |
+| `gs_seq` | A timeline of timed events played sample-accurately: notes, MIDI and calls into your code at exact times, a feeder that keeps it filled ahead (a generative score), and other sources rendered in step; a `gs_mix` source |
+| `gs_dsp` | Building blocks for synthesized sound: FFT, Web Audio's biquads, resonators, an extended Karplus-Strong plucked string and a bowed string (after the Synthesis ToolKit) |
+| `gs_jobs` | A small worker-thread pool (runs jobs inline where threads are unavailable) |
 | `gs_midi` | Standard MIDI Files and a sample-accurate, looping player that is a `gs_mix` source |
 | `gs_stats` | A performance overlay in SDL's debug font: frame rate, frame time, process memory and CPU (Windows, Linux, macOS), audio load, renderer; the web shows the wasm heap and no CPU |
 | `gs_pace` | Frame pacing: vsync (adaptive where supported, every nth refresh for caps that divide the refresh rate), a limiter for any cap, for vsync that is off or unsupported, and for vsync the driver reports but ignores, and 10 fps while the window is minimised or hidden; on the web the browser paces |
-| `gs_rand.h` | Seeded generator, position hash and value noise, so every random-looking thing reproduces from a seed |
+| `gs_rand.h` | Seeded generators (SplitMix64, and Mulberry32 bit for bit as in JavaScript, so ported generative code plays identically), a position hash and value noise |
 
 Apps use SDL3 directly; gesso does not wrap it, because SDL already is the platform layer. The stb libraries (public domain) are compiled once, in `gs_stb.c`, and their headers are available to apps.
 
