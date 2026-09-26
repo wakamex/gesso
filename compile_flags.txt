@@ -1,0 +1,4 @@
+-std=c11
+-Isrc
+-Ivendor/stb
+-Izig-pkg/sdl-0.5.4+3.4.16-SDL--sQ4qAH3kwC19Zs1kxdHplaSDnWl2MUptZD4AItI/include
