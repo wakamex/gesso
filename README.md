@@ -7,7 +7,10 @@ Gesso is the chalk ground a painter lays on a panel before painting: the layer e
 | Module | What it does |
 |---|---|
 | `gs_pix` | Indexed-colour frames in the VGA manner: Floyd-Steinberg dithering onto a palette, palette expansion to RGBA, colour-cycling ramps, highlight lookup tables |
-| `gs_text` | Fonts through stb_truetype and a glyph atlas per SDL renderer; draws glyphs with an angle, a colour and a left-to-right reveal, or plain kerned UTF-8 lines |
+| `gs_text` | Fonts through stb_truetype and a glyph atlas per SDL renderer; draws glyphs with an angle, a colour and a left-to-right reveal, or plain kerned UTF-8 lines; font chains fall back across the system's fonts for other scripts (loaded on first need; no shaping, so Arabic and Indic scripts show unjoined) |
+| `gs_stream` | A streaming source for `gs_mix`: a decoder thread writes, the mixer plays, with prebuffering, pause and back-pressure |
+| `gs_webm` | A streaming WebM (Matroska) reader for audio: bytes in as they arrive, codec setup and frames out |
+| `gs_opus` | Opus decoding (libopus) for streams |
 | `gs_mix` | Audio output: one SDL stream summing any number of sources, each a function that adds stereo frames; the same mix renders offline for tests and exports |
 | `gs_synth` | SoundFont 2 / SF3 synthesizer (Vorbis samples via stb_vorbis, Opus samples via libopus): zones, generators and modulators, envelopes, vibrato, low-pass filter, pan, loops, a reverb whose room length and level crossfade, per-channel mute, tagged notes (release exactly one note's voices); banks can also be built in code, with several renderings ("takes") per sample swapped in while playing |
 | `gs_seq` | A timeline of timed events played sample-accurately: notes, MIDI and calls into your code at exact times, a feeder that keeps it filled ahead (a generative score), and other sources rendered in step; a `gs_mix` source |
