@@ -5,7 +5,7 @@
 //   zig build -Dtarget=x86_64-windows-gnu  Windows build from any host
 const std = @import("std");
 
-pub const flags: []const []const u8 = &.{ "-std=c11", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-missing-field-initializers" };
+pub const flags: []const []const u8 = &.{ "-std=c11", "-ffp-contract=off", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-missing-field-initializers" };
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
