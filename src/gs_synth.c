@@ -9,6 +9,8 @@
 #define STB_VORBIS_HEADER_ONLY
 #include "stb_vorbis.c"
 
+#include <opus.h>
+
 #define PI 3.14159265358979323846
 
 // ---- Generators and modulators (numbers from the SoundFont 2.04 specification) ----
@@ -100,7 +102,8 @@ typedef struct {
 // take is freed only when the last voice playing it has ended.
 typedef struct take {
     float *data;  // len + 1 floats, the last 0 so interpolation can read one past the end
-    int len, loop_start, loop_end;  // loops in frames from the start of data
+    int len;
+    double loop_start, loop_end;  // in frames from the start of data, fractional after resampling
     int refs;
     bool retired;
     struct take *next;  // in the pending or dead list
@@ -184,11 +187,64 @@ static zoneset with_global(zone_t *zones, int n) {
     return (zoneset){ NULL, zones, n };
 }
 
-static take_t *new_take(float *data, int len, int loop_start, int loop_end) {
+static take_t *new_take(float *data, int len, double loop_start, double loop_end) {
     take_t *t = calloc(1, sizeof *t);
     data[len] = 0;
     *t = (take_t){ data, len, loop_start, loop_end, 0, false, NULL, -1 };
     return t;
+}
+
+// Decodes an Ogg Opus stream to mono floats at 48 kHz (the first channel), trimmed by its pre-skip and
+// final granule position. Returns the frame count, or -1. *out is malloc'd with one extra frame.
+static int decode_opus(const uint8_t *p, size_t n, float **out) {
+    OpusDecoder *dec = NULL;
+    int channels = 1, preskip = 0, packets = 0, frames = 0, cap = 0;
+    int64_t granule = -1;
+    float *pcm = NULL, buf[5760 * 2];
+    uint8_t *packet = NULL;
+    size_t plen = 0, pcap = 0;
+    for (size_t at = 0; at + 27 <= n && !memcmp(p + at, "OggS", 4);) {
+        int nsegs = p[at + 26];
+        if (at + 27 + (size_t)nsegs > n) break;
+        int64_t g;
+        memcpy(&g, p + at + 6, 8);
+        if (g >= 0) granule = g;
+        const uint8_t *seg = p + at + 27, *data = seg + nsegs;
+        size_t off = 0;
+        for (int i = 0; i < nsegs; i++) {
+            if ((size_t)(data - p) + off + seg[i] > n) goto done;
+            if (plen + seg[i] > pcap) pcap = 2 * (plen + seg[i]) + 256, packet = realloc(packet, pcap);
+            memcpy(packet + plen, data + off, seg[i]);
+            plen += seg[i], off += seg[i];
+            if (seg[i] == 255) continue;  // the packet goes on into the next segment
+            if (packets == 0) {  // OpusHead
+                if (plen < 19 || memcmp(packet, "OpusHead", 8)) goto done;
+                channels = packet[9];
+                preskip = packet[10] | packet[11] << 8;
+                int err;
+                dec = opus_decoder_create(48000, channels, &err);
+                if (!dec) goto done;
+            } else if (packets > 1) {  // (the second packet is OpusTags)
+                int got = opus_decode_float(dec, packet, (opus_int32)plen, buf, 5760, 0);
+                if (got < 0) goto done;
+                if (frames + got + 1 > cap) cap = 2 * (frames + got) + 4096, pcm = realloc(pcm, sizeof *pcm * (size_t)cap);
+                for (int k = 0; k < got; k++) pcm[frames + k] = buf[k * channels];
+                frames += got;
+            }
+            packets++, plen = 0;
+        }
+        at = (size_t)(data - p) + off;
+    }
+done:
+    if (dec) opus_decoder_destroy(dec);
+    free(packet);
+    if (!pcm) return -1;
+    int total = granule >= preskip ? (int)(granule - preskip) : frames - preskip;
+    if (total > frames - preskip) total = frames - preskip;
+    if (total <= 0) return free(pcm), -1;
+    memmove(pcm, pcm + preskip, sizeof *pcm * (size_t)total);
+    *out = pcm;
+    return total;
 }
 
 static bool decode_sample(sample_t *s, const uint8_t *smpl, uint32_t smpl_size, const uint8_t *h) {
@@ -197,24 +253,37 @@ static bool decode_sample(sample_t *s, const uint8_t *smpl, uint32_t smpl_size, 
     s->root = h[40];
     s->correction = (int8_t)h[41];
     float *data;
-    int len, loop_start, loop_end;
+    int len;
+    double loop_start, loop_end;
     if (u16(h + 44) & 0x10) {  // compressed: an Ogg Vorbis file at byte offsets, loops relative to it
         if (end > smpl_size || start >= end) return false;
-        int channels = 0, rate = 0;
-        short *pcm = NULL;
-        int frames = stb_vorbis_decode_memory(smpl + start, (int)(end - start), &channels, &rate, &pcm);
-        if (frames <= 0) return false;
-        data = malloc(sizeof(float) * ((size_t)frames + 1));
-        for (int i = 0; i < frames; i++) data[i] = pcm[(size_t)i * channels] / 32768.0f;
-        free(pcm);
-        len = frames;
-        loop_start = (int)ls, loop_end = (int)le;
+        const uint8_t *ogg = smpl + start;
+        size_t n = end - start;
+        // Opus (a .sf3o bank from the Inquisition's subset tool) runs at 48 kHz: the samples were
+        // resampled, while the header keeps the original rate and loop points, so they are rescaled.
+        if (n > 36 && !memcmp(ogg + 28, "OpusHead", 8)) {
+            len = decode_opus(ogg, n, &data);
+            if (len <= 0) return false;
+            double k = 48000.0 / (s->rate > 0 ? s->rate : 48000);
+            loop_start = ls * k, loop_end = le * k;
+            s->rate = 48000;
+        } else {
+            int channels = 0, rate = 0;
+            short *pcm = NULL;
+            int frames = stb_vorbis_decode_memory(ogg, (int)n, &channels, &rate, &pcm);
+            if (frames <= 0) return false;
+            data = malloc(sizeof(float) * ((size_t)frames + 1));
+            for (int i = 0; i < frames; i++) data[i] = pcm[(size_t)i * channels] / 32768.0f;
+            free(pcm);
+            len = frames;
+            loop_start = ls, loop_end = le;
+        }
     } else {  // 16-bit PCM frames in smpl
         if ((uint64_t)end * 2 > smpl_size || start > end) return false;
         len = (int)(end - start);
         data = malloc(sizeof(float) * ((size_t)len + 1));
         for (int i = 0; i < len; i++) data[i] = (int16_t)u16(smpl + 2 * ((size_t)start + i)) / 32768.0f;
-        loop_start = (int)(ls - start), loop_end = (int)(le - start);
+        loop_start = (double)ls - start, loop_end = (double)le - start;
     }
     s->takes[0] = new_take(data, len, loop_start, loop_end);
     s->ntakes = 1;
@@ -335,6 +404,14 @@ void gs_bank_offer_take(gs_bank *b, int sample, float *data, int len, int loop_s
 }
 
 int gs_bank_sample_count(const gs_bank *b) { return b->nsamples; }
+
+bool gs_bank_sample_audio(const gs_bank *b, int sample, const float **data, int *len, int *loop_start, int *loop_end, int *rate) {
+    if (sample < 0 || sample >= b->nsamples || !b->samples[sample].ntakes) return false;
+    const take_t *t = b->samples[sample].takes[b->samples[sample].ntakes - 1];
+    *data = t->data, *len = t->len, *loop_start = (int)llround(t->loop_start), *loop_end = (int)llround(t->loop_end);
+    *rate = b->samples[sample].rate;
+    return true;
+}
 
 uint32_t gs_bank_last_used(const gs_bank *b, int sample) {
     return sample >= 0 && sample < b->nsamples ? SDL_GetAtomicU32(&b->samples[sample].last_used) : 0;
@@ -466,9 +543,14 @@ static double mod_envelope(const voice_t *v, double t) {
     return fmax(0, v->m_rel_level * (1 - (t - v->rel_t) / span));
 }
 
-// Low-pass biquad as Web Audio defines it (Q in decibels).
+// Low-pass biquad as Web Audio defines it (Q in decibels). At or above the Nyquist frequency it
+// passes everything, as Web Audio specifies; a cutoff just under it would ring there instead.
 static void set_filter(voice_t *v, double hz, int rate) {
-    hz = clampd(hz, 10, rate / 2.0 - 1);
+    if (hz >= rate / 2.0) {
+        v->b0 = 1, v->b1 = v->b2 = v->a1 = v->a2 = 0;
+        return;
+    }
+    hz = clampd(hz, 10, rate / 2.0);
     double w0 = 2 * PI * hz / rate, cw = cos(w0), alpha = sin(w0) / (2 * pow(10, v->q_db / 20));
     double a0 = 1 + alpha;
     v->b0 = (1 - cw) / 2 / a0, v->b1 = (1 - cw) / a0, v->b2 = v->b0;

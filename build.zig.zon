@@ -8,6 +8,10 @@
             .url = "git+https://github.com/castholm/SDL.git?ref=v0.5.4+3.4.16#b72b3671502a70e109350ecac90afdc480dcfcc6",
             .hash = "sdl-0.5.4+3.4.16-SDL--sQ4qAH3kwC19Zs1kxdHplaSDnWl2MUptZD4AItI",
         },
+        .opus = .{
+            .url = "https://github.com/xiph/opus/releases/download/v1.5.2/opus-1.5.2.tar.gz",
+            .hash = "N-V-__8AAADWXwF69u4_iufnV_gwfb3M2ATbbZF-yGFRrEFH",
+        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "vendor", "LICENSE", "README.md" },
 }

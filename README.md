@@ -9,7 +9,7 @@ Gesso is the chalk ground a painter lays on a panel before painting: the layer e
 | `gs_pix` | Indexed-colour frames in the VGA manner: Floyd-Steinberg dithering onto a palette, palette expansion to RGBA, colour-cycling ramps, highlight lookup tables |
 | `gs_text` | Fonts through stb_truetype and a glyph atlas per SDL renderer; draws glyphs with an angle, a colour and a left-to-right reveal, or plain kerned UTF-8 lines |
 | `gs_mix` | Audio output: one SDL stream summing any number of sources, each a function that adds stereo frames; the same mix renders offline for tests and exports |
-| `gs_synth` | SoundFont 2 / SF3 synthesizer: zones, generators and modulators, envelopes, vibrato, low-pass filter, pan, loops, a reverb whose room length and level crossfade, per-channel mute, tagged notes (release exactly one note's voices); banks can also be built in code, with several renderings ("takes") per sample swapped in while playing |
+| `gs_synth` | SoundFont 2 / SF3 synthesizer (Vorbis samples via stb_vorbis, Opus samples via libopus): zones, generators and modulators, envelopes, vibrato, low-pass filter, pan, loops, a reverb whose room length and level crossfade, per-channel mute, tagged notes (release exactly one note's voices); banks can also be built in code, with several renderings ("takes") per sample swapped in while playing |
 | `gs_seq` | A timeline of timed events played sample-accurately: notes, MIDI and calls into your code at exact times, a feeder that keeps it filled ahead (a generative score), and other sources rendered in step; a `gs_mix` source |
 | `gs_dsp` | Building blocks for synthesized sound: FFT, Web Audio's biquads, resonators, an extended Karplus-Strong plucked string and a bowed string (after the Synthesis ToolKit) |
 | `gs_jobs` | A small worker-thread pool (runs jobs inline where threads are unavailable) |
@@ -50,4 +50,4 @@ For the web, compile the files in `src/` together with the app with Emscripten a
 
 ## Licence
 
-MIT, see `LICENSE`. The stb libraries in `vendor/stb` are public domain (or MIT, at your choice); SDL3 is zlib.
+MIT, see `LICENSE`. The stb libraries in `vendor/stb` are public domain (or MIT, at your choice); SDL3 is zlib; libopus (fetched by the build) is BSD.

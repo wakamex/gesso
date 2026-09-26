@@ -3,7 +3,8 @@
 // generators and modulators evaluated at note-on, volume and modulation envelopes, vibrato,
 // low-pass filter, pan, tuning, loops, sample offsets and a reverb send. Not supported: the
 // modulation LFO, chorus, pitch bend, controller changes during a note.
-// SF3 samples (Ogg Vorbis) are decoded at load with stb_vorbis. The reverb is algorithmic
+// Compressed samples are decoded at load: Ogg Vorbis (standard SF3) with stb_vorbis, and Ogg Opus
+// (the Inquisition's .sf3o banks, a stronger codec per byte) with libopus. The reverb is algorithmic
 // (Freeverb-style), its level and decay calibrated against a convolution hall of the same length.
 // Where the SoundFont spec leaves room it follows SpessaSynth: its default modulators and 0.4
 // scaling of initialAttenuation.
@@ -59,6 +60,8 @@ void gs_bank_add_preset(gs_bank *b, int bank, int program, const gs_zone_spec *z
 // its next render, retiring the slot's oldest take once no voice plays it.
 void gs_bank_offer_take(gs_bank *b, int sample, float *data, int len, int loop_start, int loop_end);
 int gs_bank_sample_count(const gs_bank *b);
+// A sample's newest take, for inspection: its frames, loop points and rate. False when it has none.
+bool gs_bank_sample_audio(const gs_bank *b, int sample, const float **data, int *len, int *loop_start, int *loop_end, int *rate);
 uint32_t gs_bank_last_used(const gs_bank *b, int sample);  // SDL_GetTicks() of its latest note, 0 if never
 void gs_bank_collect(gs_bank *b);                          // frees retired takes; call from the main thread
 
