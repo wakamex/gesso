@@ -12,6 +12,7 @@ Gesso is the chalk ground a painter lays on a panel before painting: the layer e
 | `gs_synth` | SoundFont 2 / SF3 synthesizer: zones, generators and modulators, envelopes, vibrato, low-pass filter, pan, loops, reverb |
 | `gs_midi` | Standard MIDI Files and a sample-accurate, looping player that is a `gs_mix` source |
 | `gs_stats` | A performance overlay in SDL's debug font: frame rate, frame time, process memory and CPU (Windows, Linux, macOS), audio load, renderer; the web shows the wasm heap and no CPU |
+| `gs_pace` | Frame pacing: vsync (adaptive where supported, every nth refresh for caps that divide the refresh rate), a limiter for any cap, for vsync that is off or unsupported, and for vsync the driver reports but ignores, and 10 fps while the window is minimised or hidden; on the web the browser paces |
 | `gs_rand.h` | Seeded generator, position hash and value noise, so every random-looking thing reproduces from a seed |
 
 Apps use SDL3 directly; gesso does not wrap it, because SDL already is the platform layer. The stb libraries (public domain) are compiled once, in `gs_stb.c`, and their headers are available to apps.

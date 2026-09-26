@@ -26,7 +26,8 @@ typedef struct {
 
 void gs_stats_frame_begin(gs_stats *s);
 void gs_stats_frame_end(gs_stats *s);
-void gs_stats_draw(const gs_stats *s, SDL_Renderer *r, float x, float y);
+// `note` (may be NULL) is one more line, such as gs_pace_describe's.
+void gs_stats_draw(const gs_stats *s, SDL_Renderer *r, float x, float y, const char *note);
 
 // Process figures on their own, for logging: resident memory in bytes and CPU time in ns
 // (0 when the platform does not report them).

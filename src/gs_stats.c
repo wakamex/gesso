@@ -101,8 +101,8 @@ void gs_stats_frame_end(gs_stats *s) {
     s->frames++;
 }
 
-void gs_stats_draw(const gs_stats *s, SDL_Renderer *r, float x, float y) {
-    char lines[6][64];
+void gs_stats_draw(const gs_stats *s, SDL_Renderer *r, float x, float y, const char *note) {
+    char lines[7][64];
     int n = 0;
     if (s->fps > 0) {
         snprintf(lines[n++], 64, "%.0f fps", s->fps);
@@ -115,6 +115,7 @@ void gs_stats_draw(const gs_stats *s, SDL_Renderer *r, float x, float y) {
     if (s->ram_bytes) snprintf(lines[n++], 64, "ram %.1f MB", s->ram_bytes / 1048576.0);
     const char *name = SDL_GetRendererName(r);
     snprintf(lines[n++], 64, "renderer %s", name ? name : "?");
+    if (note) snprintf(lines[n++], 64, "%s", note);
 
     // Scale the 8-pixel font so it stays readable on large screens.
     int ow = 0, oh = 0;
