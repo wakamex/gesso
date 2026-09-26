@@ -68,7 +68,7 @@ void gs_stats_frame_begin(gs_stats *s) {
     uint64_t now = SDL_GetTicksNS();
     if (!s->period_start) {
         s->period_start = now;
-        s->cpu_start_ns = gs_process_cpu_ns();
+        s->cpu_ns[0] = gs_process_cpu_ns(), s->cpu_at[0] = now, s->cpu_n = 1;
         s->cpu_percent = s->audio_percent = -1;
         gs_mix_load();  // start the audio measurement period here too
     }
@@ -76,14 +76,19 @@ void gs_stats_frame_begin(gs_stats *s) {
     uint64_t span = now - s->period_start;
     if (span >= PERIOD_NS && s->frames) {
         uint64_t cpu = gs_process_cpu_ns();
+        if (s->cpu_n == GS_STATS_CPU_WINDOW + 1) {  // drop the oldest sample
+            SDL_memmove(s->cpu_ns, s->cpu_ns + 1, sizeof s->cpu_ns - sizeof *s->cpu_ns);
+            SDL_memmove(s->cpu_at, s->cpu_at + 1, sizeof s->cpu_at - sizeof *s->cpu_at);
+            s->cpu_n--;
+        }
+        s->cpu_ns[s->cpu_n] = cpu, s->cpu_at[s->cpu_n] = now, s->cpu_n++;
         s->fps = s->frames * 1e9 / span;
         s->frame_ms = s->work_ns / 1e6 / s->frames;
         s->frame_max_ms = s->work_max_ns / 1e6;
-        s->cpu_percent = cpu ? (cpu - s->cpu_start_ns) * 100.0 / span : -1;
+        s->cpu_percent = cpu ? (cpu - s->cpu_ns[0]) * 100.0 / (now - s->cpu_at[0]) : -1;
         s->audio_percent = gs_mix_load() * 100;
         s->ram_bytes = gs_process_ram();
         s->period_start = now;
-        s->cpu_start_ns = cpu;
         s->frames = 0;
         s->work_ns = s->work_max_ns = 0;
     }
@@ -105,7 +110,7 @@ void gs_stats_draw(const gs_stats *s, SDL_Renderer *r, float x, float y) {
     } else {
         snprintf(lines[n++], 64, "measuring...");
     }
-    if (s->cpu_percent >= 0) snprintf(lines[n++], 64, "cpu %.1f%% of a core", s->cpu_percent);
+    if (s->cpu_percent >= 0) snprintf(lines[n++], 64, "cpu %.1f%% of a core, %g s avg", s->cpu_percent, (s->cpu_n - 1) * 0.5);
     if (s->audio_percent >= 0) snprintf(lines[n++], 64, "audio %.2f%% of real time", s->audio_percent);
     if (s->ram_bytes) snprintf(lines[n++], 64, "ram %.1f MB", s->ram_bytes / 1048576.0);
     const char *name = SDL_GetRendererName(r);

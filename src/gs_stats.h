@@ -5,17 +5,23 @@
 #include <SDL3/SDL.h>
 #include <stdint.h>
 
+#define GS_STATS_CPU_WINDOW 8  // periods of half a second
+
 typedef struct {
     // Shown values, refreshed about twice a second.
     double fps;
     double frame_ms;     // average time to build a frame, not counting the wait for the display
     double frame_max_ms;  // slowest frame in the last period
-    double cpu_percent;  // process CPU time over wall time, 100 = one full core; < 0 when unknown
+    double cpu_percent;  // process CPU time over wall time in the last CPU_WINDOW periods, 100 = one core; < 0 when unknown
     double audio_percent;  // time spent mixing over audio played; < 0 when no audio has played
     uint64_t ram_bytes;  // resident memory; 0 when unknown
     // Accumulators.
-    uint64_t period_start, frame_start, work_ns, work_max_ns, cpu_start_ns;
+    uint64_t period_start, frame_start, work_ns, work_max_ns;
     int frames;
+    // CPU over a sliding window: process CPU time is coarse on some systems (15.6 ms ticks on
+    // Windows, 3% of a half-second period), so it is averaged over several periods.
+    uint64_t cpu_ns[GS_STATS_CPU_WINDOW + 1], cpu_at[GS_STATS_CPU_WINDOW + 1];
+    int cpu_n;
 } gs_stats;
 
 void gs_stats_frame_begin(gs_stats *s);
