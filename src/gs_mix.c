@@ -12,16 +12,28 @@ static struct {
     int rate;
     float volume;
     int n;
+    uint64_t busy_ns, rendered;  // for gs_mix_load
     struct { gs_mix_fn *fn; void *user; } src[MAX_SOURCES];
 } mix = { .rate = 48000, .volume = 1 };
 
 void gs_mix_render(float *lr, int frames) {
+    uint64_t start = SDL_GetTicksNS();
     memset(lr, 0, sizeof(float) * 2 * (size_t)frames);
     for (int i = 0; i < mix.n; i++) mix.src[i].fn(mix.src[i].user, lr, frames);
     for (int i = 0; i < 2 * frames; i++) {
         float x = lr[i] * mix.volume;
         lr[i] = x > 1 || x < -1 ? tanhf(x) : x;  // clean below full scale, soft above
     }
+    mix.busy_ns += SDL_GetTicksNS() - start;
+    mix.rendered += (uint64_t)frames;
+}
+
+double gs_mix_load(void) {
+    gs_mix_lock();
+    double load = mix.rendered ? mix.busy_ns / 1e9 / ((double)mix.rendered / mix.rate) : -1;
+    mix.busy_ns = mix.rendered = 0;
+    gs_mix_unlock();
+    return load;
 }
 
 static void SDLCALL feed(void *user, SDL_AudioStream *stream, int additional, int total) {

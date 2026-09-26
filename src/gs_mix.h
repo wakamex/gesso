@@ -19,3 +19,7 @@ void gs_mix_set_volume(float v);
 
 // Sums every source into lr (overwritten) with a soft limiter. Called by the device, or directly.
 void gs_mix_render(float *lr, int frames);
+
+// Time spent in gs_mix_render over the duration of the audio it produced, since the last call
+// (0.01 = mixing takes 1% of real time). Negative when nothing was rendered.
+double gs_mix_load(void);
