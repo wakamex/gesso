@@ -178,3 +178,94 @@ float gs_text_width(const gs_font *f, float px, const char *utf8) {
     }
     return w;
 }
+
+// ---- Font chains ----
+
+#define MAX_FONTS 12
+
+struct gs_fontset {
+    char *path[MAX_FONTS];
+    gs_font *font[MAX_FONTS];
+    bool tried[MAX_FONTS];
+    int n;
+};
+
+gs_fontset *gs_fontset_new(void) { return calloc(1, sizeof(gs_fontset)); }
+
+void gs_fontset_add(gs_fontset *fs, const char *path) {
+    SDL_PathInfo info;
+    if (fs->n == MAX_FONTS || !SDL_GetPathInfo(path, &info) || info.type != SDL_PATHTYPE_FILE) return;
+    fs->path[fs->n++] = SDL_strdup(path);
+}
+
+gs_fontset *gs_fontset_system(void) {
+    gs_fontset *fs = gs_fontset_new();
+#if defined(_WIN32)
+    const char *root = SDL_getenv("SystemRoot");
+    if (!root) root = SDL_getenv("SYSTEMROOT");
+    static const char *const names[] = { "segoeui.ttf", "seguisym.ttf", "YuGothM.ttc", "msyh.ttc", "malgun.ttf", "Nirmala.ttc", "Nirmala.ttf", "tahoma.ttf", "arial.ttf" };
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++) {
+        char path[512];
+        SDL_snprintf(path, sizeof path, "%s\\Fonts\\%s", root ? root : "C:\\Windows", names[i]);
+        gs_fontset_add(fs, path);
+    }
+#elif defined(__APPLE__)
+    static const char *const paths[] = { "/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc",
+                                         "/System/Library/Fonts/AppleSDGothicNeo.ttc", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf" };
+    for (size_t i = 0; i < sizeof paths / sizeof *paths; i++) gs_fontset_add(fs, paths[i]);
+#else
+    static const char *const paths[] = {
+        "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf", "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/noto/NotoSans-Regular.ttf", "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/google-droid-sans-fonts/DroidSansFallbackFull.ttf",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", "/usr/share/fonts/google-droid-sans-fonts/DroidKufi-Regular.ttf",
+        "/usr/share/fonts/google-droid-sans-fonts/DroidSansDevanagari-Regular.ttf", "/usr/share/fonts/adobe-source-code-pro-fonts/SourceCodePro-Regular.otf" };
+    for (size_t i = 0; i < sizeof paths / sizeof *paths; i++) gs_fontset_add(fs, paths[i]);
+#endif
+    return fs;
+}
+
+void gs_fontset_free(gs_fontset *fs) {
+    if (!fs) return;
+    for (int i = 0; i < fs->n; i++) SDL_free(fs->path[i]), gs_font_free(fs->font[i]);
+    free(fs);
+}
+
+static gs_font *font_at(gs_fontset *fs, int i) {
+    if (!fs->tried[i]) fs->tried[i] = true, fs->font[i] = gs_font_load(fs->path[i]);
+    return fs->font[i];
+}
+
+// The first font with a glyph for cp (loading fallbacks as needed), or the main font's missing glyph.
+static gs_font *pick(gs_fontset *fs, uint32_t cp, int *glyph) {
+    for (int i = 0; i < fs->n; i++) {
+        gs_font *f = font_at(fs, i);
+        if (f && (*glyph = gs_font_glyph(f, cp))) return f;
+    }
+    for (int i = 0; i < fs->n; i++)
+        if (fs->font[i]) return *glyph = 0, fs->font[i];
+    return NULL;
+}
+
+static float fontset_run(gs_glyphs *g, gs_fontset *fs, float px, float x, float y, const char *utf8, SDL_FColor colour) {
+    float pen = x;
+    gs_font *prev_font = NULL;
+    int prev = 0;
+    for (uint32_t cp; (cp = gs_utf8_next(&utf8));) {
+        int gl;
+        gs_font *f = pick(fs, cp, &gl);
+        if (!f) break;
+        if (prev && f == prev_font) pen += gs_font_kern(f, prev, gl, px);
+        if (g) gs_glyphs_draw(g, f, gl, px, pen, y, 0, colour, 1);
+        pen += gs_font_advance(f, gl, px);
+        prev = gl, prev_font = f;
+    }
+    return pen - x;
+}
+
+float gs_fontset_draw(gs_glyphs *g, gs_fontset *fs, float px, float x, float y, const char *utf8, SDL_FColor colour) {
+    return fontset_run(g, fs, px, x, y, utf8, colour);
+}
+
+float gs_fontset_width(gs_fontset *fs, float px, const char *utf8) { return fontset_run(NULL, fs, px, 0, 0, utf8, (SDL_FColor){ 0 }); }

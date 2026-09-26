@@ -33,3 +33,14 @@ float gs_text_width(const gs_font *f, float px, const char *utf8);
 
 // Next code point from UTF-8, advancing *s; returns 0 at the end.
 uint32_t gs_utf8_next(const char **s);
+
+// A chain of fonts tried in order for each character: a main font, then fallbacks for other scripts.
+// Fallbacks load on first need, so large CJK fonts cost memory only once such text appears. Scripts
+// that need shaping (Arabic, the Indic scripts) come out as separate, unjoined letters.
+typedef struct gs_fontset gs_fontset;
+gs_fontset *gs_fontset_new(void);
+gs_fontset *gs_fontset_system(void);  // the platform's UI font with fallbacks for most scripts
+void gs_fontset_add(gs_fontset *fs, const char *path);  // missing files are skipped
+void gs_fontset_free(gs_fontset *fs);
+float gs_fontset_draw(gs_glyphs *g, gs_fontset *fs, float px, float x, float y, const char *utf8, SDL_FColor colour);
+float gs_fontset_width(gs_fontset *fs, float px, const char *utf8);
