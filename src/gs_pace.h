@@ -25,8 +25,11 @@ typedef struct {
     double target_fps;    // what the limiter holds to; 0 = not limiting
     bool vsync_suspect;   // vsync is reported on but frames come faster than the display
     // Limiter state.
-    uint64_t deadline, last;
-    double avg_interval;  // seconds between presents, smoothed
+    uint64_t deadline;
+    // Checking vsync: frames counted over whole seconds, from a second after gs_pace_set (a driver
+    // queues the first few presents without waiting, which would look like vsync ignored).
+    uint64_t count_from;
+    int counted;
 } gs_pace;
 
 void gs_pace_set(gs_pace *p, SDL_Window *win, SDL_Renderer *ren, bool vsync, double cap);

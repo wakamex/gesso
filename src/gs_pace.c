@@ -17,7 +17,7 @@ void gs_pace_set(gs_pace *p, SDL_Window *win, SDL_Renderer *ren, bool vsync, dou
     p->win = win, p->ren = ren, p->want_vsync = vsync, p->cap = cap;
     p->display_hz = display_hz(win);
     p->vsync_suspect = false;
-    p->avg_interval = 0;
+    p->count_from = SDL_GetTicksNS() + SDL_NS_PER_SECOND, p->counted = 0;
     p->deadline = 0;
     double hz = p->display_hz, want = cap == GS_PACE_DISPLAY ? hz : cap;
 
@@ -56,15 +56,18 @@ void gs_pace_wait(gs_pace *p) {
     (void)p;  // paced by the browser, see gs_pace_set
 #else
     uint64_t now = SDL_GetTicksNS();
-    if (p->last) {
-        double dt = (now - p->last) / 1e9;
-        p->avg_interval = p->avg_interval ? p->avg_interval * 0.95 + dt * 0.05 : dt;
-    }
 
     // Vsync that SDL reports but the driver ignores shows up as frames well above the display
-    // rate; from then on the limiter holds the display rate (or the cap).
+    // rate over a whole second; from then on the limiter holds the display rate (or the cap).
     double expect = p->vsync > 0 ? p->display_hz / p->vsync : p->display_hz;
-    if (p->vsync && !p->vsync_suspect && p->avg_interval > 0 && 1 / p->avg_interval > expect * 1.25) p->vsync_suspect = true;
+    if (p->vsync && !p->vsync_suspect && now >= p->count_from) {
+        p->counted += 1;
+        if (now - p->count_from >= SDL_NS_PER_SECOND) {
+            double fps = p->counted / ((now - p->count_from) / 1e9);
+            if (fps > expect * 1.25) p->vsync_suspect = true;
+            p->count_from = now, p->counted = 0;
+        }
+    }
 
     double target = p->target_fps;
     if (p->vsync_suspect && (target <= 0 || target > expect)) target = expect;
@@ -79,7 +82,6 @@ void gs_pace_wait(gs_pace *p) {
     } else {
         p->deadline = 0;
     }
-    p->last = SDL_GetTicksNS();
 #endif
 }
 
