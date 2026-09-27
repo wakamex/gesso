@@ -3,6 +3,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "gs_mix.h"
 
@@ -133,7 +134,7 @@ uint64_t gs_program_bytes(void) {
 }
 
 void gs_stats_draw(const gs_stats *s, SDL_Renderer *r, float x, float y, const char *note) {
-    char lines[8][64];
+    char lines[12][64];
     int n = 0;
     if (s->fps > 0) {
         snprintf(lines[n++], 64, "%.0f fps", s->fps);
@@ -148,7 +149,13 @@ void gs_stats_draw(const gs_stats *s, SDL_Renderer *r, float x, float y, const c
     if (exe) snprintf(lines[n++], 64, "exe %.2f MB (%llu bytes)", exe / 1048576.0, (unsigned long long)exe);
     const char *name = SDL_GetRendererName(r);
     snprintf(lines[n++], 64, "renderer %s", name ? name : "?");
-    if (note) snprintf(lines[n++], 64, "%s", note);
+    int ww = 0, wh = 0;
+    if (SDL_GetCurrentRenderOutputSize(r, &ww, &wh)) snprintf(lines[n++], 64, "window %dx%d px", ww, wh);
+    for (const char *s = note; s && *s && n < 12;) {  // one line per line of the note
+        int len = (int)strcspn(s, "\n");
+        snprintf(lines[n++], 64, "%.*s", len, s);
+        s += len + (s[len] == '\n');
+    }
 
     // Scale the 8-pixel font so it stays readable on large screens.
     int ow = 0, oh = 0;

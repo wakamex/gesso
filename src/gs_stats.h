@@ -1,5 +1,5 @@
 // A performance overlay: frame rate, frame time, process memory and CPU, audio load, the size of
-// the program's file and the renderer, drawn with SDL's built-in debug font. Call gs_stats_frame_begin at the start of a
+// the program's file, the renderer and the window's size in pixels, drawn with SDL's built-in debug font. Call gs_stats_frame_begin at the start of a
 // frame, gs_stats_frame_end once the frame is drawn but before presenting, then gs_stats_draw.
 #pragma once
 #include <SDL3/SDL.h>
@@ -26,7 +26,7 @@ typedef struct {
 
 void gs_stats_frame_begin(gs_stats *s);
 void gs_stats_frame_end(gs_stats *s);
-// `note` (may be NULL) is one more line, such as gs_pace_describe's. (x, y) is the box's top left;
+// `note` (may be NULL) adds lines (split at newlines), such as gs_pace_describe's. (x, y) is the box's top left;
 // a negative x or y measures from the right or bottom edge instead. The box always stays on screen.
 void gs_stats_draw(const gs_stats *s, SDL_Renderer *r, float x, float y, const char *note);
 
