@@ -24,15 +24,33 @@ uint64_t gs_process_cpu_ns(void) {
     return (k + u) * 100;  // 100 ns units
 }
 
+static uint64_t program_size(void) {
+    WCHAR path[MAX_PATH];
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    DWORD n = GetModuleFileNameW(NULL, path, MAX_PATH);
+    if (!n || n == MAX_PATH || !GetFileAttributesExW(path, GetFileExInfoStandard, &info)) return 0;
+    return (uint64_t)info.nFileSizeHigh << 32 | info.nFileSizeLow;
+}
+
 #elif defined(__EMSCRIPTEN__)
 #include <emscripten/heap.h>
 
 uint64_t gs_process_ram(void) { return emscripten_get_heap_size(); }  // the wasm heap
 uint64_t gs_process_cpu_ns(void) { return 0; }
+static uint64_t program_size(void) { return 0; }  // the wasm module's size is the server's business
 
 #elif defined(__APPLE__)
+#include <mach-o/dyld.h>
 #include <mach/mach.h>
+#include <sys/stat.h>
 #include <time.h>
+
+static uint64_t program_size(void) {
+    char path[4096];
+    uint32_t size = sizeof path;
+    struct stat st;
+    return !_NSGetExecutablePath(path, &size) && !stat(path, &st) ? (uint64_t)st.st_size : 0;
+}
 
 uint64_t gs_process_ram(void) {
     mach_task_basic_info_data_t info;
@@ -46,8 +64,14 @@ uint64_t gs_process_cpu_ns(void) {
 }
 
 #else  // Linux and other POSIX systems with /proc
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+
+static uint64_t program_size(void) {
+    struct stat st;
+    return !stat("/proc/self/exe", &st) ? (uint64_t)st.st_size : 0;
+}
 
 uint64_t gs_process_ram(void) {
     FILE *f = fopen("/proc/self/statm", "r");
@@ -102,8 +126,14 @@ void gs_stats_frame_end(gs_stats *s) {
     s->frames++;
 }
 
+uint64_t gs_program_bytes(void) {
+    static uint64_t size;  // looked up once
+    if (!size) size = program_size();
+    return size;
+}
+
 void gs_stats_draw(const gs_stats *s, SDL_Renderer *r, float x, float y, const char *note) {
-    char lines[7][64];
+    char lines[8][64];
     int n = 0;
     if (s->fps > 0) {
         snprintf(lines[n++], 64, "%.0f fps", s->fps);
@@ -114,6 +144,8 @@ void gs_stats_draw(const gs_stats *s, SDL_Renderer *r, float x, float y, const c
     if (s->cpu_percent >= 0) snprintf(lines[n++], 64, "cpu %.1f%% of a core, %g s avg", s->cpu_percent, (s->cpu_n - 1) * 0.5);
     if (s->audio_percent >= 0) snprintf(lines[n++], 64, "audio %.2f%% of real time", s->audio_percent);
     if (s->ram_bytes) snprintf(lines[n++], 64, "ram %.1f MB", s->ram_bytes / 1048576.0);
+    uint64_t exe = gs_program_bytes();
+    if (exe) snprintf(lines[n++], 64, "exe %.2f MB (%llu bytes)", exe / 1048576.0, (unsigned long long)exe);
     const char *name = SDL_GetRendererName(r);
     snprintf(lines[n++], 64, "renderer %s", name ? name : "?");
     if (note) snprintf(lines[n++], 64, "%s", note);

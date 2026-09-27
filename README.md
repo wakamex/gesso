@@ -11,13 +11,13 @@ Gesso is the chalk ground a painter lays on a panel before painting: the layer e
 | `gs_stream` | A streaming source for `gs_mix`: a decoder thread writes, the mixer plays, with prebuffering, pause and back-pressure |
 | `gs_webm` | A streaming WebM (Matroska) reader for audio: bytes in as they arrive, codec setup and frames out |
 | `gs_opus` | Opus decoding (libopus) for streams |
-| `gs_mix` | Audio output: one SDL stream summing any number of sources, each a function that adds stereo frames; the same mix renders offline for tests and exports |
+| `gs_mix` | Audio output: one SDL stream summing any number of sources, each a function that adds stereo frames; the same mix renders offline for tests and exports, and the most recent output, as heard, is available for scopes and visualizers |
 | `gs_synth` | SoundFont 2 / SF3 synthesizer (Vorbis samples via stb_vorbis, Opus samples via libopus): zones, generators and modulators, envelopes, vibrato, low-pass filter, pan, loops, a reverb whose room length and level crossfade, per-channel mute, tagged notes (release exactly one note's voices); banks can also be built in code, with several renderings ("takes") per sample swapped in while playing |
 | `gs_seq` | A timeline of timed events played sample-accurately: notes, MIDI and calls into your code at exact times, a feeder that keeps it filled ahead (a generative score), and other sources rendered in step; a `gs_mix` source |
 | `gs_dsp` | Building blocks for synthesized sound: FFT, Web Audio's biquads, resonators, an extended Karplus-Strong plucked string and a bowed string (after the Synthesis ToolKit) |
 | `gs_jobs` | A small worker-thread pool (runs jobs inline where threads are unavailable) |
 | `gs_midi` | Standard MIDI Files and a sample-accurate, looping player that is a `gs_mix` source |
-| `gs_stats` | A performance overlay in SDL's debug font: frame rate, frame time, process memory and CPU (Windows, Linux, macOS), audio load, renderer; the web shows the wasm heap and no CPU |
+| `gs_stats` | A performance overlay in SDL's debug font: frame rate, frame time, process memory and CPU (Windows, Linux, macOS), audio load, the program file's size, renderer; the web shows the wasm heap and no CPU or file size |
 | `gs_pace` | Frame pacing: vsync (adaptive where supported, every nth refresh for caps that divide the refresh rate), a limiter for any cap, for vsync that is off or unsupported, and for vsync the driver reports but ignores, and 10 fps while the window is minimised or hidden; on the web the browser paces |
 | `gs_sha256` | SHA-256, for checking downloads against published checksums |
 | `gs_json` | A small JSON reader: a read-only tree with NULL-safe lookups and dotted paths |

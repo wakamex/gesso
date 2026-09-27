@@ -6,6 +6,7 @@
 
 #define MAX_SOURCES 32
 #define CHUNK 512
+#define TAP 16384  // frames of recent output kept for gs_mix_recent (a power of two)
 
 static struct {
     SDL_AudioStream *stream;
@@ -14,12 +15,19 @@ static struct {
     int n;
     uint64_t busy_ns, rendered;  // for gs_mix_load
     struct { gs_mix_fn *fn; void *user; } src[MAX_SOURCES];
+    uint64_t tapped;  // frames written to tap in all
 } mix = { .rate = 48000, .volume = 1 };
+// Apart from mix, which has initial values and so is stored in the program file: zeros cost nothing.
+static float tap[TAP * 2];
 
 void gs_mix_render(float *lr, int frames) {
     uint64_t start = SDL_GetTicksNS();
     memset(lr, 0, sizeof(float) * 2 * (size_t)frames);
     for (int i = 0; i < mix.n; i++) mix.src[i].fn(mix.src[i].user, lr, frames);
+    for (int i = 0; i < frames; i++, mix.tapped++) {  // before the volume, so scopes keep their size
+        size_t k = (size_t)(mix.tapped & (TAP - 1)) * 2;
+        tap[k] = lr[2 * i], tap[k + 1] = lr[2 * i + 1];
+    }
     for (int i = 0; i < 2 * frames; i++) {
         float x = lr[i] * mix.volume;
         lr[i] = x > 1 || x < -1 ? tanhf(x) : x;  // clean below full scale, soft above
@@ -52,6 +60,21 @@ bool gs_mix_open(int rate) {
     mix.stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, feed, NULL);
     if (!mix.stream) return false;
     return SDL_ResumeAudioStreamDevice(mix.stream);
+}
+
+int gs_mix_recent(float *lr, int frames) {
+    if (frames > TAP / 2) frames = TAP / 2;
+    gs_mix_lock();
+    // Mixed but still waiting in the stream for the device: not heard yet, so skipped.
+    uint64_t waiting = mix.stream ? (uint64_t)SDL_GetAudioStreamQueued(mix.stream) / (2 * sizeof(float)) : 0;
+    uint64_t end = mix.tapped > waiting ? mix.tapped - waiting : 0, start = end > (uint64_t)frames ? end - (uint64_t)frames : 0;
+    int n = (int)(end - start);
+    for (int i = 0; i < n; i++) {
+        size_t k = (size_t)((start + (uint64_t)i) & (TAP - 1)) * 2;
+        lr[2 * i] = tap[k], lr[2 * i + 1] = tap[k + 1];
+    }
+    gs_mix_unlock();
+    return n;
 }
 
 void gs_mix_close(void) {
