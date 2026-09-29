@@ -6,19 +6,72 @@
 
 #include "stb_truetype.h"
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#elif !defined(__EMSCRIPTEN__)
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 struct gs_font {
     stbtt_fontinfo info;
     void *data;
+    size_t len;  // of the mapping, or 0 for a file read into memory (the web build)
 };
+
+// The file mapped read-only rather than read in: a system font can be tens of MB (a CJK font's whole
+// character set), and only the pages holding the glyphs drawn are ever read.
+static void *font_map(const char *path, size_t *len) {
+#if defined(_WIN32)
+    wchar_t wide[1024];
+    if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, 1024)) return NULL;
+    HANDLE file = CreateFileW(wide, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return NULL;
+    LARGE_INTEGER size;
+    HANDLE map = GetFileSizeEx(file, &size) && size.QuadPart > 0 ? CreateFileMappingW(file, NULL, PAGE_READONLY, 0, 0, NULL) : NULL;
+    CloseHandle(file);
+    if (!map) return NULL;
+    void *data = MapViewOfFile(map, FILE_MAP_READ, 0, 0, 0);
+    CloseHandle(map);  // the view keeps the mapping
+    *len = (size_t)size.QuadPart;
+    return data;
+#elif defined(__EMSCRIPTEN__)
+    *len = 0;
+    return SDL_LoadFile(path, NULL);
+#else
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return NULL;
+    struct stat st;
+    void *data = fstat(fd, &st) == 0 && st.st_size > 0 ? mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0) : MAP_FAILED;
+    close(fd);  // the mapping keeps the file
+    *len = (size_t)st.st_size;
+    return data == MAP_FAILED ? NULL : data;
+#endif
+}
+
+static void font_unmap(void *data, size_t len) {
+#if defined(_WIN32)
+    (void)len;
+    UnmapViewOfFile(data);
+#elif defined(__EMSCRIPTEN__)
+    (void)len;
+    SDL_free(data);
+#else
+    munmap(data, len);
+#endif
+}
 
 gs_font *gs_font_load(const char *path) {
     size_t len;
-    void *data = SDL_LoadFile(path, &len);
+    void *data = font_map(path, &len);
     if (!data) return NULL;
     gs_font *f = calloc(1, sizeof *f);
-    f->data = data;
+    f->data = data, f->len = len;
     if (!stbtt_InitFont(&f->info, data, stbtt_GetFontOffsetForIndex(data, 0))) {
-        SDL_free(data);
+        font_unmap(data, len);
         free(f);
         return NULL;
     }
@@ -27,7 +80,7 @@ gs_font *gs_font_load(const char *path) {
 
 void gs_font_free(gs_font *f) {
     if (!f) return;
-    SDL_free(f->data);
+    font_unmap(f->data, f->len);
     free(f);
 }
 
