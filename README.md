@@ -57,6 +57,8 @@ For the web, compile the files in `src/` together with the app with Emscripten a
 
 Accessibility: gesso apps draw their own interface, so screen readers and other assistive technology see nothing in them. That is acceptable for games and personal tools but not for an app offered to the public. The likely route is [AccessKit](https://github.com/AccessKit/accesskit), which implements each platform's accessibility API and has C bindings: an app describes its interface as a tree of nodes, and AccessKit answers the screen reader. Revisit before a gesso app is offered as a general-purpose app, or as soon as someone who uses a screen reader wants to use one.
 
+Web sign-in: an app that signs in to a web service through the service's own page needs a small browser window that watches for the page to finish and hands over its cookies. [gtube](https://github.com/wakamex/gtube) has one in `src/signin.c`: WebView2 on Windows, and on Linux WebKitGTK for GTK 3 or GTK 4 in a process of its own, loaded at run time so nothing is needed to build, writing a Netscape cookie file. It becomes a gesso module when a second gesso app needs to sign in, with the start URL, the URLs that mean done, the cookie domains, the cookie that proves the sign-in and the window title as parameters, and the Google and YouTube specifics left in gtube. The web build has no use for it, since a page there signs in with the browser itself.
+
 ## Licence
 
 MIT, see `LICENSE`. The stb libraries in `vendor/stb` are public domain (or MIT, at your choice); SDL3 is zlib; libopus (fetched by the build) is BSD.
