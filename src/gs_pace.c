@@ -27,7 +27,9 @@ void gs_pace_set(gs_pace *p, SDL_Window *win, SDL_Renderer *ren, bool vsync, dou
     p->vsync = 0;
     int n = want > 0 && want < hz ? (int)floor(hz / want + 0.01) : 1;
     if (n < 1) n = 1;
-    bool divisor = want <= 0 || hz / n <= want * 1.25;
+    // Direct3D presents at most every 4th refresh: SDL takes a longer interval, but then every
+    // present fails and the window keeps its last frame. Longer ones go to the limiter.
+    bool divisor = (want <= 0 || hz / n <= want * 1.25) && n <= 4;
     if (vsync) {
         if (n > 1 && divisor && try_vsync(ren, n)) p->vsync = n;
         else if (try_vsync(ren, SDL_RENDERER_VSYNC_ADAPTIVE)) p->vsync = SDL_RENDERER_VSYNC_ADAPTIVE;
