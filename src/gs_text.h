@@ -21,6 +21,11 @@ void gs_font_vmetrics(const gs_font *f, float px, float *ascent, float *descent,
 
 gs_glyphs *gs_glyphs_new(SDL_Renderer *r, int atlas_size);
 void gs_glyphs_free(gs_glyphs *g);
+// Uploads the glyphs first drawn in the last frame; call it each frame before drawing anything.
+// Once it has been called, a glyph new to the atlas is drawn from the next frame on, so no frame
+// uploads to the atlas between its draws: on NVIDIA's Vulkan driver, SDL 3.4's Vulkan renderer loses
+// what a frame drew before such an upload. Without it, glyphs are uploaded as they are first drawn.
+void gs_glyphs_begin_frame(gs_glyphs *g);
 
 // Draws one glyph with its origin (pen position on the baseline) at (x, y), rotated by `angle`
 // degrees about that origin. `reveal` in [0, 1] shows only the left part of the glyph.

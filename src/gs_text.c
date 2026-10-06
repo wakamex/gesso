@@ -115,7 +115,10 @@ typedef struct {
     const gs_font *font;
     int glyph, size4;  // size in quarter pixels
     int x, y, w, h, ox, oy;
+    bool pending;      // rasterized, waiting for gs_glyphs_begin_frame to upload it
 } slot;
+
+typedef struct { SDL_Rect at; uint32_t *px; } upload;
 
 #define SLOTS 4096  // open addressing; the atlas is cleared well before this fills
 
@@ -124,6 +127,9 @@ struct gs_glyphs {
     SDL_Texture *tex;
     int size, shelf_x, shelf_y, shelf_h, used;
     slot slots[SLOTS];
+    bool deferred;     // gs_glyphs_begin_frame is called: uploads wait for it
+    upload *uploads;
+    int nuploads, uploads_cap;
 };
 
 gs_glyphs *gs_glyphs_new(SDL_Renderer *r, int atlas_size) {
@@ -136,15 +142,31 @@ gs_glyphs *gs_glyphs_new(SDL_Renderer *r, int atlas_size) {
     return g;
 }
 
+static void drop_uploads(gs_glyphs *g) {
+    for (int i = 0; i < g->nuploads; i++) free(g->uploads[i].px);
+    g->nuploads = 0;
+}
+
 void gs_glyphs_free(gs_glyphs *g) {
     if (!g) return;
+    drop_uploads(g);
+    free(g->uploads);
     SDL_DestroyTexture(g->tex);
     free(g);
+}
+
+void gs_glyphs_begin_frame(gs_glyphs *g) {
+    g->deferred = true;
+    for (int i = 0; i < g->nuploads; i++) SDL_UpdateTexture(g->tex, &g->uploads[i].at, g->uploads[i].px, g->uploads[i].at.w * 4);
+    if (g->nuploads)
+        for (int i = 0; i < SLOTS; i++) g->slots[i].pending = false;
+    drop_uploads(g);
 }
 
 static void clear(gs_glyphs *g) {
     memset(g->slots, 0, sizeof g->slots);
     g->shelf_x = g->shelf_y = g->shelf_h = g->used = 0;
+    drop_uploads(g);  // (their places in the atlas are given out again)
 }
 
 // Finds a glyph in the cache, rasterizing it into the atlas on first use. NULL if it cannot fit.
@@ -168,10 +190,16 @@ static slot *lookup(gs_glyphs *g, const gs_font *f, int glyph, int size4) {
             uint32_t *px = malloc((size_t)w * hh * 4);
             for (int k = 0; k < w * hh; k++) px[k] = SDL_Swap32LE(0x00FFFFFFu | (uint32_t)cov[k] << 24);
             SDL_Rect dst = { g->shelf_x, g->shelf_y, w, hh };
-            SDL_UpdateTexture(g->tex, &dst, px, w * 4);
-            free(px);
             free(cov);
-            *s = (slot){ f, glyph, size4, g->shelf_x, g->shelf_y, w, hh, x0 - 1, y0 - 1 };
+            if (g->deferred) {
+                if (g->nuploads == g->uploads_cap)
+                    g->uploads = realloc(g->uploads, sizeof *g->uploads * (size_t)(g->uploads_cap = g->uploads_cap ? g->uploads_cap * 2 : 64));
+                g->uploads[g->nuploads++] = (upload){ dst, px };
+            } else {
+                SDL_UpdateTexture(g->tex, &dst, px, w * 4);
+                free(px);
+            }
+            *s = (slot){ f, glyph, size4, g->shelf_x, g->shelf_y, w, hh, x0 - 1, y0 - 1, g->deferred };
             g->shelf_x += w;
             if (hh > g->shelf_h) g->shelf_h = hh;
             g->used++;
@@ -186,7 +214,7 @@ void gs_glyphs_draw(gs_glyphs *g, const gs_font *f, int glyph, float px, float x
                     SDL_FColor colour, float reveal) {
     if (reveal <= 0) return;
     slot *s = lookup(g, f, glyph, (int)lroundf(px * 4));
-    if (!s || s->w <= 2) return;
+    if (!s || s->w <= 2 || s->pending) return;
     float wr = reveal >= 1 ? (float)s->w : s->w * reveal;
     SDL_FRect src = { (float)s->x, (float)s->y, wr, (float)s->h };
     SDL_FRect dst = { x + s->ox, y + s->oy, wr, (float)s->h };
