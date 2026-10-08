@@ -5,6 +5,7 @@ int test_failures;
 static const struct { const char *name; void (*run)(void); } tests[] = {
     { "gs_http", test_http },
     { "gs_json", test_json },
+    { "gs_oauth", test_oauth },
     { "gs_secret", test_secret },
     { "gs_stream", test_stream },
 };
