@@ -173,7 +173,7 @@ pub fn build(b: *std.Build) void {
     const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
     mod.addCSourceFiles(.{
         .root = b.path("src"),
-        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_image.c" },
+        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_image.c", "gs_ts.c", "gs_mp4.c" },
         .flags = flags,
     });
     mod.addIncludePath(b.path("src"));
@@ -192,7 +192,7 @@ pub fn build(b: *std.Build) void {
     if (av) |a| {
         mod.linkLibrary(a.lib);
         for (a.include) |dir| mod.addIncludePath(dir);
-        mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{"gs_video.c"}, .flags = flags });
+        mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_video.c", "gs_aac.c" }, .flags = flags });
     }
 
     const lib = b.addLibrary(.{ .name = "gesso", .linkage = .static, .root_module = mod });
@@ -203,10 +203,13 @@ pub fn build(b: *std.Build) void {
 
     // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "hls.c", "http.c", "json.c", "oauth.c", "secret.c", "stream.c", "text.c", "ui.c" }, .flags = flags });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "hls.c", "http.c", "json.c", "media.c", "oauth.c", "secret.c", "stream.c", "text.c", "ui.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
     tests.addIncludePath(b.path("src"));
+    if (av) |a| for (a.include) |dir| tests.addIncludePath(dir);
     tests.linkLibrary(lib);
-    b.step("test", "Run gesso's tests").dependOn(&b.addRunArtifact(b.addExecutable(.{ .name = "gesso-tests", .root_module = tests })).step);
+    const test_run = b.addRunArtifact(b.addExecutable(.{ .name = "gesso-tests", .root_module = tests }));
+    test_run.addDirectoryArg(b.path("tests/streams"));
+    b.step("test", "Run gesso's tests").dependOn(&test_run.step);
 
     // zig build bench-text -- OUT.png: a page of mixed scripts and emoji rendered with the system's fonts.
     const text_bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });

@@ -19,6 +19,7 @@ extern int test_failures;
 void test_hls(void);
 void test_http(void);
 void test_json(void);
+void test_media(void);
 void test_oauth(void);
 void test_secret(void);
 void test_stream(void);
