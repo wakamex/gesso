@@ -10,6 +10,7 @@ static const struct { const char *name; void (*run)(void); } tests[] = {
     { "gs_secret", test_secret },
     { "gs_stream", test_stream },
     { "gs_text", test_text },
+    { "gs_ui", test_ui },
 };
 
 int main(void) {
