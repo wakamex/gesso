@@ -51,8 +51,17 @@ void test_ui(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
     if (!SDL_Init(SDL_INIT_VIDEO)) return;  // (no video at all: nothing to test here)
-    SDL_Window *w = SDL_CreateWindow("test", 400, 300, 0);
-    SDL_Renderer *r = SDL_CreateRenderer(w, NULL);
+    // (a window that brings its own graphics context: otherwise macOS's offscreen driver is asked for
+    // OpenGL, which it cannot load, and no window is made)
+    SDL_PropertiesID p = SDL_CreateProperties();
+    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, 400);
+    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, 300);
+    SDL_SetBooleanProperty(p, SDL_PROP_WINDOW_CREATE_EXTERNAL_GRAPHICS_CONTEXT_BOOLEAN, true);
+    SDL_Window *w = SDL_CreateWindowWithProperties(p);
+    SDL_DestroyProperties(p);
+    SDL_Renderer *r = w ? SDL_CreateRenderer(w, NULL) : NULL;
+    CHECK(w && r);
+    if (!r) return SDL_DestroyWindow(w), SDL_Quit();
     gs_fontset *fs = gs_fontset_new();
     ui = gs_ui_new(w, r, fs);
     frame();
