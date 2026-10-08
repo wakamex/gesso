@@ -293,8 +293,15 @@ static double frame_seconds(const AVFrame *f) {
     return t == AV_NOPTS_VALUE ? 0 : t / 90000.0;
 }
 
+// The frame's colours as SDL names them. Streams that leave them unsaid (Twitch's do) get what players
+// assume: BT.709 for HD, BT.601 below it, limited range; SDL's software renderer refuses them unsaid.
 static SDL_Colorspace frame_colorspace(const AVFrame *f) {
-    return SDL_DEFINE_COLORSPACE(SDL_COLOR_TYPE_YCBCR, f->color_range, f->color_primaries, f->color_trc, f->colorspace, f->chroma_location);
+    bool hd = f->height >= 720;
+    int range = f->color_range != AVCOL_RANGE_UNSPECIFIED ? f->color_range : AVCOL_RANGE_MPEG;
+    int primaries = f->color_primaries != AVCOL_PRI_UNSPECIFIED ? f->color_primaries : hd ? AVCOL_PRI_BT709 : AVCOL_PRI_SMPTE170M;
+    int trc = f->color_trc != AVCOL_TRC_UNSPECIFIED ? f->color_trc : hd ? AVCOL_TRC_BT709 : AVCOL_TRC_SMPTE170M;
+    int matrix = f->colorspace != AVCOL_SPC_UNSPECIFIED ? f->colorspace : hd ? AVCOL_SPC_BT709 : AVCOL_SPC_BT470BG;
+    return SDL_DEFINE_COLORSPACE(SDL_COLOR_TYPE_YCBCR, range, primaries, trc, matrix, f->chroma_location);
 }
 
 // Makes v->texture a w x h texture of `format` for frame f, recreating it when anything differs or `fresh` is set.
