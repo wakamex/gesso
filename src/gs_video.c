@@ -294,10 +294,11 @@ static double frame_seconds(const AVFrame *f) {
     return t == AV_NOPTS_VALUE ? 0 : t / 90000.0;
 }
 
-// The frame's colours as SDL names them. Streams that leave them unsaid (Twitch's do) get what players
-// assume: BT.709 for HD, BT.601 below it, limited range; SDL's software renderer refuses them unsaid.
+// The frame's colours as SDL names them. Streams that leave them unsaid (Twitch's do) get what SDL's
+// GPU renderers assume: BT.709 above 576 lines, BT.601 at or below, limited range. SDL's software
+// renderer refuses them unsaid.
 static SDL_Colorspace frame_colorspace(const AVFrame *f) {
-    bool hd = f->height >= 720;
+    bool hd = f->height > 576;
     int range = f->color_range != AVCOL_RANGE_UNSPECIFIED ? f->color_range : AVCOL_RANGE_MPEG;
     int primaries = f->color_primaries != AVCOL_PRI_UNSPECIFIED ? f->color_primaries : hd ? AVCOL_PRI_BT709 : AVCOL_PRI_SMPTE170M;
     int trc = f->color_trc != AVCOL_TRC_UNSPECIFIED ? f->color_trc : hd ? AVCOL_TRC_BT709 : AVCOL_TRC_SMPTE170M;
