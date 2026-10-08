@@ -12,6 +12,17 @@
             .url = "https://github.com/xiph/opus/releases/download/v1.5.2/opus-1.5.2.tar.gz",
             .hash = "N-V-__8AAADWXwF69u4_iufnV_gwfb3M2ATbbZF-yGFRrEFH",
         },
+        // Fetched only for -Dvideo: FFmpeg's sources, and NASM to assemble its x86 code.
+        .ffmpeg = .{
+            .url = "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+            .hash = "N-V-__8AAEfCYgUDQ6luB9hrkgnNTDdtUDuoJziZIZSfT1_m",
+            .lazy = true,
+        },
+        .nasm = .{
+            .url = "git+https://github.com/allyourcodebase/nasm.git#f11aa6ed5a7eb339259b3439b3e47d58dba998cc",
+            .hash = "nasm-3.0.1-B_NnpSJUAABp8P_x6B1dPmYEcBVlfF06ZpyWcCvl461C",
+            .lazy = true,
+        },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "src", "vendor", "LICENSE", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "vendor", "ffmpeg", "LICENSE", "README.md" },
 }

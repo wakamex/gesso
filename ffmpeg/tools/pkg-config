@@ -1,0 +1,12 @@
+#!/bin/sh
+# Answers FFmpeg configure's pkg-config queries for libva only. The headers come from
+# gesso's vendor/va; the library comes from the build host, and only for configure's link
+# checks, since gesso loads libva at run time (ffmpeg/va_loader.c).
+here=$(cd "$(dirname "$0")/../.." && pwd)
+for a in "$@"; do case "$a" in
+  --exists|--print-errors) ;;
+  --modversion|--version) echo 1.23.0; exit 0;;
+  --cflags) echo "-I$here/vendor"; exit 0;;
+  --libs) case "$*" in *libva-drm*) echo "-L/usr/lib64 -Wl,--allow-shlib-undefined -lva-drm -lva";; *libva-x11*|*libva-wayland*) exit 1;; *) echo "-L/usr/lib64 -Wl,--allow-shlib-undefined -lva";; esac; exit 0;;
+esac; done
+case "$*" in *libva-x11*|*libva-wayland*) exit 1;; *libva*) exit 0;; *) exit 1;; esac

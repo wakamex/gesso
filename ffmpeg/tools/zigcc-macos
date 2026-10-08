@@ -1,0 +1,8 @@
+#!/bin/sh
+# zig cc for aarch64-macos, dropping the macOS linker flags FFmpeg's configure adds that zig's linker rejects.
+args=""
+for a in "$@"; do case "$a" in
+  -Wl,-dynamic*) ;;
+  *) args="$args '$(printf %s "$a" | sed "s/'/'\\\\''/g")'";;
+esac; done
+eval exec zig cc -target aarch64-macos $args

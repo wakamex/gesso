@@ -3,6 +3,7 @@
 // headers, and SDL3 (headers and library) with it.
 //   zig build                              native debug build of the library into zig-out/
 //   zig build -Dtarget=x86_64-windows-gnu  Windows build from any host
+//   zig build -Dvideo                      also FFmpeg's libavcodec, trimmed, for the video modules
 const std = @import("std");
 
 pub const flags: []const []const u8 = &.{ "-std=c11", "-ffp-contract=off", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-missing-field-initializers" };
@@ -10,6 +11,7 @@ pub const flags: []const []const u8 = &.{ "-std=c11", "-ffp-contract=off", "-Wal
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const video = b.option(bool, "video", "Build the video modules on FFmpeg's libavcodec (fetched only when set)") orelse false;
 
     const sdl = b.dependency("sdl", .{
         .target = target,
@@ -178,10 +180,82 @@ pub fn build(b: *std.Build) void {
     mod.linkLibrary(sdl);
     mod.linkLibrary(opus);
     mod.addIncludePath(opus_src.path("include"));
+    const av = if (video) addFfmpeg(b, target) else null;
+    if (av) |a| {
+        mod.linkLibrary(a.lib);
+        for (a.include) |dir| mod.addIncludePath(dir);
+    }
 
     const lib = b.addLibrary(.{ .name = "gesso", .linkage = .static, .root_module = mod });
     lib.installHeadersDirectory(b.path("src"), "", .{ .include_extensions = &.{".h"} });
     lib.installHeadersDirectory(b.path("vendor/stb"), "", .{ .include_extensions = &.{".h"} });
     lib.installLibraryHeaders(sdl);
     b.installArtifact(lib);
+}
+
+// FFmpeg's libavcodec and libavutil, trimmed to the H.264 and AAC decoders and each system's hardware
+// decoding, built from the release tarball with the files configure generated for each target
+// (ffmpeg/<target>/, made by ffmpeg/tools/import.sh). LGPL 2.1 or later, linked statically.
+const Ffmpeg = struct { lib: *std.Build.Step.Compile, include: []const std.Build.LazyPath };
+
+fn addFfmpeg(b: *std.Build, target: std.Build.ResolvedTarget) ?Ffmpeg {
+    const t = target.result;
+    const name, const sources = switch (t.os.tag) {
+        .linux => .{ "linux-x86_64", @embedFile("ffmpeg/linux-x86_64/sources.txt") },
+        .windows => .{ "windows-x86_64", @embedFile("ffmpeg/windows-x86_64/sources.txt") },
+        .macos => .{ "macos-aarch64", @embedFile("ffmpeg/macos-aarch64/sources.txt") },
+        else => @panic("-Dvideo: FFmpeg is configured for Linux, Windows and macOS only"),
+    };
+    if ((t.os.tag == .macos) != (t.cpu.arch == .aarch64) or (t.os.tag != .macos and t.cpu.arch != .x86_64))
+        @panic("-Dvideo: FFmpeg is configured for x86-64 Linux and Windows and aarch64 macOS");
+    const src = (b.lazyDependency("ffmpeg", .{}) orelse return null).path("");
+    const gen = b.path(b.fmt("ffmpeg/{s}", .{name}));
+
+    // FFmpeg relies on dead-code elimination (it does not link at -O0) and on its own bounds
+    // reasoning, so it is always optimized and never sanitized, whatever the app's build mode.
+    const mod = b.createModule(.{ .target = target, .optimize = .ReleaseFast, .link_libc = true, .sanitize_c = .off, .pic = true });
+    mod.addIncludePath(gen);
+    mod.addIncludePath(src);
+    var av_flags: std.ArrayList([]const u8) = .empty;
+    av_flags.appendSlice(b.allocator, &.{ "-std=c17", "-DHAVE_AV_CONFIG_H", "-D_ISOC11_SOURCE", "-D_FILE_OFFSET_BITS=64", "-D_LARGEFILE_SOURCE", "-DPIC", "-fomit-frame-pointer", "-fno-math-errno", "-fno-signed-zeros", "-w" }) catch @panic("OOM");
+    switch (t.os.tag) {
+        .linux => av_flags.appendSlice(b.allocator, &.{ "-D_POSIX_C_SOURCE=200112", "-D_XOPEN_SOURCE=600" }) catch @panic("OOM"),
+        .windows => av_flags.appendSlice(b.allocator, &.{ "-D_POSIX_C_SOURCE=200112", "-D_XOPEN_SOURCE=600", "-DWIN32_LEAN_AND_MEAN", "-U__STRICT_ANSI__" }) catch @panic("OOM"),
+        else => av_flags.append(b.allocator, "-fno-common") catch @panic("OOM"),
+    }
+    if (t.os.tag != .linux) mod.addIncludePath(src.path(b, "compat/stdbit"));
+    if (t.os.tag == .macos) mod.addIncludePath(src.path(b, "compat/dispatch_semaphore"));
+    if (t.os.tag == .linux) {
+        mod.addIncludePath(b.path("vendor"));
+        mod.addCSourceFile(.{ .file = b.path("ffmpeg/va_loader.c"), .flags = &.{"-std=c11"} });
+    }
+
+    var c_files: std.ArrayList([]const u8) = .empty;
+    var nasm: ?*std.Build.Step.Compile = null;
+    var lines = std.mem.tokenizeAny(u8, sources, "\r\n");
+    while (lines.next()) |file| {
+        if (!std.mem.endsWith(u8, file, ".asm")) {
+            c_files.append(b.allocator, file) catch @panic("OOM");
+            continue;
+        }
+        // NASM, built from source for the build host, so nothing needs installing.
+        if (nasm == null) nasm = (b.lazyDependency("nasm", .{ .target = b.graph.host, .optimize = .ReleaseFast }) orelse return null).artifact("nasm");
+        const run = b.addRunArtifact(nasm.?);
+        run.addArgs(&.{ "-f", if (t.os.tag == .windows) "win64" else "elf64", "-DPIC" });
+        run.addPrefixedDirectoryArg("-I", gen);
+        run.addPrefixedDirectoryArg("-I", src);
+        run.addPrefixedDirectoryArg("-I", src.path(b, std.fs.path.dirname(file).?));
+        run.addArg("-Pconfig.asm");
+        mod.addObjectFile(run.addPrefixedOutputFileArg("-o", b.fmt("{s}.o", .{std.fs.path.stem(file)})));
+        run.addFileArg(src.path(b, file));
+    }
+    mod.addCSourceFiles(.{ .root = src, .files = c_files.items, .flags = av_flags.items });
+    switch (t.os.tag) {
+        .windows => for ([_][]const u8{ "bcrypt", "ole32", "user32" }) |l| mod.linkSystemLibrary(l, .{}),
+        .macos => for ([_][]const u8{ "CoreFoundation", "CoreMedia", "CoreVideo", "CoreServices", "VideoToolbox", "QuartzCore" }) |f| mod.linkFramework(f, .{}),
+        else => {},
+    }
+    // Apps reach libavcodec's headers through gesso: the release's, its generated avconfig.h, and libva's.
+    const include = b.allocator.dupe(std.Build.LazyPath, &.{ gen, src, b.path("vendor") }) catch @panic("OOM");
+    return .{ .lib = b.addLibrary(.{ .name = "avcodec", .linkage = .static, .root_module = mod }), .include = include };
 }

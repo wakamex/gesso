@@ -2,3 +2,6 @@
 -Isrc
 -Ivendor/stb
 -Izig-pkg/sdl-0.5.4+3.4.16-SDL--sQ4qAH3kwC19Zs1kxdHplaSDnWl2MUptZD4AItI/include
+-Iffmpeg/linux-x86_64
+-Izig-pkg/N-V-__8AAEfCYgUDQ6luB9hrkgnNTDdtUDuoJziZIZSfT1_m
+-Ivendor
