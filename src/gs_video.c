@@ -90,6 +90,7 @@ const char *gs_video_prepare(bool hardware) {
     prepared = SOFTWARE;
     if (!hardware) return NULL;
 #if defined(__linux__)
+    if (!SDL_getenv("LIBVA_MESSAGING_LEVEL")) SDL_setenv_unsafe("LIBVA_MESSAGING_LEVEL", "1", 0);  // errors only, not libva's "info" lines
     for (int i = 128; i < 136 && prepared == SOFTWARE; i++) {
         SDL_snprintf(va_device, sizeof va_device, "/dev/dri/renderD%d", i);
         if (vaapi_decodes_h264(va_device)) prepared = VAAPI;
