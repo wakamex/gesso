@@ -50,6 +50,8 @@ struct gs_video {
     SDL_PixelFormat tex_format;
     SDL_Colorspace tex_colorspace;
     long long decoded, shown, dropped;
+    uint64_t last_call;      // when gs_video_frame was last called
+    double interval;         // the time between calls (the display's refresh, when drawing every frame), averaged
 #if defined(__linux__)
     PFNEGLCREATEIMAGEPROC egl_create_image;
     PFNEGLDESTROYIMAGEPROC egl_destroy_image;
@@ -407,10 +409,20 @@ static bool show(gs_video *v, const AVFrame *f) {
 }
 
 SDL_Texture *gs_video_frame(gs_video *v, double clock, SDL_FRect *src) {
+    // The picture appears at the next refresh, about half a refresh from now on average: a frame due by
+    // then is shown now. Without this, a stream at the display's own rate, with a little jitter in the
+    // calls, finds two frames due at one call and none at the next, and drops one.
+    uint64_t now = SDL_GetTicksNS();
+    if (v->last_call) {
+        double dt = (now - v->last_call) / 1e9;
+        if (dt < 0.1) v->interval = v->interval ? v->interval * 0.9 + dt * 0.1 : dt;
+    }
+    v->last_call = now;
+    double target = clock + v->interval / 2;
     AVFrame *next = NULL;
     SDL_LockMutex(v->lock);
     int taken = 0;
-    while (taken < v->count && frame_seconds(v->queue[taken]) <= clock) taken++;
+    while (taken < v->count && frame_seconds(v->queue[taken]) <= target) taken++;
     if (taken) {
         for (int i = 0; i < taken - 1; i++) av_frame_free(&v->queue[i]);
         v->dropped += taken - 1;
