@@ -3,7 +3,7 @@
 // headers, and SDL3 (headers and library) with it.
 //   zig build                              native debug build of the library into zig-out/
 //   zig build -Dtarget=x86_64-windows-gnu  Windows build from any host
-//   zig build -Dvideo                      also FFmpeg's libavcodec, trimmed, for the video modules
+//   zig build -Dvideo                      also the video modules, on a trimmed FFmpeg libavcodec
 const std = @import("std");
 
 pub const flags: []const []const u8 = &.{ "-std=c11", "-ffp-contract=off", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-missing-field-initializers" };
@@ -184,6 +184,7 @@ pub fn build(b: *std.Build) void {
     if (av) |a| {
         mod.linkLibrary(a.lib);
         for (a.include) |dir| mod.addIncludePath(dir);
+        mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{"gs_video.c"}, .flags = flags });
     }
 
     const lib = b.addLibrary(.{ .name = "gesso", .linkage = .static, .root_module = mod });
@@ -191,6 +192,21 @@ pub fn build(b: *std.Build) void {
     lib.installHeadersDirectory(b.path("vendor/stb"), "", .{ .include_extensions = &.{".h"} });
     lib.installLibraryHeaders(sdl);
     b.installArtifact(lib);
+
+    // zig build bench-video -Dvideo -- FILE.h264: decoding paths compared on this machine (bench/video.c).
+    if (av) |a| {
+        const bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+        bench.addCSourceFile(.{ .file = b.path("bench/video.c"), .flags = flags });
+        bench.addIncludePath(b.path("src"));
+        for (a.include) |dir| bench.addIncludePath(dir);
+        bench.linkLibrary(lib);
+        const exe = b.addExecutable(.{ .name = "bench-video", .root_module = bench });
+        const install = b.addInstallArtifact(exe, .{});
+        const run = b.addRunArtifact(exe);
+        run.step.dependOn(&install.step);
+        if (b.args) |args| run.addArgs(args);
+        b.step("bench-video", "Play an H.264 file through gs_video and report CPU and memory").dependOn(&run.step);
+    }
 }
 
 // FFmpeg's libavcodec and libavutil, trimmed to the H.264 and AAC decoders and each system's hardware
