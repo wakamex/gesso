@@ -354,6 +354,8 @@ static bool edit(gs_ui *ui, widget *w, char *buf, size_t size) {
             w->cursor = (int)len, w->all = false;
         } else if (k == SDLK_ESCAPE && len) {
             buf[0] = 0, len = 0, w->cursor = 0, changed = true;  // Esc clears the field; a second Esc goes to the app
+        } else if (!ctrl && !(ui->in.mods[i] & SDL_KMOD_ALT) && k >= 32 && k < 127) {
+            // A printable key arrives as typed text too: it is the field's, not a shortcut's.
         } else {
             continue;
         }
