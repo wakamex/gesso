@@ -3,6 +3,7 @@
 int test_failures;
 
 static const struct { const char *name; void (*run)(void); } tests[] = {
+    { "gs_http", test_http },
     { "gs_json", test_json },
     { "gs_stream", test_stream },
 };

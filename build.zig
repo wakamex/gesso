@@ -173,7 +173,7 @@ pub fn build(b: *std.Build) void {
     const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
     mod.addCSourceFiles(.{
         .root = b.path("src"),
-        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_stb.c" },
+        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_stb.c" },
         .flags = flags,
     });
     mod.addIncludePath(b.path("src"));
@@ -181,6 +181,7 @@ pub fn build(b: *std.Build) void {
     mod.linkLibrary(sdl);
     mod.linkLibrary(opus);
     mod.addIncludePath(opus_src.path("include"));
+    if (target.result.os.tag == .windows) mod.linkSystemLibrary("winhttp", .{});
     const av = if (video) addFfmpeg(b, target) else null;
     if (av) |a| {
         mod.linkLibrary(a.lib);
@@ -196,7 +197,7 @@ pub fn build(b: *std.Build) void {
 
     // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "json.c", "stream.c" }, .flags = flags });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "http.c", "json.c", "stream.c" }, .flags = flags });
     tests.addIncludePath(b.path("src"));
     tests.linkLibrary(lib);
     b.step("test", "Run gesso's tests").dependOn(&b.addRunArtifact(b.addExecutable(.{ .name = "gesso-tests", .root_module = tests })).step);
