@@ -188,6 +188,7 @@ pub fn build(b: *std.Build) void {
     mod.linkLibrary(opus);
     mod.addIncludePath(opus_src.path("include"));
     if (target.result.os.tag == .windows) for ([_][]const u8{ "winhttp", "crypt32" }) |l| mod.linkSystemLibrary(l, .{});
+    if (target.result.isMinGW()) mod.addCSourceFile(.{ .file = b.path("src/gs_strnlen.c"), .flags = flags });
     if (target.result.isGnuLibC() and target.result.os.versionRange().gnuLibCVersion().?.order(.{ .major = 2, .minor = 29, .patch = 0 }) == .lt)
         mod.addCSourceFile(.{ .file = b.path("src/gs_glibc_compat.c"), .flags = flags });
     const av = if (video) addFfmpeg(b, target) else null;
@@ -287,7 +288,11 @@ fn addFfmpeg(b: *std.Build, target: std.Build.ResolvedTarget) ?Ffmpeg {
             continue;
         }
         // NASM, built from source for the build host, so nothing needs installing.
-        if (nasm == null) nasm = (b.lazyDependency("nasm", .{ .target = b.graph.host, .optimize = .ReleaseFast }) orelse return null).artifact("nasm");
+        if (nasm == null) {
+            nasm = (b.lazyDependency("nasm", .{ .target = b.graph.host, .optimize = .ReleaseFast }) orelse return null).artifact("nasm");
+            // (on a Windows host NASM links Zig's C library, whose strnlen can read past a string: see gs_strnlen.c)
+            if (b.graph.host.result.os.tag == .windows) nasm.?.root_module.addCSourceFile(.{ .file = b.path("src/gs_strnlen.c"), .flags = &.{"-std=c11"} });
+        }
         const run = b.addRunArtifact(nasm.?);
         run.addArgs(&.{ "-f", if (t.os.tag == .windows) "win64" else "elf64", "-DPIC" });
         run.addPrefixedDirectoryArg("-I", gen);
