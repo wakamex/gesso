@@ -147,5 +147,12 @@ void gs_stream_pause(gs_stream *s, bool paused) {
 
 bool gs_stream_paused(const gs_stream *s) { return s->paused; }
 double gs_stream_position(const gs_stream *s) { return (double)s->played / s->rate; }
+bool gs_stream_starved(gs_stream *s) {
+    SDL_LockMutex(s->lock);
+    bool starved = s->rebuffer && !s->started && s->played > 0 && !s->ended;
+    SDL_UnlockMutex(s->lock);
+    return starved;
+}
+
 double gs_stream_buffered(const gs_stream *s) { return (double)s->count / s->rate; }
 bool gs_stream_finished(const gs_stream *s) { return s->ended && s->count == 0; }

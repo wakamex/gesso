@@ -43,6 +43,7 @@ struct gs_live {
     // For the info.
     int segments, discontinuities, skips, stalls, renewals;
     double edge;               // seconds of playlist after what has been fetched, at the last poll
+    double margin;             // seconds behind the live edge it started at, which a stall refills
     bool held;                 // the sound waits for the first pictures, so both start together
     gs_live_state last_state;
     char message[160];
@@ -185,6 +186,11 @@ static int load(void *user) {
         if (next < 0 || next < m->sequence || next > m->sequence + m->count + 30) {
             if (next >= 0) l->skips++, shift = true;
             from = start_index(m, l->c.delay);
+            double margin = 0;
+            for (int k = from; k < m->count; k++) margin += m->segments[k].duration;
+            SDL_LockMutex(l->lock);
+            l->margin = margin;
+            SDL_UnlockMutex(l->lock);
         } else {
             from = (int)(next - m->sequence);
         }
@@ -275,7 +281,17 @@ static int decode_audio(void *user) {
     gs_aac_config config = { 0 };
     int rate = gs_mix_rate();
     float *lr = malloc(sizeof *lr * 2 * 8192);
-    for (packet *p; lr && (p = pop(l, &l->audio));) {
+    double cap = l->c.buffer > 0 ? l->c.buffer : 8;
+    for (packet *p; lr; ) {
+        // Ran dry at the live edge (a sound card a little faster than the stream, a slow network): wait
+        // until the margin it started with is queued again, so the next stall is far off rather than
+        // a moment away.
+        if (gs_stream_starved(l->stream)) {
+            SDL_LockMutex(l->lock);
+            while (!l->stopping && !l->loaded_all && !l->failed && queued_seconds(l) < fmin(l->margin, cap - 1)) SDL_WaitCondition(l->wake, l->lock);
+            SDL_UnlockMutex(l->lock);
+        }
+        if (!(p = pop(l, &l->audio))) break;
         if (!aac || memcmp(&config, &p->aac, sizeof config)) {  // a new stream (after an ad, say)
             gs_aac_free(aac);
             config = p->aac;

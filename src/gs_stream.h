@@ -32,3 +32,4 @@ void gs_stream_flush(gs_stream *s);  // drops the audio waiting to be played; wh
 // With rebuffering on, a stream that runs dry waits for its prebuffer again before playing on, rather
 // than playing each scrap as it arrives.
 void gs_stream_rebuffer(gs_stream *s, bool on);
+bool gs_stream_starved(gs_stream *s);  // it played, ran dry and is waiting for its prebuffer again

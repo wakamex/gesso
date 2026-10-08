@@ -56,12 +56,17 @@ void test_stream_clock(void) {
     // Rebuffering: a stream that runs dry waits for its prebuffer again.
     s = gs_stream_new(1000, 1.0, 0.1);
     gs_stream_rebuffer(s, true);
+    CHECK(!gs_stream_starved(s));  // not yet started is not starved
     gs_stream_write(s, buf, 100);
     gs_stream_render(s, buf, 100);  // plays the 100, runs dry
+    CHECK(gs_stream_starved(s));
     gs_stream_write(s, buf, 50);
     float out[2 * 50] = { 0 };
     out[0] = 0;
     gs_stream_render(s, out, 50);
     CHECK(gs_stream_position(s) == 0.1);  // waited: under the prebuffer
+    gs_stream_write(s, buf, 50);
+    gs_stream_render(s, out, 10);  // the prebuffer is in again: it plays
+    CHECK(!gs_stream_starved(s));
     gs_stream_free(s);
 }
