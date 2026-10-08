@@ -12,8 +12,19 @@
 #include <windows.h>
 #include <psapi.h>
 
+// PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1809 and later), which MinGW's headers lack.
+typedef struct {
+    DWORD cb, PageFaultCount;
+    SIZE_T PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage, QuotaPeakNonPagedPoolUsage,
+        QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage, PrivateUsage, PrivateWorkingSetSize;
+    ULONG64 SharedCommitUsage;
+} memory_counters;
+
+// The private working set: Task Manager's default memory column.
 uint64_t gs_process_ram(void) {
-    PROCESS_MEMORY_COUNTERS pmc;
+    memory_counters m = { .cb = sizeof m };
+    if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&m, sizeof m)) return m.PrivateWorkingSetSize;
+    PROCESS_MEMORY_COUNTERS pmc;  // older Windows: the whole working set
     return GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc) ? pmc.WorkingSetSize : 0;
 }
 
@@ -53,10 +64,11 @@ static uint64_t program_size(void) {
     return !_NSGetExecutablePath(path, &size) && !stat(path, &st) ? (uint64_t)st.st_size : 0;
 }
 
+// The physical footprint: Activity Monitor's memory column.
 uint64_t gs_process_ram(void) {
-    mach_task_basic_info_data_t info;
-    mach_msg_type_number_t n = MACH_TASK_BASIC_INFO_COUNT;
-    return task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &n) == KERN_SUCCESS ? info.resident_size : 0;
+    task_vm_info_data_t info;
+    mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
+    return task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &n) == KERN_SUCCESS ? info.phys_footprint : 0;
 }
 
 uint64_t gs_process_cpu_ns(void) {
@@ -74,9 +86,17 @@ static uint64_t program_size(void) {
     return !stat("/proc/self/exe", &st) ? (uint64_t)st.st_size : 0;
 }
 
+// The proportional set size: resident pages, with each shared page divided among the processes that map
+// it, so shared libraries and drivers count only in part. Linux before 4.14 lacks smaps_rollup; there it
+// is the resident set.
 uint64_t gs_process_ram(void) {
-    FILE *f = fopen("/proc/self/statm", "r");
-    unsigned long size, resident;
+    char line[128];
+    unsigned long kb = 0, size, resident;
+    FILE *f = fopen("/proc/self/smaps_rollup", "r");
+    while (f && fgets(line, sizeof line, f) && sscanf(line, "Pss: %lu kB", &kb) != 1) {}
+    if (f) fclose(f);
+    if (kb) return (uint64_t)kb * 1024;
+    f = fopen("/proc/self/statm", "r");
     int ok = f && fscanf(f, "%lu %lu", &size, &resident) == 2;
     if (f) fclose(f);
     return ok ? (uint64_t)resident * (uint64_t)sysconf(_SC_PAGESIZE) : 0;

@@ -14,7 +14,7 @@ typedef struct {
     double frame_max_ms;  // slowest frame in the last period
     double cpu_percent;  // process CPU time over wall time in the last CPU_WINDOW periods, 100 = one core; < 0 when unknown
     double audio_percent;  // time spent mixing over audio played; < 0 when no audio has played
-    uint64_t ram_bytes;  // resident memory; 0 when unknown
+    uint64_t ram_bytes;  // memory the process owns (see gs_process_ram); 0 when unknown
     // Accumulators.
     uint64_t period_start, frame_start, work_ns, work_max_ns;
     int frames;
@@ -30,8 +30,10 @@ void gs_stats_frame_end(gs_stats *s);
 // a negative x or y measures from the right or bottom edge instead. The box always stays on screen.
 void gs_stats_draw(const gs_stats *s, SDL_Renderer *r, float x, float y, const char *note);
 
-// Process figures on their own, for logging: resident memory in bytes and CPU time in ns
-// (0 when the platform does not report them).
+// Process figures on their own, for logging: memory in bytes and CPU time in ns (0 when the platform does
+// not report them). Memory is what each system's own monitor shows for the process, leaving out shared
+// pages such as GPU drivers and mapped fonts as far as the system can: the private working set on Windows,
+// the physical footprint on macOS, the proportional set size on Linux.
 uint64_t gs_process_ram(void);
 uint64_t gs_process_cpu_ns(void);
 uint64_t gs_program_bytes(void);  // the running program's file (0 on the web, where there is none)
