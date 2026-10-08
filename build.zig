@@ -188,6 +188,8 @@ pub fn build(b: *std.Build) void {
     mod.linkLibrary(opus);
     mod.addIncludePath(opus_src.path("include"));
     if (target.result.os.tag == .windows) for ([_][]const u8{ "winhttp", "crypt32" }) |l| mod.linkSystemLibrary(l, .{});
+    if (target.result.isGnuLibC() and target.result.os.versionRange().gnuLibCVersion().?.order(.{ .major = 2, .minor = 29, .patch = 0 }) == .lt)
+        mod.addCSourceFile(.{ .file = b.path("src/gs_glibc_compat.c"), .flags = flags });
     const av = if (video) addFfmpeg(b, target) else null;
     if (av) |a| {
         mod.linkLibrary(a.lib);
