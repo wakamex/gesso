@@ -282,15 +282,18 @@ static int decode_audio(void *user) {
     int rate = gs_mix_rate();
     float *lr = malloc(sizeof *lr * 2 * 8192);
     double cap = l->c.buffer > 0 ? l->c.buffer : 8;
+    bool refilled = false;
     for (packet *p; lr; ) {
         // Ran dry at the live edge (a sound card a little faster than the stream, a slow network): wait
-        // until the margin it started with is queued again, so the next stall is far off rather than
-        // a moment away.
-        if (gs_stream_starved(l->stream)) {
+        // once until the margin it started with is queued again, so the next stall is far off rather
+        // than a moment away, then decode freely until the stream plays again.
+        bool starved = gs_stream_starved(l->stream);
+        if (starved && !refilled) {
             SDL_LockMutex(l->lock);
             while (!l->stopping && !l->loaded_all && !l->failed && queued_seconds(l) < fmin(l->margin, cap - 1)) SDL_WaitCondition(l->wake, l->lock);
             SDL_UnlockMutex(l->lock);
         }
+        refilled = starved;
         if (!(p = pop(l, &l->audio))) break;
         if (!aac || memcmp(&config, &p->aac, sizeof config)) {  // a new stream (after an ad, say)
             gs_aac_free(aac);
