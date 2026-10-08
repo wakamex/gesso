@@ -39,13 +39,47 @@ float gs_text_width(const gs_font *f, float px, const char *utf8);
 // Next code point from UTF-8, advancing *s; returns 0 at the end.
 uint32_t gs_utf8_next(const char **s);
 
-// A chain of fonts tried in order for each character: a main font, then fallbacks for other scripts.
-// Fallbacks load on first need, so large CJK fonts cost memory only once such text appears. Scripts
-// that need shaping (Arabic, the Indic scripts) come out as separate, unjoined letters.
+// A chain of fonts tried in order for each character: a main font, then fallbacks for other scripts
+// and for emoji. Fallbacks load on first need, so large CJK fonts cost memory only once such text
+// appears. Text is shaped with kb_text_shape: Arabic letters join, Indic scripts reorder and combine,
+// ligatures and kerning apply, and a line mixing right-to-left and left-to-right text is laid out in
+// visual order. Lines drawn each frame are shaped once and kept.
 typedef struct gs_fontset gs_fontset;
 gs_fontset *gs_fontset_new(void);
-gs_fontset *gs_fontset_system(void);  // the platform's UI font with fallbacks for most scripts
+gs_fontset *gs_fontset_system(void);  // the platform's UI font with fallbacks for most scripts and emoji
 void gs_fontset_add(gs_fontset *fs, const char *path);  // missing files are skipped
 void gs_fontset_free(gs_fontset *fs);
 float gs_fontset_draw(gs_glyphs *g, gs_fontset *fs, float px, float x, float y, const char *utf8, SDL_FColor colour);
 float gs_fontset_width(gs_fontset *fs, float px, const char *utf8);
+
+// A shaped line: glyphs in visual order, each placed relative to the line's start on the baseline,
+// with the byte offset in the text of the character cluster it came from.
+typedef struct {
+    const gs_font *font;
+    int glyph;
+    float x, y, advance;
+    int cluster;
+    bool rtl;  // from a right-to-left run
+} gs_glyph_pos;
+
+typedef struct {
+    gs_glyph_pos *glyphs;
+    int count;
+    float width, px;
+    bool rtl;  // the line's own direction (from its first strong character)
+} gs_line;
+
+gs_line *gs_fontset_shape(gs_fontset *fs, float px, const char *utf8);  // free with gs_line_free
+void gs_line_free(gs_line *l);
+// The fontset's kept copy: valid until the next gs_fontset call.
+const gs_line *gs_fontset_line(gs_fontset *fs, float px, const char *utf8);
+float gs_line_draw(gs_glyphs *g, const gs_line *l, float x, float y, SDL_FColor colour);
+// Where a text cursor goes for a byte offset into the line's text, from the line's start.
+float gs_line_caret(const gs_line *l, int offset);
+// The byte offset of the cursor position nearest to x.
+int gs_line_hit(const gs_line *l, float x, const char *utf8);
+
+// The next or previous grapheme boundary from a byte offset: the steps a text cursor takes, so an
+// emoji sequence or a letter with its marks moves and deletes as one.
+int gs_utf8_grapheme_next(const char *utf8, int offset);
+int gs_utf8_grapheme_prev(const char *utf8, int offset);

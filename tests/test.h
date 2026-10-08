@@ -22,3 +22,4 @@ void test_json(void);
 void test_oauth(void);
 void test_secret(void);
 void test_stream(void);
+void test_text(void);

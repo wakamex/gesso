@@ -178,6 +178,8 @@ pub fn build(b: *std.Build) void {
     });
     mod.addIncludePath(b.path("src"));
     mod.addIncludePath(b.path("vendor/stb"));
+    mod.addIncludePath(b.path("vendor/kb"));
+    mod.addCSourceFile(.{ .file = b.path("src/gs_kb.c"), .flags = &.{ "-std=c11", "-w", "-fno-sanitize=undefined" } });
     mod.linkLibrary(sdl);
     mod.linkLibrary(opus);
     mod.addIncludePath(opus_src.path("include"));
@@ -197,10 +199,22 @@ pub fn build(b: *std.Build) void {
 
     // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "hls.c", "http.c", "json.c", "oauth.c", "secret.c", "stream.c" }, .flags = flags });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "hls.c", "http.c", "json.c", "oauth.c", "secret.c", "stream.c", "text.c" }, .flags = flags });
     tests.addIncludePath(b.path("src"));
     tests.linkLibrary(lib);
     b.step("test", "Run gesso's tests").dependOn(&b.addRunArtifact(b.addExecutable(.{ .name = "gesso-tests", .root_module = tests })).step);
+
+    // zig build bench-text -- OUT.png: a page of mixed scripts and emoji rendered with the system's fonts.
+    const text_bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    text_bench.addCSourceFile(.{ .file = b.path("bench/text.c"), .flags = flags });
+    text_bench.addIncludePath(b.path("src"));
+    text_bench.addIncludePath(b.path("vendor/stb"));
+    text_bench.linkLibrary(lib);
+    const text_exe = b.addExecutable(.{ .name = "bench-text", .root_module = text_bench });
+    const text_run = b.addRunArtifact(text_exe);
+    text_run.step.dependOn(&b.addInstallArtifact(text_exe, .{}).step);
+    if (b.args) |args| text_run.addArgs(args);
+    b.step("bench-text", "Render a test page of scripts and emoji to a PNG").dependOn(&text_run.step);
 
     // zig build bench-video -Dvideo -- FILE.h264: decoding paths compared on this machine (bench/video.c).
     if (av) |a| {
