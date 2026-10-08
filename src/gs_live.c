@@ -43,6 +43,7 @@ struct gs_live {
     // For the info.
     int segments, discontinuities, skips, stalls, renewals;
     double edge;               // seconds of playlist after what has been fetched, at the last poll
+    bool held;                 // the sound waits for the first pictures, so both start together
     gs_live_state last_state;
     char message[160];
 };
@@ -319,6 +320,7 @@ gs_live *gs_live_start(const gs_live_config *c) {
     if (l->stream) gs_stream_rebuffer(l->stream, true);
     if (c->video && c->renderer) l->video = gs_video_new(c->renderer, 6, 0);
     if (!l->lock || !l->wake || !l->stream || !l->headers || (c->video && !l->video)) return gs_live_stop(l), NULL;
+    if (l->video) gs_stream_pause(l->stream, l->held = true);
     gs_mix_add(gs_stream_render, l->stream);
     l->audio_thread = SDL_CreateThread(decode_audio, "live audio", l);
     if (l->video) l->video_thread = SDL_CreateThread(decode_video, "live video", l);
@@ -371,6 +373,8 @@ gs_live_info gs_live_get_info(gs_live *l) {
 
 SDL_Texture *gs_live_frame(gs_live *l, SDL_FRect *src) {
     if (!l->video) return NULL;
+    if (l->held && (gs_video_get_info(l->video).queued >= 3 || gs_stream_buffered(l->stream) >= AUDIO_SECONDS - 0.05))
+        gs_stream_pause(l->stream, l->held = false);  // pictures are ready (or the sound would wait in vain)
     double clock = gs_stream_clock(l->stream);
     return gs_video_frame(l->video, clock, src);
 }

@@ -428,6 +428,10 @@ SDL_Texture *gs_video_frame(gs_video *v, double clock, SDL_FRect *src) {
     SDL_LockMutex(v->lock);
     int taken = 0;
     while (taken < v->count && frame_seconds(v->queue[taken]) <= target) taken++;
+    // One new frame per call, unless the frames are a whole interval behind: a stream at the display's
+    // own rate then steps one frame a refresh even when its times sit on a refresh's edge, and only
+    // falling behind (a slow decoder, a stall) skips frames.
+    while (taken > 1 && target - frame_seconds(v->queue[1]) <= fmax(v->interval, 0.004)) taken--;
     if (taken) {
         for (int i = 0; i < taken - 1; i++) av_frame_free(&v->queue[i]);
         v->dropped += taken - 1;
