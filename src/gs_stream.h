@@ -20,3 +20,15 @@ bool gs_stream_paused(const gs_stream *s);
 double gs_stream_position(const gs_stream *s);  // seconds played
 double gs_stream_buffered(const gs_stream *s);  // seconds waiting
 bool gs_stream_finished(const gs_stream *s);    // ended and played out
+
+// Timestamps, for keeping video in step with the audio. gs_stream_write_at gives the presentation time
+// of its first frame (on any timeline, in seconds); later writes continue from it unless they say
+// otherwise. gs_stream_clock is the presentation time being heard now: frames played, less those still
+// waiting for the device (gs_mix_latency_frames), and advanced smoothly between the mixer's calls.
+// It is < 0 until timestamped audio is heard, and stands still while the stream is paused or starved.
+bool gs_stream_write_at(gs_stream *s, const float *lr, int frames, double pts);
+double gs_stream_clock(gs_stream *s);
+void gs_stream_flush(gs_stream *s);  // drops the audio waiting to be played; what is written next follows on
+// With rebuffering on, a stream that runs dry waits for its prebuffer again before playing on, rather
+// than playing each scrap as it arrives.
+void gs_stream_rebuffer(gs_stream *s, bool on);

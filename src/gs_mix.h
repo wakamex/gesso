@@ -25,6 +25,10 @@ void gs_mix_render(float *lr, int frames);
 // just after opening. For scopes, meters and visualizers.
 int gs_mix_recent(float *lr, int frames);
 
+// Frames mixed but not yet heard: those waiting in SDL's stream for the device, plus the device's own
+// buffer. 0 when no device is open (rendering offline).
+int gs_mix_latency_frames(void);
+
 // Time spent in gs_mix_render over the duration of the audio it produced, since the last call
 // (0.01 = mixing takes 1% of real time). Negative when nothing was rendered.
 double gs_mix_load(void);

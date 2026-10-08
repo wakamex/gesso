@@ -16,6 +16,7 @@ static struct {
     uint64_t busy_ns, rendered;  // for gs_mix_load
     struct { gs_mix_fn *fn; void *user; } src[MAX_SOURCES];
     uint64_t tapped;  // frames written to tap in all
+    int device_frames;  // the playback device's buffer
 } mix = { .rate = 48000, .volume = 1 };
 // Apart from mix, which has initial values and so is stored in the program file: zeros cost nothing.
 static float tap[TAP * 2];
@@ -59,6 +60,9 @@ bool gs_mix_open(int rate) {
     SDL_AudioSpec spec = { SDL_AUDIO_F32, 2, rate };
     mix.stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, feed, NULL);
     if (!mix.stream) return false;
+    SDL_AudioSpec device;
+    if (!SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(mix.stream), &device, &mix.device_frames)) mix.device_frames = 0;
+    else if (device.freq > 0 && device.freq != rate) mix.device_frames = (int)((int64_t)mix.device_frames * rate / device.freq);
     return SDL_ResumeAudioStreamDevice(mix.stream);
 }
 
@@ -83,6 +87,11 @@ void gs_mix_close(void) {
 }
 
 int gs_mix_rate(void) { return mix.rate; }
+
+int gs_mix_latency_frames(void) {
+    if (!mix.stream) return 0;
+    return SDL_GetAudioStreamQueued(mix.stream) / (int)(2 * sizeof(float)) + mix.device_frames;
+}
 void gs_mix_lock(void) { if (mix.stream) SDL_LockAudioStream(mix.stream); }
 void gs_mix_unlock(void) { if (mix.stream) SDL_UnlockAudioStream(mix.stream); }
 

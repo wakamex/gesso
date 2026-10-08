@@ -11,6 +11,7 @@ static const struct { const char *name; void (*run)(void); } tests[] = {
     { "gs_oauth", test_oauth },
     { "gs_secret", test_secret },
     { "gs_stream", test_stream },
+    { "gs_stream clock", test_stream_clock },
     { "gs_text", test_text },
     { "gs_ui", test_ui },
 };
