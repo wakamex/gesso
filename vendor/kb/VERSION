@@ -1,0 +1,7 @@
+kb_text_shape 2.28e, JimmyLefevre/kb 50dc65890f27cb8a77c216d9635a0fdf10787318
+Patched in gesso: kbts__ItemVariationStoreDelta returns 0 for an outer index past the item
+variation store (such as NO_VARIATION_INDEX, 0xFFFF), an absent data table, or an inner index
+past the data's items, instead of reading past the font (crashed on Noto Sans's variable GPOS).
+Patched in gesso: in kbts_GraphemeBreakTransition, an Extended_Pictographic after Extend* ZWJ now
+moves to the ExtendedPictographic state instead of START, so emoji ZWJ sequences of three or more
+(families) stay one grapheme (Unicode rule GB11).
