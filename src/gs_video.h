@@ -48,3 +48,5 @@ typedef struct {
 } gs_video_info;
 
 gs_video_info gs_video_get_info(gs_video *v);
+
+const char *gs_video_library(void);  // the FFmpeg release decoding video, such as "9.0.2", for an about screen

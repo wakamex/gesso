@@ -2,6 +2,7 @@
 #include "gs_video.h"
 
 #include <libavcodec/avcodec.h>
+#include <libavutil/avutil.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
 #include <math.h>
@@ -489,3 +490,5 @@ gs_video_info gs_video_get_info(gs_video *v) {
     SDL_UnlockMutex(v->lock);
     return i;
 }
+
+const char *gs_video_library(void) { return av_version_info(); }
