@@ -25,7 +25,7 @@ typedef struct {
     int timeout_ms;                // the whole request's limit (gs_http_fetch); 0 means 30 s
 } gs_http_request;
 
-// The response's HTTP status, or 0 when there was no response. Its body goes to r->to, or into
+// The response's HTTP status, or 0 when there was no response (a file: URL read through libcurl gives 200). Its body goes to r->to, or into
 // *body (SDL_free it; zero-terminated, *len bytes) when body is not NULL, or is dropped.
 int gs_http_fetch(const gs_http_request *r, char **body, size_t *len);
 

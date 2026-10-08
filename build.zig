@@ -192,7 +192,7 @@ pub fn build(b: *std.Build) void {
     if (av) |a| {
         mod.linkLibrary(a.lib);
         for (a.include) |dir| mod.addIncludePath(dir);
-        mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_video.c", "gs_aac.c" }, .flags = flags });
+        mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_video.c", "gs_aac.c", "gs_live.c" }, .flags = flags });
     }
 
     const lib = b.addLibrary(.{ .name = "gesso", .linkage = .static, .root_module = mod });
@@ -203,7 +203,7 @@ pub fn build(b: *std.Build) void {
 
     // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "hls.c", "http.c", "json.c", "media.c", "oauth.c", "secret.c", "stream.c", "text.c", "ui.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "hls.c", "http.c", "json.c", "live.c", "media.c", "oauth.c", "secret.c", "stream.c", "text.c", "ui.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
     tests.addIncludePath(b.path("src"));
     if (av) |a| for (a.include) |dir| tests.addIncludePath(dir);
     tests.linkLibrary(lib);

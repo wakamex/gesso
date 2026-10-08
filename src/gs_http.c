@@ -266,7 +266,10 @@ static int fetch_with_libcurl(const gs_http_request *r, char **body, size_t *len
     lib.easy_setopt(h, WRITEFUNCTION, take_sink);
     lib.easy_setopt(h, WRITEDATA, &s);
     long status = 0;
-    if (lib.easy_perform(h) == 0) lib.easy_getinfo(h, RESPONSE_CODE, &status);
+    if (lib.easy_perform(h) == 0) {
+        lib.easy_getinfo(h, RESPONSE_CODE, &status);
+        if (!status && !SDL_strncasecmp(r->url, "file:", 5)) status = 200;  // (a local file read has no HTTP status)
+    }
     if (r->cookies && r->save_cookies) lib.easy_reset(h);  // writes the cookie jar now
     lib.slist_free_all(headers);
     return sink_finish(&s, (int)status, body, len);

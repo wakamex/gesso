@@ -7,6 +7,7 @@ static const struct { const char *name; void (*run)(void); } tests[] = {
     { "gs_hls", test_hls },
     { "gs_http", test_http },
     { "gs_json", test_json },
+    { "gs_live", test_live },
     { "gs_media", test_media },
     { "gs_oauth", test_oauth },
     { "gs_secret", test_secret },
