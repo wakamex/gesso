@@ -41,6 +41,10 @@ typedef struct {
     int queued;            // frames decoded and waiting
     long long decoded, shown, dropped;
     double next_pts;       // of the oldest waiting frame; < 0 when none waits
+    // Over the last whole second: how far each new frame's time was from the clock when it was shown
+    // (mean and largest, in ms; positive when shown late), and how far the time between new frames
+    // strayed from the time between their timestamps (mean, in ms): the jitter a viewer sees.
+    double error_ms, error_max_ms, jitter_ms;
 } gs_video_info;
 
 gs_video_info gs_video_get_info(gs_video *v);

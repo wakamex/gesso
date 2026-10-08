@@ -2,7 +2,7 @@
 // decoded (gs_aac, and gs_video when asked for video) and played through gs_mix, with the video shown
 // by the audio's clock. Every stream is put on one continuous timeline: at a discontinuity (an ad,
 // say) the new segment's times are shifted to continue where the last ended, so the clock never jumps.
-// It starts a few segments behind the live edge, skips ahead if it falls out of the playlist, asks the
+// It starts a few segments behind the live edge (at the start of a complete playlist), skips ahead if it falls out of the playlist, asks the
 // app for a fresh playlist URL when the old one stops working, and rebuffers when the network stalls.
 // The app opens the mixer (gs_mix_open) and sets the volume there. Needs gesso built with -Dvideo.
 #pragma once

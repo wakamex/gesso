@@ -124,8 +124,10 @@ static int fetch(gs_live *l, const char *url, char **body, size_t *len) {
     return gs_http_fetch(&r, body, len);
 }
 
-// The index of the segment to start at: about `delay` seconds of segments before the live edge.
+// The index of the segment to start at: about `delay` seconds of segments before the live edge, or
+// the first segment of a playlist that is complete (EXT-X-ENDLIST: a recording, not a live stream).
 static int start_index(const gs_hls_media *m, double delay) {
+    if (m->ended) return 0;
     if (delay <= 0) delay = 0;
     double sum = 0;
     int i = m->count;

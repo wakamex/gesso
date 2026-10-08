@@ -14,7 +14,7 @@ extern const char *test_streams;
 static void play(const char *playlist) {
     char url[1200];
     SDL_snprintf(url, sizeof url, "file://%s/%s", test_streams, playlist);
-    gs_live *l = gs_live_start(&(gs_live_config){ .url = url, .delay = 100 });  // (from the first segment)
+    gs_live *l = gs_live_start(&(gs_live_config){ .url = url });  // (complete playlists play from their start)
     CHECK(l != NULL);
     if (!l) return;
     static float lr[2 * 1024];

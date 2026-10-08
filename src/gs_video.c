@@ -52,6 +52,11 @@ struct gs_video {
     long long decoded, shown, dropped;
     uint64_t last_call;      // when gs_video_frame was last called
     double interval;         // the time between calls (the display's refresh, when drawing every frame), averaged
+    // Timing of the frames shown: this second's sums, and the last whole second's results.
+    uint64_t window_start, last_shown_ns;
+    double last_shown_pts, error_sum, error_max, jitter_sum;
+    int timed;
+    double error_ms, error_max_ms, jitter_ms;
 #if defined(__linux__)
     PFNEGLCREATEIMAGEPROC egl_create_image;
     PFNEGLDESTROYIMAGEPROC egl_destroy_image;
@@ -434,6 +439,17 @@ SDL_Texture *gs_video_frame(gs_video *v, double clock, SDL_FRect *src) {
     SDL_UnlockMutex(v->lock);
     if (next) {
         if (show(v, next)) {
+            // Its timing: the clock against its time, and its spacing from the last against theirs.
+            double pts = frame_seconds(next), error = (clock - pts) * 1000;
+            v->error_sum += fabs(error), v->timed++;
+            if (fabs(error) > fabs(v->error_max)) v->error_max = error;
+            if (v->last_shown_ns && pts > v->last_shown_pts) v->jitter_sum += fabs((now - v->last_shown_ns) / 1e6 - (pts - v->last_shown_pts) * 1000);
+            v->last_shown_ns = now, v->last_shown_pts = pts;
+            if (!v->window_start) v->window_start = now;
+            if (now - v->window_start >= 1000000000u) {
+                v->error_ms = v->error_sum / v->timed, v->error_max_ms = v->error_max, v->jitter_ms = v->timed > 1 ? v->jitter_sum / (v->timed - 1) : 0;
+                v->error_sum = v->error_max = v->jitter_sum = 0, v->timed = 0, v->window_start = now;
+            }
             av_frame_free(&v->current);
             v->current = next;
             v->shown++;
@@ -457,6 +473,7 @@ gs_video_info gs_video_get_info(gs_video *v) {
         .queued = v->count,
         .decoded = v->decoded, .shown = v->shown, .dropped = v->dropped,
         .next_pts = v->count ? frame_seconds(v->queue[0]) : -1,
+        .error_ms = v->error_ms, .error_max_ms = v->error_max_ms, .jitter_ms = v->jitter_ms,
     };
     SDL_UnlockMutex(v->lock);
     return i;
