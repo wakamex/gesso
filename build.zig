@@ -4,6 +4,7 @@
 //   zig build                              native debug build of the library into zig-out/
 //   zig build -Dtarget=x86_64-windows-gnu  Windows build from any host
 //   zig build -Dvideo                      also the video modules, on a trimmed FFmpeg libavcodec
+//   zig build test                         run the tests
 const std = @import("std");
 
 pub const flags: []const []const u8 = &.{ "-std=c11", "-ffp-contract=off", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-missing-field-initializers" };
@@ -192,6 +193,13 @@ pub fn build(b: *std.Build) void {
     lib.installHeadersDirectory(b.path("vendor/stb"), "", .{ .include_extensions = &.{".h"} });
     lib.installLibraryHeaders(sdl);
     b.installArtifact(lib);
+
+    // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
+    const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "json.c", "stream.c" }, .flags = flags });
+    tests.addIncludePath(b.path("src"));
+    tests.linkLibrary(lib);
+    b.step("test", "Run gesso's tests").dependOn(&b.addRunArtifact(b.addExecutable(.{ .name = "gesso-tests", .root_module = tests })).step);
 
     // zig build bench-video -Dvideo -- FILE.h264: decoding paths compared on this machine (bench/video.c).
     if (av) |a| {
