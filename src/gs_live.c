@@ -194,7 +194,8 @@ static bool watch_download(void *user, size_t received, long long total) {
     if (received && !w->first) w->first = now_seconds();  // (throughput counts from the first byte, past the round trip)
     w->bytes = (double)received;
     if (total > 0) w->expected = (double)total;
-    if (gs_abr_abandon(&w->l->abr, w->bytes, w->expected, now_seconds() - w->start, w->buffered, w->duration)) return !(w->gave_up = true);
+    double now = now_seconds();
+    if (gs_abr_abandon(&w->l->abr, w->bytes, w->expected, now - w->start, w->first ? now - w->first : 0, w->buffered, w->duration)) return !(w->gave_up = true);
     SDL_LockMutex(w->l->lock);
     bool go = !w->l->stopping;  // (a stop need not wait for the download)
     SDL_UnlockMutex(w->l->lock);

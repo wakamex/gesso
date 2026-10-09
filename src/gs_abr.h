@@ -34,9 +34,10 @@ double gs_abr_estimate(const gs_abr *a);  // bits a second
 int gs_abr_next(gs_abr *a, double buffered, double segment, double now);
 // During a download: whether to give it up and fetch the segment from the rendition below instead.
 // It is given up when it will not finish within the time left (what is buffered less a second, or
-// one segment's length if that is more) and the rendition below would finish sooner.
-// `expected` is the download's size in bytes, or <= 0 when unknown.
-bool gs_abr_abandon(const gs_abr *a, double bytes, double expected, double elapsed, double buffered, double segment);
+// one segment's length if that is more) and the rendition below would finish sooner. `elapsed` is
+// the time since the request and `flowing` the time since its first byte (0 before it), so a slow
+// first byte does not pass for a slow link; `expected` is the size in bytes, or <= 0 when unknown.
+bool gs_abr_abandon(const gs_abr *a, double bytes, double expected, double elapsed, double flowing, double buffered, double segment);
 // After giving a download up: counts what arrived and returns the level to fetch the segment from,
 // at least one below (a switch, like a step down from gs_abr_next).
 int gs_abr_give_up(gs_abr *a, double bytes, double seconds, double media, double now);

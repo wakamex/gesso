@@ -62,13 +62,13 @@ int gs_abr_next(gs_abr *a, double buffered, double segment, double now) {
     return a->level;
 }
 
-bool gs_abr_abandon(const gs_abr *a, double bytes, double expected, double elapsed, double buffered, double segment) {
+bool gs_abr_abandon(const gs_abr *a, double bytes, double expected, double elapsed, double flowing, double buffered, double segment) {
     if (a->level == 0 || elapsed < 0.5) return false;
     if (expected <= 0) expected = a->bitrates[a->level] / 8.0 * segment;  // (its rendition's rate for a segment's length)
-    double rate = bytes / elapsed;  // bytes a second so far
-    if (rate <= 0) return elapsed > fmax(buffered - 1, segment);
-    double left = (expected - bytes) / rate;
     double budget = fmax(buffered - 1, segment);
+    if (flowing < 0.25 || bytes <= 0) return elapsed > budget;  // too little flowing yet to judge the rate: only a deadline already missed
+    double rate = bytes / flowing;  // bytes a second since the first byte
+    double left = (expected - bytes) / rate;
     double lower = expected * (double)a->bitrates[a->level - 1] / (double)a->bitrates[a->level] / rate;
     return elapsed + left > budget && lower < left;
 }
