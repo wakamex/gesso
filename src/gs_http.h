@@ -23,6 +23,11 @@ typedef struct {
     bool compressed;               // accept a compressed response
     const char *to;                // save the response's body to this file
     int timeout_ms;                // the whole request's limit (gs_http_fetch); 0 means 30 s
+    // gs_http_fetch calls this as the body arrives, with the bytes received so far and the body's
+    // whole length (-1 when the server does not say), and through libcurl also about once a second
+    // while nothing arrives; returning false gives the request up, which then returns 0. Or NULL.
+    bool (*progress)(void *user, size_t received, long long total);
+    void *progress_user;
 } gs_http_request;
 
 // The response's HTTP status, or 0 when there was no response (a file: URL read through libcurl gives 200). Its body goes to r->to, or into

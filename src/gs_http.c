@@ -17,10 +17,13 @@ SDL_Process *gs_http_spawn(SDL_PropertiesID props) {
 
 static size_t body_length(const gs_http_request *r) { return r->body ? (r->body_len ? r->body_len : strlen(r->body)) : 0; }
 
-// A growing buffer for a response body, or a file it is written to.
-typedef struct { FILE *file; char *data; size_t len, cap; bool failed; } sink;
+// A growing buffer for a response body, or a file it is written to; with `request` set, its
+// progress hook hears of each addition (the backends without a progress callback of their own).
+typedef struct { FILE *file; char *data; size_t len, cap, received; bool failed; const gs_http_request *request; long long total; } sink;
 
 static bool sink_add(sink *s, const void *data, size_t n) {
+    s->received += n;
+    if (s->request && s->request->progress && !s->request->progress(s->request->progress_user, s->received, s->total)) return !(s->failed = true);
     if (s->file) return s->failed = s->failed || fwrite(data, 1, n, s->file) != n, !s->failed;
     if (s->len + n + 1 > s->cap) {
         size_t cap = (s->len + n + 1) * 2;
@@ -163,7 +166,7 @@ static bool to_sink(void *user, const uint8_t *data, size_t len) { return sink_a
 static int fetch_with_curl(const gs_http_request *r, char **body, size_t *len) {
     SDL_Process *proc = start_curl(r, false, 0, r->follow);
     if (!proc) return 0;
-    sink s = { 0 };
+    sink s = { .request = r, .total = -1 };
     if (r->to && !(s.file = fopen(r->to, "wb"))) return SDL_KillProcess(proc, true), SDL_DestroyProcess(proc), 0;
     int status = read_curl(proc, r->follow, to_sink, &s, NULL);
     SDL_DestroyProcess(proc);
@@ -255,10 +258,22 @@ static size_t take_sink(const char *data, size_t size, size_t count, void *user)
     return sink_add(user, data, size * count) ? size * count : 0;
 }
 
+// libcurl's progress callback, for a request's progress hook: nonzero gives the request up.
+static int report(void *user, long long dltotal, long long dlnow, long long ultotal, long long ulnow) {
+    const gs_http_request *r = user;
+    (void)ultotal, (void)ulnow;
+    return !r->progress(r->progress_user, (size_t)dlnow, dltotal > 0 ? dltotal : -1);
+}
+
 static int fetch_with_libcurl(const gs_http_request *r, char **body, size_t *len) {
     void *h = handle();
     if (!h) return 0;
     sink s = { 0 };
+    if (r->progress) {
+        lib.easy_setopt(h, NOPROGRESS, 0L);
+        lib.easy_setopt(h, XFERINFOFUNCTION, report);
+        lib.easy_setopt(h, XFERINFODATA, (void *)r);
+    }
     if (r->to && !(s.file = fopen(r->to, "wb"))) return 0;
     void *headers = common_options(h, r);
     if (r->follow) lib.easy_setopt(h, FOLLOWLOCATION, 1L);
@@ -351,7 +366,7 @@ static int fetch_with_winhttp(const gs_http_request *r, char **body, size_t *len
     HINTERNET q = c ? WinHttpOpenRequest(c, wmethod, u.lpszUrlPath, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                          u.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0) : NULL;
     SDL_free(wmethod);
-    sink s_body = { 0 };
+    sink s_body = { .request = r, .total = -1 };
     int status = 0;
     if (q && (!r->to || (s_body.file = fopen(r->to, "wb")))) {
         int total = r->timeout_ms ? r->timeout_ms : DEFAULT_TIMEOUT_MS;
@@ -374,6 +389,10 @@ static int fetch_with_winhttp(const gs_http_request *r, char **body, size_t *len
             DWORD code = 0, size = sizeof code;
             if (WinHttpQueryHeaders(q, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &code, &size, WINHTTP_NO_HEADER_INDEX))
                 status = (int)code;
+            wchar_t length[32];
+            DWORD lsize = sizeof length;
+            if (WinHttpQueryHeaders(q, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, length, &lsize, WINHTTP_NO_HEADER_INDEX))
+                s_body.total = (long long)wcstoll(length, NULL, 10);
             char buf[65536];
             DWORD got = 0;
             BOOL read = TRUE;

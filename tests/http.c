@@ -12,10 +12,35 @@ static bool count(void *user, const uint8_t *data, size_t len) {
     return *(size_t *)user < 20000;  // ends the transfer early
 }
 
+typedef struct { size_t calls, last, stop_after; long long total; } progress_log;
+
+static bool note_progress(void *user, size_t received, long long total) {
+    progress_log *p = user;
+    p->calls++, p->last = received, p->total = total;
+    return !p->stop_after || received < p->stop_after;
+}
+
+extern const char *test_streams;
+
 void test_http(void) {
-    if (!SDL_GetHintBoolean("GS_TEST_NETWORK", false)) return;
     char *body = NULL;
     size_t len = 0;
+#ifndef _WIN32
+    // The progress hook, on a local file (WinHTTP has no file URLs): it hears the bytes arrive, and
+    // giving up makes the request return 0.
+    if (test_streams && !SDL_GetHintBoolean("GS_HTTP_CURL_PROGRAM", false)) {  // (the curl program gives a file no status)
+        char url[1200];
+        SDL_snprintf(url, sizeof url, "file://%s/beep.ts", test_streams);
+        progress_log p = { 0 };
+        CHECK(gs_http_fetch(&(gs_http_request){ .url = url, .progress = note_progress, .progress_user = &p }, &body, &len) == 200);
+        CHECK(p.calls > 0 && p.last == len);
+        SDL_free(body), body = NULL;
+        p = (progress_log){ .stop_after = 1 };
+        CHECK(gs_http_fetch(&(gs_http_request){ .url = url, .progress = note_progress, .progress_user = &p }, &body, &len) == 0);
+        CHECK(body == NULL);
+    }
+#endif
+    if (!SDL_GetHintBoolean("GS_TEST_NETWORK", false)) return;
 
     // A POST with headers, read back from the echo.
     const char *headers[] = { "Authorization: Bearer secret-token", "Content-Type: application/x-www-form-urlencoded", NULL };
@@ -51,4 +76,12 @@ void test_http(void) {
     SDL_AtomicInt stop = { 0 };
     CHECK(gs_http_stream(&(gs_http_request){ .url = "https://httpbin.org/bytes/100000" }, 0, count, &got, &stop) == 200);
     CHECK(got >= 20000 && got < 100000);
+
+    // The progress hook over the network: the whole length is known, and giving up returns 0.
+    progress_log p = { 0 };
+    CHECK(gs_http_fetch(&(gs_http_request){ .url = "https://httpbin.org/bytes/100000", .progress = note_progress, .progress_user = &p }, &body, &len) == 200);
+    CHECK(p.last == 100000 && (p.total == 100000 || p.total == -1) && len == 100000);  // (the curl program does not pass the length on)
+    SDL_free(body), body = NULL;
+    p = (progress_log){ .stop_after = 20000 };
+    CHECK(gs_http_fetch(&(gs_http_request){ .url = "https://httpbin.org/bytes/100000", .progress = note_progress, .progress_user = &p }, &body, &len) == 0);
 }
