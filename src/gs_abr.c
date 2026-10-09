@@ -2,11 +2,9 @@
 
 #include <math.h>
 
-#define FAST_HALF_LIFE 3.0
-#define SLOW_HALF_LIFE 9.0
-#define SAFETY 0.7        // the share of the estimate a rendition may use
-#define UP_WAIT 15.0      // seconds after a switch before stepping up
-#define UP_WAIT_MAX 120.0
+#define SAFETY 0.7               // the share of the estimate a rendition may use (ExoPlayer's)
+#define UP_BUFFERED 10.0         // seconds buffered before a step up (ExoPlayer's)
+#define UP_LIVE_SHARE 0.75       // ...or this share of the time to the live edge, less a segment
 
 static int fitting(const gs_abr *a, double estimate) {
     int level = 0;
@@ -16,49 +14,30 @@ static int fitting(const gs_abr *a, double estimate) {
 }
 
 void gs_abr_init(gs_abr *a, const long long *bitrates, int count, double start) {
-    *a = (gs_abr){ .count = count < 16 ? count : 16, .start = start, .up_wait = UP_WAIT, .last_switch = -INFINITY, .last_up = -INFINITY };
+    *a = (gs_abr){ .count = count < 16 ? count : 16, .start = start };
     for (int i = 0; i < a->count; i++) a->bitrates[i] = bitrates[i];
     a->level = fitting(a, start);
 }
 
-// An exponentially weighted average in which each sample counts for its weight in seconds. (By
-// download time alone, as hls.js weighs, a low rendition's small, quick downloads barely move it,
-// and recovering from a slow spell took half a minute; by media alone, falling is slow.)
-static double blend(double average, double sample, double weight, double half_life) {
-    double keep = pow(0.5, weight / half_life);
-    return average * keep + sample * (1 - keep);
-}
-
-void gs_abr_sample(gs_abr *a, double bytes, double seconds, double media) {
-    if (bytes <= 0 || seconds <= 0 || media <= 0) return;
-    double rate = bytes * 8 / seconds, weight = seconds > media ? seconds : media;
-    a->fast = blend(a->fast, rate, weight, FAST_HALF_LIFE);
-    a->slow = blend(a->slow, rate, weight, SLOW_HALF_LIFE);
-    a->weight += weight;
+void gs_abr_sample(gs_abr *a, double bytes, double seconds) {
+    if (bytes <= 0 || seconds <= 0) return;
+    a->samples[a->next_sample] = bytes * 8 / seconds;
+    a->next_sample = (a->next_sample + 1) % 5;
+    if (a->nsamples < 5) a->nsamples++;
 }
 
 double gs_abr_estimate(const gs_abr *a) {
-    if (a->weight <= 0) return a->start;
-    // The averages start from zero; dividing by the weight they have gathered removes that pull.
-    double fast = a->fast / (1 - pow(0.5, a->weight / FAST_HALF_LIFE));
-    double slow = a->slow / (1 - pow(0.5, a->weight / SLOW_HALF_LIFE));
-    return fast < slow ? fast : slow;
+    if (!a->nsamples) return a->start;
+    double inverse = 0;
+    for (int i = 0; i < a->nsamples; i++) inverse += 1 / a->samples[i];
+    return a->nsamples / inverse;
 }
 
-static void step_down(gs_abr *a, int level, double now) {
-    if (now - a->last_up < a->up_wait) a->up_wait = fmin(a->up_wait * 2, UP_WAIT_MAX);  // the step up did not hold
-    a->level = level, a->last_switch = now, a->switches++;
-}
-
-int gs_abr_next(gs_abr *a, double buffered, double segment, double now) {
+int gs_abr_next(gs_abr *a, double buffered, double live, double segment) {
     if (a->count < 2) return a->level;
     int fit = fitting(a, gs_abr_estimate(a));
-    if (fit < a->level) {
-        step_down(a, fit, now);
-    } else if (fit > a->level && buffered >= 2 * segment && now - a->last_switch >= a->up_wait) {
-        if (now - a->last_up >= 2 * a->up_wait) a->up_wait = UP_WAIT;  // the last step up held: back to the usual wait
-        a->level++, a->last_switch = a->last_up = now, a->switches++;
-    }
+    double needed = live > 0 ? fmin(UP_BUFFERED, UP_LIVE_SHARE * (live - segment)) : UP_BUFFERED;
+    if (fit < a->level || (fit > a->level && buffered >= needed)) a->level = fit, a->switches++;
     return a->level;
 }
 
@@ -73,9 +52,9 @@ bool gs_abr_abandon(const gs_abr *a, double bytes, double expected, double elaps
     return elapsed + left > budget && lower < left;
 }
 
-int gs_abr_give_up(gs_abr *a, double bytes, double seconds, double media, double now) {
-    gs_abr_sample(a, bytes, seconds, media);
+int gs_abr_give_up(gs_abr *a, double bytes, double seconds) {
+    gs_abr_sample(a, bytes, seconds);
     int fit = fitting(a, gs_abr_estimate(a));
-    if (a->level > 0) step_down(a, fit < a->level ? fit : a->level - 1, now);
+    if (a->level > 0) a->level = fit < a->level ? fit : a->level - 1, a->switches++;
     return a->level;
 }

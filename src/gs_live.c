@@ -285,7 +285,11 @@ static int load(void *user) {
         for (int i = from; i < m->count && rest(l, 0); i++) {
             const gs_hls_segment *s = &m->segments[i];
             if (l->rungs > 1) {
-                int want = gs_abr_next(&l->abr, buffered_seconds(l), s->duration, now_seconds());
+                double buffered = buffered_seconds(l);
+                SDL_LockMutex(l->lock);
+                double live = m->ended ? 0 : l->edge + buffered;  // (from the play position to the live edge)
+                SDL_UnlockMutex(l->lock);
+                int want = gs_abr_next(&l->abr, buffered, live, s->duration);
                 if (want != l->rung) {
                     use_rung(l, want);
                     next = s->sequence, again = switched = true;
@@ -304,13 +308,12 @@ static int load(void *user) {
                 double took = now_seconds() - (w.first ? w.first : w.start);
                 if (took < 0.01) took = now_seconds() - w.start;  // (all of it in the first read: count the whole request)
                 if (w.gave_up) {  // too slow: the same segment from a lower rendition
-                    double share = w.expected > 0 ? w.bytes / w.expected : 0;
-                    use_rung(l, gs_abr_give_up(&l->abr, w.bytes, took, s->duration * share, now_seconds()));
+                    use_rung(l, gs_abr_give_up(&l->abr, w.bytes, took));
                     next = s->sequence, again = switched = true;
                     break;
                 }
                 if (got == 200 && l->rungs > 1) {
-                    gs_abr_sample(&l->abr, (double)dlen, took, s->duration);
+                    gs_abr_sample(&l->abr, (double)dlen, took);
                     SDL_LockMutex(l->lock);
                     l->bandwidth = gs_abr_estimate(&l->abr);
                     SDL_UnlockMutex(l->lock);
