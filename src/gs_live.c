@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "gs_aac.h"
+#include "gs_abr.h"
 #include "gs_http.h"
 #include "gs_mix.h"
 #include "gs_mp4.h"
@@ -44,6 +45,12 @@ struct gs_live {
     int segments, discontinuities, skips, stalls, renewals;
     double edge;               // seconds of playlist after what has been fetched, at the last poll
     double margin;             // seconds behind the live edge it started at, which a stall refills
+    // Adaptive play, from a master playlist: its video renditions by bitrate (lowest first), the one
+    // in use, and the policy choosing (gs_abr, the loader's alone; the estimate is copied out under lock).
+    gs_hls_variant ladder[16];
+    int rungs, rung, switches;
+    gs_abr abr;
+    double bandwidth;
     bool held;                 // the sound waits for the first pictures, so both start together
     gs_live_state last_state;
     char message[160];
@@ -121,10 +128,86 @@ static void collect(void *user, const gs_media_frame *f) {
     if (f->pts < s->first) s->first = f->pts;
 }
 
-static int fetch(gs_live *l, const char *url, char **body, size_t *len) {
-    gs_http_request r = { .url = url, .agent = l->c.agent, .headers = (const char *const *)l->headers, .follow = true, .timeout_ms = 15000 };
+
+static double now_seconds(void) { return (double)SDL_GetTicksNS() / 1e9; }
+
+// Seconds of media waiting to be heard: decoded audio and fetched media.
+static double buffered_seconds(gs_live *l) {
+    double audio = gs_stream_buffered(l->stream);
+    SDL_LockMutex(l->lock);
+    double fetched = queued_seconds(l);
+    SDL_UnlockMutex(l->lock);
+    return audio + fetched;
+}
+
+// Plays the ladder's rendition `rung` from the next playlist fetch on.
+static void use_rung(gs_live *l, int rung) {
+    SDL_LockMutex(l->lock);
+    l->rung = rung, l->switches = l->abr.switches, l->bandwidth = gs_abr_estimate(&l->abr);
+    SDL_strlcpy(l->url, l->ladder[rung].url, sizeof l->url);
+    SDL_UnlockMutex(l->lock);
+}
+
+// Reads a master playlist's video renditions into the ladder, lowest bitrate first, and moves on to
+// one of them: the first time the one gs_abr starts with, after a renewal the same size and frame
+// rate as before (or the next lower bitrate). False when the text is not a master playlist.
+static bool read_master(gs_live *l, const char *text, size_t len) {
+    gs_hls_variant *all = malloc(sizeof *all * 32);
+    int n = all ? gs_hls_master(text, len, l->url, all, 32) : -1;
+    if (n > 32) n = 32;
+    gs_hls_variant ladder[16];
+    int rungs = 0;
+    for (int i = 0; i < n; i++) {
+        if (all[i].audio_only || rungs == 16) continue;
+        int k = rungs++;
+        for (; k > 0 && ladder[k - 1].bandwidth > all[i].bandwidth; k--) ladder[k] = ladder[k - 1];
+        ladder[k] = all[i];
+    }
+    free(all);
+    if (!rungs) return false;
+    long long rates[16];
+    for (int i = 0; i < rungs; i++) rates[i] = ladder[i].bandwidth;
+    int rung = 0;
+    if (!l->rungs) {
+        gs_abr_init(&l->abr, rates, rungs, l->c.start_bandwidth > 0 ? l->c.start_bandwidth : 2.5e6);
+        rung = l->abr.level;
+    } else {  // renewed: the same rendition again, keeping what the policy has learned
+        const gs_hls_variant *was = &l->ladder[l->rung];
+        for (int i = 0; i < rungs; i++)
+            if ((ladder[i].height == was->height && fabs(ladder[i].fps - was->fps) < 1) || ladder[i].bandwidth <= was->bandwidth) rung = i;
+        for (int i = 0; i < rungs; i++) l->abr.bitrates[i] = rates[i];
+        l->abr.count = rungs, l->abr.level = rung;
+    }
+    SDL_LockMutex(l->lock);
+    memcpy(l->ladder, ladder, sizeof ladder[0] * (size_t)rungs);
+    l->rungs = rungs;
+    SDL_UnlockMutex(l->lock);
+    use_rung(l, rung);
+    return true;
+}
+
+// A segment's download as it arrives, for giving it up when it would come too late (adaptive).
+typedef struct { gs_live *l; double start, first, buffered, duration, expected, bytes; bool gave_up; } watch;
+
+static bool watch_download(void *user, size_t received, long long total) {
+    watch *w = user;
+    if (received && !w->first) w->first = now_seconds();  // (throughput counts from the first byte, past the round trip)
+    w->bytes = (double)received;
+    if (total > 0) w->expected = (double)total;
+    if (gs_abr_abandon(&w->l->abr, w->bytes, w->expected, now_seconds() - w->start, w->buffered, w->duration)) return !(w->gave_up = true);
+    SDL_LockMutex(w->l->lock);
+    bool go = !w->l->stopping;  // (a stop need not wait for the download)
+    SDL_UnlockMutex(w->l->lock);
+    return go;
+}
+
+static int fetch_watched(gs_live *l, const char *url, char **body, size_t *len, watch *w) {
+    gs_http_request r = { .url = url, .agent = l->c.agent, .headers = (const char *const *)l->headers, .follow = true, .timeout_ms = 15000,
+                          .progress = w ? watch_download : NULL, .progress_user = w };
     return gs_http_fetch(&r, body, len);
 }
+
+static int fetch(gs_live *l, const char *url, char **body, size_t *len) { return fetch_watched(l, url, body, len, NULL); }
 
 // The index of the segment to start at: about `delay` seconds of segments before the live edge, or
 // the first segment of a playlist that is complete (EXT-X-ENDLIST: a recording, not a live stream).
@@ -151,12 +234,15 @@ static int load(void *user) {
     gs_ts *ts = NULL;
     segment_frames frames = { 0 };
     int failures = 0;
+    bool switched = false;        // the next segment comes from another rendition than the last
     while (rest(l, 0)) {
         char *text = NULL;
         size_t len = 0;
         int status = fetch(l, l->url, &text, &len);
         gs_hls_media *m = status == 200 ? gs_hls_media_parse(text, len, l->url) : NULL;
+        bool master = !m && status == 200 && read_master(l, text, len);
         SDL_free(text);
+        if (master) continue;  // on to its rendition's playlist
         if (!m) {
             bool expired = status == 403 || status == 404 || status == 410;
             if (expired && l->c.renew) {
@@ -194,8 +280,17 @@ static int load(void *user) {
         } else {
             from = (int)(next - m->sequence);
         }
+        bool again = false;  // the playlist to fetch has changed (another rendition)
         for (int i = from; i < m->count && rest(l, 0); i++) {
             const gs_hls_segment *s = &m->segments[i];
+            if (l->rungs > 1) {
+                int want = gs_abr_next(&l->abr, buffered_seconds(l), s->duration, now_seconds());
+                if (want != l->rung) {
+                    use_rung(l, want);
+                    next = s->sequence, again = switched = true;
+                    break;
+                }
+            }
             if (l->c.segment) l->c.segment(l->c.user, s);
             if (s->discontinuity && next >= 0) shift = true, l->discontinuities++;
             uint8_t *data = NULL;
@@ -203,8 +298,27 @@ static int load(void *user) {
             int got = 0;
             for (int attempt = 0; attempt < 3 && got != 200 && rest(l, 0); attempt++) {
                 SDL_free(data), data = NULL;
-                got = fetch(l, s->url, (char **)&data, &dlen);
+                watch w = { l, now_seconds(), 0, buffered_seconds(l), s->duration, 0, 0, false };
+                got = fetch_watched(l, s->url, (char **)&data, &dlen, l->rungs > 1 ? &w : NULL);
+                double took = now_seconds() - (w.first ? w.first : w.start);
+                if (took < 0.01) took = now_seconds() - w.start;  // (all of it in the first read: count the whole request)
+                if (w.gave_up) {  // too slow: the same segment from a lower rendition
+                    double share = w.expected > 0 ? w.bytes / w.expected : 0;
+                    use_rung(l, gs_abr_give_up(&l->abr, w.bytes, took, s->duration * share, now_seconds()));
+                    next = s->sequence, again = switched = true;
+                    break;
+                }
+                if (got == 200 && l->rungs > 1) {
+                    gs_abr_sample(&l->abr, (double)dlen, took, s->duration);
+                    SDL_LockMutex(l->lock);
+                    l->bandwidth = gs_abr_estimate(&l->abr);
+                    SDL_UnlockMutex(l->lock);
+                }
                 if (got != 200 && !rest(l, 500)) break;
+            }
+            if (again) {
+                SDL_free(data);
+                break;
             }
             next = s->sequence + 1;
             if (got != 200) {  // a segment lost: the next one starts a new run of times
@@ -227,11 +341,14 @@ static int load(void *user) {
                 if (mp4 && !strcmp(map, s->map_url)) gs_mp4_segment(mp4, data, dlen);
             } else {
                 if (!ts) ts = gs_ts_new(collect, &frames);
-                if (shift) gs_ts_reset(ts);
+                if (shift || switched) gs_ts_reset(ts);
                 gs_ts_feed(ts, data, dlen);
                 gs_ts_end(ts);
             }
             SDL_free(data);
+            // Renditions share their times; one that does not is a new run of times.
+            if (switched && isfinite(frames.first) && fabs(frames.first + offset - end) > 0.5) shift = true;
+            switched = false;
             // A new run of times continues from where the media so far ended, not before it.
             if (shift && isfinite(frames.first)) offset = fmax(timeline, end) - frames.first, shift = false;
             // Place the frames on the timeline and queue them, waiting while the queues are full.
@@ -254,6 +371,10 @@ static int load(void *user) {
             SDL_UnlockMutex(l->lock);
             frames.head = frames.tail = NULL;
             timeline += s->duration;
+        }
+        if (again) {
+            gs_hls_media_free(m);
+            continue;
         }
         bool ended = m->ended && next >= m->sequence + m->count;
         double wait = m->count ? m->segments[m->count - 1].duration / 2 : 1;
@@ -376,6 +497,7 @@ gs_live_info gs_live_get_info(gs_live *l) {
     i.queued = queued_seconds(l);
     i.behind = l->edge + i.queued + i.buffered;
     i.segments = l->segments, i.discontinuities = l->discontinuities, i.skips = l->skips, i.renewals = l->renewals;
+    i.switches = l->switches, i.bandwidth = l->bandwidth;
     SDL_strlcpy(i.message, l->message, sizeof i.message);
     bool drained = l->loaded_all && !l->audio.head;
     gs_live_state s = l->failed ? GS_LIVE_FAILED
@@ -388,6 +510,14 @@ gs_live_info gs_live_get_info(gs_live *l) {
     SDL_UnlockMutex(l->lock);
     if (l->video) i.video = gs_video_get_info(l->video);
     return i;
+}
+
+bool gs_live_rendition(gs_live *l, gs_hls_variant *out) {
+    SDL_LockMutex(l->lock);
+    bool known = l->rungs > 0;
+    if (known) *out = l->ladder[l->rung];
+    SDL_UnlockMutex(l->lock);
+    return known;
 }
 
 SDL_Texture *gs_live_frame(gs_live *l, SDL_FRect *src) {
