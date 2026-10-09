@@ -7,7 +7,7 @@ static const long long ladder[] = { 230000, 630000, 1330000, 3000000, 8000000 };
 // One 2 s segment of the current level fetched at `rate` bits a second.
 static void download(gs_abr *a, double rate) {
     double bytes = ladder[a->level] / 8.0 * 2;
-    gs_abr_sample(a, bytes, bytes * 8 / rate);
+    gs_abr_sample(a, bytes, bytes * 8 / rate, 2);
 }
 
 void test_abr(void) {
@@ -41,6 +41,14 @@ void test_abr(void) {
     CHECK(gs_abr_next(&a, 6.0, 2, now + 20) == 2);
     CHECK(gs_abr_next(&a, 6.0, 2, now + 30) == 3);
 
+    // Back from a slow spell on the lowest rendition: its small downloads count for their media, so
+    // two segments at 4 Mbit/s are enough to step up again.
+    gs_abr_init(&a, ladder, 5, 2.5e6);
+    for (int i = 0; i < 30; i++) download(&a, 0.8e6);
+    CHECK(gs_abr_next(&a, 6.0, 2, 200) == 0);
+    for (int i = 0; i < 2; i++) download(&a, 4e6);
+    CHECK(gs_abr_next(&a, 6.0, 2, 230) == 1);
+
     // Falls fast, rises slowly: one slow download outweighs several fast ones.
     gs_abr_init(&a, ladder, 5, 2.5e6);
     for (int i = 0; i < 10; i++) download(&a, 10e6);
@@ -55,8 +63,12 @@ void test_abr(void) {
     CHECK(gs_abr_abandon(&a, rate * 1.0, expected, 1.0, 0, 2));   // will miss its 2 s and 720p60 is far quicker
     CHECK(!gs_abr_abandon(&a, rate * 1.0, expected, 1.0, 12, 2)); // with 12 s buffered there is time
     CHECK(gs_abr_abandon(&a, rate * 1.0, 0, 1.0, 0, 2));          // unknown size: judged from the bitrate
+    // Giving up drops at least one rendition, even when the average still looks good.
+    for (int i = 0; i < 10; i++) download(&a, 50e6);
+    CHECK(gs_abr_give_up(&a, 10000, 0.5, 0.1, 100) == 3);
     a.level = 0;
     CHECK(!gs_abr_abandon(&a, 1, expected, 5.0, 0, 2));           // nothing lower to go to
+    CHECK(gs_abr_give_up(&a, 1, 5.0, 0.1, 101) == 0);
 
     // One rendition: nothing to choose.
     gs_abr_init(&a, ladder, 1, 1e6);
