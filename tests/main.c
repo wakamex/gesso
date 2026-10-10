@@ -1,3 +1,5 @@
+#include <SDL3/SDL.h>
+
 #include "test.h"
 
 int test_failures;
@@ -18,8 +20,20 @@ static const struct { const char *name; void (*run)(void); } tests[] = {
     { "gs_ui", test_ui },
 };
 
+// The streams folder as an absolute path, since tests build file:// URLs from it (zig build passes it
+// relative to the working directory from Zig 0.17 on).
+static const char *absolute(const char *path) {
+    static char out[4096];
+    if (path[0] == '/' || (path[0] && path[1] == ':')) return path;
+    char *cwd = SDL_GetCurrentDirectory();  // (ends with a separator)
+    if (!cwd) return path;
+    SDL_snprintf(out, sizeof out, "%s%s", cwd, SDL_strncmp(path, "./", 2) ? path : path + 2);
+    SDL_free(cwd);
+    return out;
+}
+
 int main(int argc, char **argv) {
-    if (argc > 1) test_streams = argv[1];
+    if (argc > 1) test_streams = absolute(argv[1]);
     for (size_t i = 0; i < sizeof tests / sizeof *tests; i++) {
         int before = test_failures;
         tests[i].run();

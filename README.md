@@ -38,7 +38,7 @@ Apps use SDL3 directly; gesso does not wrap it, because SDL already is the platf
 
 ## Using it
 
-Needs Zig 0.16.0. SDL3 comes from the Zig package manager ([castholm/SDL](https://github.com/castholm/SDL)), so there is nothing else to install.
+Needs Zig 0.17.0. SDL3 comes from the Zig package manager ([castholm/SDL](https://github.com/castholm/SDL)), so there is nothing else to install.
 
 In the app's `build.zig.zon`, depend on gesso by path or by URL:
 

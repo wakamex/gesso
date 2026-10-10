@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .preferred_linkage = .static,
-        .strip = optimize != .Debug,
+        .strip = optimize != .debug,
     }).artifact("SDL3");
 
     // libopus (BSD), for Opus-compressed SoundFont samples. Only its decoder is used; the linker drops the rest.
@@ -188,7 +188,6 @@ pub fn build(b: *std.Build) void {
     mod.linkLibrary(opus);
     mod.addIncludePath(opus_src.path("include"));
     if (target.result.os.tag == .windows) for ([_][]const u8{ "winhttp", "crypt32" }) |l| mod.linkSystemLibrary(l, .{});
-    if (target.result.isMinGW()) mod.addCSourceFile(.{ .file = b.path("src/gs_strnlen.c"), .flags = flags });
     if (target.result.isGnuLibC() and target.result.os.versionRange().gnuLibCVersion().?.order(.{ .major = 2, .minor = 29, .patch = 0 }) == .lt)
         mod.addCSourceFile(.{ .file = b.path("src/gs_glibc_compat.c"), .flags = flags });
     const av = if (video) addFfmpeg(b, target) else null;
@@ -223,7 +222,7 @@ pub fn build(b: *std.Build) void {
     const text_exe = b.addExecutable(.{ .name = "bench-text", .root_module = text_bench });
     const text_run = b.addRunArtifact(text_exe);
     text_run.step.dependOn(&b.addInstallArtifact(text_exe, .{}).step);
-    if (b.args) |args| text_run.addArgs(args);
+    text_run.addPassthruArgs();
     b.step("bench-text", "Render a test page of scripts and emoji to a PNG").dependOn(&text_run.step);
 
     // zig build bench-video -Dvideo -- FILE.h264: decoding paths compared on this machine (bench/video.c).
@@ -237,7 +236,7 @@ pub fn build(b: *std.Build) void {
         const install = b.addInstallArtifact(exe, .{});
         const run = b.addRunArtifact(exe);
         run.step.dependOn(&install.step);
-        if (b.args) |args| run.addArgs(args);
+        run.addPassthruArgs();
         b.step("bench-video", "Play an H.264 file through gs_video and report CPU and memory").dependOn(&run.step);
     }
 }
@@ -262,7 +261,7 @@ fn addFfmpeg(b: *std.Build, target: std.Build.ResolvedTarget) ?Ffmpeg {
 
     // FFmpeg relies on dead-code elimination (it does not link at -O0) and on its own bounds
     // reasoning, so it is always optimized and never sanitized, whatever the app's build mode.
-    const mod = b.createModule(.{ .target = target, .optimize = .ReleaseFast, .link_libc = true, .sanitize_c = .off, .pic = true });
+    const mod = b.createModule(.{ .target = target, .optimize = .fast, .link_libc = true, .sanitize_c = .off, .pic = true });
     mod.addIncludePath(gen);
     mod.addIncludePath(src);
     var av_flags: std.ArrayList([]const u8) = .empty;
@@ -288,11 +287,7 @@ fn addFfmpeg(b: *std.Build, target: std.Build.ResolvedTarget) ?Ffmpeg {
             continue;
         }
         // NASM, built from source for the build host, so nothing needs installing.
-        if (nasm == null) {
-            nasm = (b.lazyDependency("nasm", .{ .target = b.graph.host, .optimize = .ReleaseFast }) orelse return null).artifact("nasm");
-            // (on a Windows host NASM links Zig's C library, whose strnlen can read past a string: see gs_strnlen.c)
-            if (b.graph.host.result.os.tag == .windows) nasm.?.root_module.addCSourceFile(.{ .file = b.path("src/gs_strnlen.c"), .flags = &.{"-std=c11"} });
-        }
+        if (nasm == null) nasm = (b.lazyDependency("nasm", .{ .target = b.graph.host, .optimize = .fast }) orelse return null).artifact("nasm");
         const run = b.addRunArtifact(nasm.?);
         run.addArgs(&.{ "-f", if (t.os.tag == .windows) "win64" else "elf64", "-DPIC" });
         run.addPrefixedDirectoryArg("-I", gen);
