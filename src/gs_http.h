@@ -42,5 +42,11 @@ typedef bool gs_http_take(void *user, const uint8_t *data, size_t len);
 int gs_http_stream(const gs_http_request *r, long long from, gs_http_take *take, void *user, SDL_AtomicInt *stop);
 
 // Starts a child process with SDL, one at a time: on Windows a process started while another
-// is being set up can inherit its pipes, and then neither sees its output end.
+// is being set up can inherit its pipes, and then neither sees its output end. On Windows the child
+// also runs without a console window (SDL's background flag, so a console program started from a GUI
+// app does not open one) and joins a job that ends it when the app does, however the app exits.
 SDL_Process *gs_http_spawn(SDL_PropertiesID props);
+
+// A spawned process's exit code, given the `code` SDL_WaitProcess returned for it. On Windows SDL
+// reports 0 for a background process, so the real code is read from a handle gs_http_spawn keeps.
+int gs_http_exit_code(SDL_Process *proc, int code);

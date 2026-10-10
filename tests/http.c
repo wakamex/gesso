@@ -25,6 +25,24 @@ extern const char *test_streams;
 void test_http(void) {
     char *body = NULL;
     size_t len = 0;
+
+    // A spawned process's real exit code (SDL reports 0 for the background processes started on Windows).
+#ifdef _WIN32
+    const char *const exit3[] = { "cmd.exe", "/c", "exit 3", NULL };
+#else
+    const char *const exit3[] = { "/bin/sh", "-c", "exit 3", NULL };
+#endif
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)exit3);
+    SDL_Process *child = gs_http_spawn(props);
+    SDL_DestroyProperties(props);
+    CHECK(child);
+    if (child) {
+        int code = -1;
+        CHECK(SDL_WaitProcess(child, true, &code));
+        CHECK(gs_http_exit_code(child, code) == 3);
+        SDL_DestroyProcess(child);
+    }
 #ifndef _WIN32
     // The progress hook, on a local file (WinHTTP has no file URLs): it hears the bytes arrive, and
     // giving up makes the request return 0.

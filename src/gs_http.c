@@ -12,12 +12,58 @@
 #define DEFAULT_TIMEOUT_MS 30000
 #define CONNECT_TIMEOUT_MS 10000
 
+#ifdef _WIN32
+#define CHILD_HANDLE "gesso.process.handle"
+
+static void SDLCALL close_handle(void *user, void *value) {
+    (void)user;
+    CloseHandle(value);
+}
+
+// The job every child the app starts joins; Windows ends its processes when the app's last handle
+// to it closes, so they end with the app however it exits.
+static HANDLE child_job(void) {
+    static HANDLE job;
+    static SDL_InitState once;
+    if (SDL_ShouldInit(&once)) {
+        job = CreateJobObjectW(NULL, NULL);
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit = { 0 };
+        limit.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (job && !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limit, sizeof limit)) CloseHandle(job), job = NULL;
+        SDL_SetInitialized(&once, true);
+    }
+    return job;
+}
+#endif
+
 SDL_Process *gs_http_spawn(SDL_PropertiesID props) {
     static SDL_SpinLock lock;
+#ifdef _WIN32
+    SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
+#endif
     SDL_LockSpinlock(&lock);
     SDL_Process *proc = SDL_CreateProcessWithProperties(props);
     SDL_UnlockSpinlock(&lock);
+#ifdef _WIN32
+    DWORD pid = proc ? (DWORD)SDL_GetNumberProperty(SDL_GetProcessProperties(proc), SDL_PROP_PROCESS_PID_NUMBER, 0) : 0;
+    HANDLE h = pid ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA | PROCESS_TERMINATE, FALSE, pid) : NULL;
+    if (h) {
+        if (child_job()) AssignProcessToJobObject(child_job(), h);
+        SDL_SetPointerPropertyWithCleanup(SDL_GetProcessProperties(proc), CHILD_HANDLE, h, close_handle, NULL);
+    }
+#endif
     return proc;
+}
+
+int gs_http_exit_code(SDL_Process *proc, int code) {
+#ifdef _WIN32
+    HANDLE h = SDL_GetPointerProperty(SDL_GetProcessProperties(proc), CHILD_HANDLE, NULL);
+    DWORD real;
+    if (h && GetExitCodeProcess(h, &real) && real != STILL_ACTIVE) return (int)real;
+#else
+    (void)proc;
+#endif
+    return code;
 }
 
 static size_t body_length(const gs_http_request *r) { return r->body ? (r->body_len ? r->body_len : strlen(r->body)) : 0; }
@@ -88,46 +134,6 @@ static void config_line(sink *c, const char *name, const char *value, size_t n) 
 // Starts curl with the request's secrets in a config read from its input (-K -). Its output is each
 // response's headers (-D -, so the status can be read without a newer curl's %{stderr}), then the body.
 // A fetch is limited to the request's timeout; a stream runs until it ends or is stopped.
-#ifdef _WIN32
-#define CURL_HANDLE "gesso.curl.handle"
-
-static void SDLCALL close_handle(void *user, void *value) {
-    (void)user;
-    CloseHandle(value);
-}
-
-// The job every curl the app starts joins; Windows ends its processes when the app's last handle
-// to it closes, so they end with the app however it exits.
-static HANDLE curl_job(void) {
-    static HANDLE job;
-    static SDL_InitState once;
-    if (SDL_ShouldInit(&once)) {
-        job = CreateJobObjectW(NULL, NULL);
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit = { 0 };
-        limit.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        if (job && !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limit, sizeof limit)) CloseHandle(job), job = NULL;
-        SDL_SetInitialized(&once, true);
-    }
-    return job;
-}
-#endif
-
-// curl's exit code once SDL_WaitProcess has returned `code`. On Windows curl runs as a background
-// process, for which SDL reports 0, so the real code is read through the app's own handle.
-static int curl_exit_code(SDL_Process *proc, int code) {
-#ifdef _WIN32
-    HANDLE h = SDL_GetPointerProperty(SDL_GetProcessProperties(proc), CURL_HANDLE, NULL);
-    DWORD real;
-    if (h && GetExitCodeProcess(h, &real) && real != STILL_ACTIVE) return (int)real;
-#else
-    (void)proc;
-#endif
-    return code;
-}
-
-// On Windows curl.exe is a console program: from an app without a console it would get a window of
-// its own and outlive the app, so it runs with SDL's background flag (CREATE_NO_WINDOW) and joins
-// curl_job.
 static SDL_Process *start_curl(const gs_http_request *r, bool stream, long long from, bool follow) {
     char curl[512], range[32], timeout[16];
     curl_program(curl, sizeof curl);
@@ -158,19 +164,8 @@ static SDL_Process *start_curl(const gs_http_request *r, bool stream, long long 
     SDL_SetNumberProperty(p, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_APP);
     SDL_SetNumberProperty(p, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_APP);
     SDL_SetNumberProperty(p, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER, SDL_PROCESS_STDIO_NULL);
-#ifdef _WIN32
-    SDL_SetBooleanProperty(p, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
-#endif
     SDL_Process *proc = gs_http_spawn(p);
     SDL_DestroyProperties(p);
-#ifdef _WIN32
-    DWORD pid = proc ? (DWORD)SDL_GetNumberProperty(SDL_GetProcessProperties(proc), SDL_PROP_PROCESS_PID_NUMBER, 0) : 0;
-    HANDLE h = pid ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA | PROCESS_TERMINATE, FALSE, pid) : NULL;
-    if (h) {
-        if (curl_job()) AssignProcessToJobObject(curl_job(), h);
-        SDL_SetPointerPropertyWithCleanup(SDL_GetProcessProperties(proc), CURL_HANDLE, h, close_handle, NULL);
-    }
-#endif
     SDL_IOStream *in = proc ? SDL_GetProcessInput(proc) : NULL;
     if (in) SDL_WriteIO(in, config.data, config.len), SDL_CloseIO(in);
     SDL_free(config.data);
@@ -214,7 +209,7 @@ static int read_curl(SDL_Process *proc, bool follow, body_fn *take, void *user, 
     if (!more || (stop && SDL_GetAtomicInt(stop))) SDL_KillProcess(proc, true);
     int code = -1;
     SDL_WaitProcess(proc, true, &code);
-    code = curl_exit_code(proc, code);
+    code = gs_http_exit_code(proc, code);
     return body && (code == 0 || !more) ? status : 0;
 }
 
