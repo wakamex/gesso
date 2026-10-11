@@ -47,6 +47,95 @@ static void frame(void) {
     gs_ui_end(ui);
 }
 
+static void wheel(float x, float y, float dy) {
+    SDL_Event m = { .motion = { .type = SDL_EVENT_MOUSE_MOTION, .x = x, .y = y } };
+    SDL_Event e = { .wheel = { .type = SDL_EVENT_MOUSE_WHEEL, .y = dy } };
+    gs_ui_event(ui, &m), gs_ui_event(ui, &e);
+}
+
+static char area[200];
+static float heights[40];
+static int nrows;
+static gs_ui_rows shown;
+static bool enter;
+
+// A message list over a compose area; the list has 100 points of height and the area sits below it.
+static void multiline_frame(void) {
+    gs_ui_begin(ui);
+    gs_rect list = { 0, 0, 300, 100 };
+    shown = gs_ui_flow(ui, list, "flow", nrows, heights);
+    gs_ui_list_end(ui);
+    gs_ui_textarea(ui, (gs_rect){ 0, 120, 300, gs_ui_textarea_height(ui, area, 300, 4) }, "area", area, sizeof area, "Message");
+    enter = gs_ui_key(ui, SDLK_RETURN, 0);
+    gs_ui_end(ui);
+}
+
+static void test_ui_multiline(void) {
+    gs_ui_begin(ui), gs_ui_end(ui);
+    CHECK(gs_ui_text_height(ui, "a\nb\nc", 14, 200) == 3 * gs_ui_line_height(ui, 14));
+    CHECK(gs_ui_text_height(ui, "", 14, 200) == gs_ui_line_height(ui, 14));
+
+    // Rows of 20 points in a 100 point list stay at the end as rows are added; scrolled off it, they
+    // keep their place, and rows added in front are told apart from rows added behind.
+    for (int i = 0; i < 40; i++) heights[i] = 20;
+    nrows = 20;
+    multiline_frame();
+    CHECK(shown.below == 0 && shown.above == 300 && shown.end == 20 && shown.first == 15);
+    nrows = 21;
+    multiline_frame();
+    CHECK(shown.below == 0 && shown.above == 320 && shown.end == 21);
+    wheel(50, 50, 2), multiline_frame();  // up
+    float above = shown.above;
+    CHECK(shown.below > 0 && above < 320);
+    nrows = 22, multiline_frame();
+    CHECK(shown.above == above && shown.below == 20 + (320 - above));
+    gs_ui_flow_prepended(ui, "flow", 3), nrows = 25, multiline_frame();
+    CHECK(shown.above == above + 60);
+    nrows = 2, multiline_frame();  // fewer rows than fill the list sit at its bottom
+    CHECK(shown.first == 0 && shown.end == 2 && shown.y == 60);
+
+    // The text area: Shift+Enter breaks a line and Enter is the app's.
+    click(50, 130), multiline_frame();
+    CHECK(gs_ui_focused(ui, "area"));
+    text("ab"), multiline_frame();
+    key(SDLK_RETURN, SDL_KMOD_SHIFT), multiline_frame();
+    CHECK(!strcmp(area, "ab\n") && !enter);
+    text("cd"), key(SDLK_RETURN, 0), multiline_frame();
+    CHECK(!strcmp(area, "ab\ncd") && enter);
+    CHECK(gs_ui_textarea_height(ui, area, 300, 4) > gs_ui_textarea_height(ui, "ab", 300, 4));
+    CHECK(gs_ui_textarea_height(ui, "a\nb\nc\nd\ne\nf", 300, 4) == gs_ui_textarea_height(ui, "a\nb\nc\nd", 300, 4));
+    key(SDLK_HOME, 0), key(SDLK_LEFT, 0), multiline_frame();  // to the line's start, then the end of the line before
+    text("X"), multiline_frame();
+    CHECK(!strcmp(area, "abX\ncd"));
+    key(SDLK_END, SDL_KMOD_CTRL), key(SDLK_LEFT, SDL_KMOD_SHIFT), key(SDLK_LEFT, SDL_KMOD_SHIFT), multiline_frame();  // selects "cd"
+    text("Z"), multiline_frame();
+    CHECK(!strcmp(area, "abX\nZ"));
+    key(SDLK_UP, 0), multiline_frame();  // to the line above, which has no glyph widths without fonts
+    text("Y"), multiline_frame();
+    CHECK(strlen(area) == 6 && strchr(area, 'Y') && strchr(area, '\n'));
+    key(SDLK_A, SDL_KMOD_CTRL), text("q"), multiline_frame();
+    CHECK(!strcmp(area, "q"));
+    SDL_SetClipboardText("one\r\ntwo\tthree");
+    char *clip = SDL_GetClipboardText();
+    if (clip && !strcmp(clip, "one\r\ntwo\tthree")) {  // (a clipboard that holds text)
+        key(SDLK_V, SDL_KMOD_CTRL), multiline_frame();
+        CHECK(!strcmp(area, "qone\ntwo three"));
+    }
+    SDL_free(clip);
+
+    // Glyphs new to the atlas show a frame late, which wait_ms says.
+    if (gs_ui_text_width(ui, "Hello", 14) > 0) {
+        gs_ui_begin(ui);
+        gs_ui_text(ui, (gs_rect){ 0, 200, 100, 20 }, "Hello wrld", 14, gs_ui_style_of(ui)->text, -1);
+        gs_ui_end(ui);
+        CHECK(gs_ui_wait_ms(ui) == 0);
+        gs_ui_begin(ui);
+        gs_ui_text(ui, (gs_rect){ 0, 200, 100, 20 }, "Hello wrld", 14, gs_ui_style_of(ui)->text, -1);
+        gs_ui_end(ui);
+        CHECK(gs_ui_wait_ms(ui) == -1);
+    }
+}
+
 void test_ui(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
@@ -98,6 +187,14 @@ void test_ui(void) {
     key(SDLK_RETURN, 0), frame();
     CHECK(activated);
 
+    gs_ui_free(ui);
+    gs_fontset_free(fs);
+
+    // Wrapped text, rows of differing heights and a multi-line field, with the system's fonts where
+    // there are some.
+    fs = gs_fontset_system();
+    ui = gs_ui_new(w, r, fs);
+    test_ui_multiline();
     gs_ui_free(ui);
     gs_fontset_free(fs);
     SDL_DestroyRenderer(r);

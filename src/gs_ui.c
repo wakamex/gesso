@@ -30,10 +30,20 @@ typedef struct {
     bool open;        // a dropdown or menu
     uint64_t opened;  // the frame it opened in
     bool all;         // a field's whole text is selected
+    int anchor;       // a text area's selection runs from here to the cursor...
+    bool anchored;    // ...when it has one
+    bool away;        // a flow is scrolled off its end
+    int prepended;    // rows added in front of a flow, to be told apart from rows added after
+    float want_x;     // the column a text area's cursor keeps moving up and down along
+    bool want;
 } widget;
 
 typedef enum { FL_FILL, FL_TEXT, FL_FRAME } fl_kind;
 typedef struct { fl_kind kind; gs_rect r; SDL_FColor c; char text[160]; float px; int align; } fl_item;
+
+#define WRAPS 256      // texts kept wrapped
+
+typedef struct { char *text; int size4, width4; gs_wrap *wrap; } wrap_entry;
 
 typedef struct {
     float x, y, wheel;
@@ -75,6 +85,9 @@ struct gs_ui {
     char tip_text[160];
     bool tip_wanted;
     int wait_ms;
+    wrap_entry wraps[WRAPS];  // wrapped text kept, so text drawn every frame is broken into lines once
+    char *piece;              // a line's text, copied out to be shaped
+    size_t piece_cap;
 };
 
 static uint32_t hash(const char *s) {
@@ -112,6 +125,8 @@ gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
 void gs_ui_free(gs_ui *ui) {
     if (!ui) return;
     gs_glyphs_free(ui->glyphs);
+    for (int i = 0; i < WRAPS; i++) SDL_free(ui->wraps[i].text), gs_wrap_free(ui->wraps[i].wrap);
+    free(ui->piece);
     free(ui);
 }
 
@@ -119,6 +134,10 @@ gs_ui_style *gs_ui_style_of(gs_ui *ui) { return &ui->style; }
 gs_glyphs *gs_ui_glyphs(gs_ui *ui) { return ui->glyphs; }
 float gs_ui_scale(const gs_ui *ui) { return ui->scale; }
 int gs_ui_wait_ms(const gs_ui *ui) { return ui->wait_ms; }
+
+static void wake_within(gs_ui *ui, int ms) {
+    if (ui->wait_ms < 0 || ms < ui->wait_ms) ui->wait_ms = ms;
+}
 
 bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
     input *p = &ui->pending;
@@ -230,6 +249,53 @@ void gs_ui_frame(gs_ui *ui, gs_rect r, SDL_FColor c) { ui->in_float ? defer(ui, 
 float gs_ui_text(gs_ui *ui, gs_rect r, const char *text, float size, SDL_FColor c, int align) {
     if (ui->in_float) return defer(ui, FL_TEXT, r, c, text, size, align), gs_ui_text_width(ui, text, size);
     return text_now(ui, r, text, size, c, align);
+}
+
+// ---- Wrapped text ----
+
+// `text` broken into lines of at most `width` points, kept for the frames that draw it again.
+static const gs_wrap *wrap_of(gs_ui *ui, const char *text, float size, float width) {
+    float s = ui->scale > 0 ? ui->scale : 1;
+    int size4 = (int)lroundf(size * s * 4), width4 = (int)lroundf(width * s * 4);
+    wrap_entry *e = &ui->wraps[(hash(text) ^ (uint32_t)size4 * 40503u ^ (uint32_t)width4 * 2654435761u) % WRAPS];
+    if (e->wrap && e->size4 == size4 && e->width4 == width4 && !strcmp(e->text, text)) return e->wrap;
+    SDL_free(e->text), gs_wrap_free(e->wrap);
+    *e = (wrap_entry){ SDL_strdup(text), size4, width4, gs_fontset_wrap(ui->fonts, size * s, text, width * s) };
+    return e->wrap;
+}
+
+// text[from, to) as a string of its own, in a buffer that lasts until the next call.
+static const char *piece(gs_ui *ui, const char *text, int from, int to) {
+    size_t n = (size_t)(to - from);
+    if (n + 1 > ui->piece_cap) ui->piece = realloc(ui->piece, ui->piece_cap = n + 1 + 256);
+    memcpy(ui->piece, text + from, n), ui->piece[n] = 0;
+    return ui->piece;
+}
+
+float gs_ui_line_height(const gs_ui *ui, float size) { (void)ui; return size * 1.4f; }
+
+float gs_ui_text_height(gs_ui *ui, const char *text, float size, float width) {
+    const gs_wrap *w = wrap_of(ui, text, size, width);
+    return w ? w->count * gs_ui_line_height(ui, size) : 0;
+}
+
+// Draws line `i` of a wrapped text, in a line box of height `lh` whose top is `top`, aligned to the
+// side its direction reads from within [x, x + width). Returns the shaped line, for its width.
+static const gs_line *wrapped_line(gs_ui *ui, const char *text, const gs_wrap_line *ln, float size, float x, float width, float top, float lh, SDL_FColor c) {
+    float s = ui->scale;
+    const gs_line *l = gs_fontset_line(ui->fonts, size * s, piece(ui, text, ln->start, ln->end));
+    if (l && l->count) gs_line_draw(ui->glyphs, l, roundf((x + (l->rtl ? width - l->width / s : 0)) * s), roundf((top + lh / 2 + size * 0.36f) * s), c);
+    return l;
+}
+
+float gs_ui_text_wrapped(gs_ui *ui, gs_rect r, const char *text, float size, SDL_FColor c) {
+    const gs_wrap *w = wrap_of(ui, text, size, r.w);
+    if (!w) return 0;
+    float lh = gs_ui_line_height(ui, size);
+    int first = r.y < 0 ? (int)(-r.y / lh) : 0;  // (only the lines on screen are drawn)
+    for (int i = first; i < w->count && r.y + i * lh < ui->area.h; i++)
+        wrapped_line(ui, text, &w->lines[i], size, r.x, r.w, r.y + i * lh, lh, c);
+    return w->count * lh;
 }
 
 void gs_ui_texture(gs_ui *ui, gs_rect r, SDL_Texture *t, const SDL_FRect *src) {
@@ -407,8 +473,231 @@ bool gs_ui_field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, c
         }
         uint64_t t = ui->now - ui->caret_since;
         if (t % (2 * BLINK_MS) < BLINK_MS) gs_ui_fill(ui, (gs_rect){ cx, r.y + 6, 1.5f, r.h - 12 }, ui->style.text);
-        ui->wait_ms = (int)(BLINK_MS - t % BLINK_MS);
+        wake_within(ui, (int)(BLINK_MS - t % BLINK_MS));
         SDL_Rect area = { (int)r.x, (int)r.y, (int)r.w, (int)r.h };  // where the input method's candidates go
+        SDL_SetTextInputArea(ui->win, &area, (int)(cx - r.x));
+    }
+    gs_ui_clip(ui, NULL);
+    return changed;
+}
+
+// ---- Text area ----
+
+#define AREA_PAD_X 8
+#define AREA_PAD_Y 5
+
+float gs_ui_textarea_height(gs_ui *ui, const char *buf, float width, int max_lines) {
+    const gs_wrap *w = wrap_of(ui, buf, ui->style.text_px, width - 2 * AREA_PAD_X);
+    int lines = w ? w->count : 1;
+    return fmaxf(ui->style.row, fminf(lines, fmaxf(1, max_lines)) * gs_ui_line_height(ui, ui->style.text_px) + 2 * AREA_PAD_Y);
+}
+
+static int line_at(const gs_wrap *w, int offset) {  // the line a cursor at `offset` is on: the last to start at or before it
+    int line = 0;
+    for (int i = 1; i < w->count && w->lines[i].start <= offset; i++) line = i;
+    return line;
+}
+
+// A line shaped alone, and where it starts across: a right-to-left line reads from the right edge.
+static const gs_line *area_line(gs_ui *ui, const char *buf, const gs_wrap_line *ln, float inner_x, float inner_w, float *origin) {
+    const gs_line *l = gs_fontset_line(ui->fonts, ui->style.text_px * ui->scale, piece(ui, buf, ln->start, ln->end));
+    *origin = inner_x + (l && l->rtl ? inner_w - l->width / ui->scale : 0);
+    return l;
+}
+
+static float caret_x(gs_ui *ui, const char *buf, const gs_wrap_line *ln, int offset, float inner_x, float inner_w) {
+    float origin;
+    const gs_line *l = area_line(ui, buf, ln, inner_x, inner_w, &origin);
+    return origin + (l ? gs_line_caret(l, SDL_clamp(offset, ln->start, ln->end) - ln->start) / ui->scale : 0);
+}
+
+// The offset nearest to point x across line `ln`.
+static int offset_at(gs_ui *ui, const char *buf, const gs_wrap_line *ln, float x, float inner_x, float inner_w) {
+    float origin;
+    const gs_line *l = area_line(ui, buf, ln, inner_x, inner_w, &origin);
+    if (!l) return ln->start;
+    return ln->start + SDL_min(gs_line_hit(l, (x - origin) * ui->scale, ui->piece), ln->end - ln->start);
+}
+
+static bool is_gap(char ch) { return ch == ' ' || ch == '\n' || ch == '\t' || ch == '\r'; }
+static int word_prev(const char *b, int p) {
+    while (p > 0 && is_gap(b[p - 1])) p--;
+    while (p > 0 && !is_gap(b[p - 1])) p--;
+    return p;
+}
+static int word_next(const char *b, int len, int p) {
+    while (p < len && is_gap(b[p])) p++;
+    while (p < len && !is_gap(b[p])) p++;
+    return p;
+}
+
+// Replaces the selection (or nothing, at the cursor) with n bytes of text, as many as fit.
+static bool put(char *buf, size_t size, widget *w, const char *text, size_t n) {
+    size_t len = strlen(buf);
+    int from = w->cursor, to = w->cursor;
+    if (w->anchored) from = SDL_min(w->anchor, w->cursor), to = SDL_max(w->anchor, w->cursor);
+    size_t room = size - 1 - (len - (size_t)(to - from));
+    if (n > room) {
+        n = room;
+        while (n && (text[n] & 0xC0) == 0x80) n--;  // (not through the middle of a character)
+    }
+    if (to == from && !n) return false;
+    memmove(buf + from + n, buf + to, len - (size_t)to + 1);
+    memcpy(buf + from, text, n);
+    w->cursor = from + (int)n, w->anchored = false, w->want = false;
+    return true;
+}
+
+static void select_to(widget *w, int offset, bool extend) {
+    if (extend && !w->anchored) w->anchor = w->cursor, w->anchored = true;
+    if (!extend) w->anchored = false;
+    w->cursor = offset;
+}
+
+// The clipboard's text as it is put in a text area: line ends as \n, tabs as spaces.
+static char *clipboard_lines(void) {
+    char *text = SDL_GetClipboardText(), *out = text ? malloc(strlen(text) + 1) : NULL;
+    size_t n = 0;
+    for (const char *p = text; out && *p; p++) {
+        if (*p == '\r' && p[1] == '\n') continue;
+        out[n++] = *p == '\r' ? '\n' : *p == '\t' ? ' ' : *p;
+    }
+    if (out) out[n] = 0;
+    SDL_free(text);
+    return out;
+}
+
+static bool area_edit(gs_ui *ui, widget *w, char *buf, size_t size, gs_rect inner, bool *moved) {
+    bool changed = false;
+    for (int i = 0; i < ui->in.nkeys; i++) {
+        SDL_Keycode k = ui->in.keys[i];
+        SDL_Keymod mods = ui->in.mods[i];
+        bool ctrl = mods & (SDL_KMOD_CTRL | SDL_KMOD_GUI), shift = mods & SDL_KMOD_SHIFT;
+        int len = (int)strlen(buf);
+        w->cursor = SDL_clamp(w->cursor, 0, len), w->anchor = SDL_clamp(w->anchor, 0, len);
+        bool has = w->anchored && w->anchor != w->cursor;
+        int lo = SDL_min(w->anchor, w->cursor), hi = SDL_max(w->anchor, w->cursor);
+        const gs_wrap *wr = NULL;
+        if (k == SDLK_UP || k == SDLK_DOWN || ((k == SDLK_HOME || k == SDLK_END) && !ctrl)) wr = wrap_of(ui, buf, ui->style.text_px, inner.w);
+        bool vertical = false;
+        if (ctrl && k == SDLK_V) {
+            char *paste = clipboard_lines();
+            if (paste) changed |= put(buf, size, w, paste, strlen(paste));
+            free(paste);
+        } else if (ctrl && k == SDLK_A) {
+            w->anchor = 0, w->cursor = len, w->anchored = true;
+        } else if (ctrl && (k == SDLK_C || k == SDLK_X)) {
+            if (has) {
+                SDL_SetClipboardText(piece(ui, buf, lo, hi));
+                if (k == SDLK_X) changed |= put(buf, size, w, "", 0);
+            }
+        } else if (k == SDLK_BACKSPACE || k == SDLK_DELETE) {
+            if (!has) {
+                int back = k == SDLK_BACKSPACE, at = w->cursor;
+                int to = back ? (ctrl ? word_prev(buf, at) : gs_utf8_grapheme_prev(buf, at)) : (ctrl ? word_next(buf, len, at) : gs_utf8_grapheme_next(buf, at));
+                w->anchor = to, w->anchored = true;
+            }
+            changed |= put(buf, size, w, "", 0);
+        } else if (k == SDLK_LEFT || k == SDLK_RIGHT) {
+            bool left = k == SDLK_LEFT;
+            if (has && !shift) select_to(w, left ? lo : hi, false);
+            else select_to(w, left ? (ctrl ? word_prev(buf, w->cursor) : gs_utf8_grapheme_prev(buf, w->cursor)) : (ctrl ? word_next(buf, len, w->cursor) : gs_utf8_grapheme_next(buf, w->cursor)), shift);
+        } else if (k == SDLK_UP || k == SDLK_DOWN) {
+            int line = wr ? line_at(wr, w->cursor) : 0, to = line + (k == SDLK_UP ? -1 : 1);
+            if (!w->want) w->want_x = caret_x(ui, buf, &wr->lines[line], w->cursor, inner.x, inner.w), w->want = true;
+            if (to < 0) select_to(w, 0, shift);
+            else if (to >= wr->count) select_to(w, len, shift);
+            else select_to(w, offset_at(ui, buf, &wr->lines[to], w->want_x, inner.x, inner.w), shift);
+            vertical = true;
+        } else if (k == SDLK_HOME || k == SDLK_END) {
+            bool home = k == SDLK_HOME;
+            if (ctrl) select_to(w, home ? 0 : len, shift);
+            else select_to(w, home ? wr->lines[line_at(wr, w->cursor)].start : wr->lines[line_at(wr, w->cursor)].end, shift);
+        } else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER) && shift) {
+            changed |= put(buf, size, w, "\n", 1);  // (a plain Enter is the app's)
+        } else if (!ctrl && !(mods & SDL_KMOD_ALT) && k >= 32 && k < 127) {
+            // A printable key arrives as typed text too: it is the field's, not a shortcut's.
+        } else {
+            continue;
+        }
+        if (!vertical) w->want = false;
+        ui->taken[i] = true, ui->caret_since = ui->now, *moved = true;
+    }
+    if (ui->in.text[0]) changed |= put(buf, size, w, ui->in.text, strlen(ui->in.text)), ui->caret_since = ui->now, *moved = true;
+    return changed;
+}
+
+bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, const char *placeholder) {
+    uint32_t h = hash(id);
+    widget *w = state(ui, h);
+    float px = ui->style.text_px, lh = gs_ui_line_height(ui, px);
+    gs_rect inner = { r.x + AREA_PAD_X, r.y + AREA_PAD_Y, fmaxf(1, r.w - 2 * AREA_PAD_X), fmaxf(1, r.h - 2 * AREA_PAD_Y) };
+    bool moved = false;
+    w->cursor = SDL_clamp(w->cursor, 0, (int)strlen(buf)), w->anchor = SDL_clamp(w->anchor, 0, (int)strlen(buf));
+    if (pressed(ui, r)) {  // a press puts the cursor under the pointer and starts a drag selection
+        if (ui->focus != h) gs_ui_focus(ui, id);
+        ui->drag = h;
+        w->anchor = w->cursor, w->anchored = true;
+        moved = true;
+    }
+    if (ui->focus == h && ui->in.pressed && !gs_rect_contains(r, ui->in.x, ui->in.y)) gs_ui_focus(ui, NULL);  // a click elsewhere leaves it
+    if (ui->drag == h && ui->in.down) {
+        const gs_wrap *wr = wrap_of(ui, buf, px, inner.w);
+        if (wr) {
+            int line = SDL_clamp((int)floorf((ui->in.y - inner.y + w->scroll) / lh), 0, wr->count - 1);
+            bool extend = !ui->in.pressed || (SDL_GetModState() & SDL_KMOD_SHIFT);
+            int at = offset_at(ui, buf, &wr->lines[line], ui->in.x, inner.x, inner.w);
+            if (ui->in.pressed && !extend) w->anchor = at;
+            else if (ui->in.pressed) w->anchor = w->anchored ? w->anchor : w->cursor;
+            w->cursor = at, w->want = false, ui->caret_since = ui->now;
+        }
+    }
+    bool focused = ui->focus == h, changed = false;
+    if (focused) {
+        if (!SDL_TextInputActive(ui->win)) SDL_StartTextInput(ui->win);
+        changed = area_edit(ui, w, buf, size, inner, &moved);
+    }
+
+    const gs_wrap *wr = wrap_of(ui, buf, px, inner.w);
+    int lines = wr ? wr->count : 1;
+    float max_scroll = fmaxf(0, lines * lh - inner.h);
+    if (gs_ui_hovered(ui, r) && ui->in.wheel) w->scroll -= ui->in.wheel * lh * 3;
+    int cline = wr ? line_at(wr, w->cursor) : 0;
+    if (moved && focused) {  // keep the cursor's line in view
+        if (cline * lh < w->scroll) w->scroll = cline * lh;
+        if ((cline + 1) * lh > w->scroll + inner.h) w->scroll = (cline + 1) * lh - inner.h;
+    }
+    w->scroll = fminf(max_scroll, fmaxf(0, w->scroll));
+
+    gs_ui_fill(ui, r, ui->style.raised);
+    gs_ui_frame(ui, r, focused ? ui->style.accent : gs_ui_hovered(ui, r) ? ui->style.muted : ui->style.border);
+    gs_ui_clip(ui, &r);
+    if (!buf[0] && !ui->composition[0] && placeholder) gs_ui_text(ui, (gs_rect){ inner.x, inner.y, inner.w, lh }, placeholder, px, ui->style.muted, -1);
+    int lo = SDL_min(w->anchor, w->cursor), hi = SDL_max(w->anchor, w->cursor);
+    bool has = w->anchored && lo != hi;
+    for (int i = wr ? (int)(w->scroll / lh) : 0; wr && i < wr->count && inner.y + i * lh - w->scroll < r.y + r.h; i++) {
+        const gs_wrap_line *ln = &wr->lines[i];
+        float top = inner.y + i * lh - w->scroll;
+        if (has && hi > ln->start && (lo <= ln->end || (i + 1 < wr->count && lo < wr->lines[i + 1].start))) {  // the selected part of the line
+            int from = SDL_max(lo, ln->start), to = SDL_min(hi, ln->end);
+            float x0 = caret_x(ui, buf, ln, from, inner.x, inner.w), x1 = caret_x(ui, buf, ln, to, inner.x, inner.w);
+            if (hi > ln->end) x1 += 4;  // (the line end it runs past)
+            gs_ui_fill(ui, (gs_rect){ fminf(x0, x1), top, fabsf(x1 - x0), lh }, ui->style.border);
+        }
+        wrapped_line(ui, buf, ln, px, inner.x, inner.w, top, lh, ui->style.text);
+    }
+    if (focused && wr) {
+        const gs_wrap_line *ln = &wr->lines[cline];
+        float cx = caret_x(ui, buf, ln, w->cursor, inner.x, inner.w), top = inner.y + cline * lh - w->scroll;
+        if (ui->composition[0]) {  // what the input method is composing, underlined at the cursor
+            float cw = gs_ui_text(ui, (gs_rect){ cx, top, 1e6f, lh }, ui->composition, px, ui->style.accent, -1);
+            gs_ui_fill(ui, (gs_rect){ cx, top + lh - 3, cw, 1 }, ui->style.accent);
+            cx += cw;
+        }
+        uint64_t t = ui->now - ui->caret_since;
+        if (t % (2 * BLINK_MS) < BLINK_MS) gs_ui_fill(ui, (gs_rect){ cx, top + 2, 1.5f, lh - 4 }, ui->style.text);
+        wake_within(ui, (int)(BLINK_MS - t % BLINK_MS));
+        SDL_Rect area = { (int)r.x, (int)top, (int)r.w, (int)lh };  // where the input method's candidates go
         SDL_SetTextInputArea(ui->win, &area, (int)(cx - r.x));
     }
     gs_ui_clip(ui, NULL);
@@ -538,6 +827,40 @@ gs_ui_rows gs_ui_list(gs_ui *ui, gs_rect area, const char *id, int count, float 
 
 void gs_ui_list_end(gs_ui *ui) { gs_ui_clip(ui, NULL); }
 
+gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const float *heights) {
+    widget *w = state(ui, hash(id));
+    gs_ui_rows rows = { 0 };
+    float total = 0;
+    for (int i = 0; i < count; i++) total += heights[i];
+    for (int i = 0; i < w->prepended && i < count; i++) w->scroll += heights[i];  // (the rows in front pushed the place down)
+    w->prepended = 0;
+    float max_scroll = fmaxf(0, total - area.h), page = area.h * 0.9f;
+    if (!w->away) w->scroll = max_scroll;
+    bool over = gs_ui_hovered(ui, area), focused = ui->focus == hash(id);
+    if (over && ui->in.wheel) w->scroll -= ui->in.wheel * ui->style.row * 1.5f;
+    if (over || focused) {
+        while (gs_ui_key(ui, SDLK_PAGEUP, 0)) w->scroll -= page;
+        while (gs_ui_key(ui, SDLK_PAGEDOWN, 0)) w->scroll += page;
+    }
+    if (focused) {
+        if (gs_ui_key(ui, SDLK_HOME, 0)) w->scroll = 0;
+        if (gs_ui_key(ui, SDLK_END, 0)) w->scroll = max_scroll;
+    }
+    w->scroll = fminf(max_scroll, fmaxf(0, w->scroll));
+    w->away = w->scroll < max_scroll - 0.5f;  // scrolled off the end: new rows no longer carry it along
+    float y = 0;
+    while (rows.first < count && y + heights[rows.first] <= w->scroll) y += heights[rows.first++];
+    rows.y = area.y + y - w->scroll + fmaxf(0, area.h - total);  // (rows fewer than fill the area sit at its bottom)
+    rows.end = rows.first;
+    for (float bottom = y; rows.end < count && bottom < w->scroll + area.h; bottom += heights[rows.end++]) {}
+    rows.above = w->scroll, rows.below = max_scroll - w->scroll;
+    gs_ui_clip(ui, &area);
+    return rows;
+}
+
+void gs_ui_flow_prepended(gs_ui *ui, const char *id, int n) { state(ui, hash(id))->prepended = n; }
+
+
 void gs_ui_end(gs_ui *ui) {
     if (ui->tip_wanted) {
         uint64_t rest = ui->now - ui->tip_since;
@@ -560,6 +883,7 @@ void gs_ui_end(gs_ui *ui) {
         else if (f->kind == FL_FRAME) frame_now(ui, f->r, f->c);
         else text_now(ui, f->r, f->text, f->px, f->c, f->align);
     }
+    if (gs_glyphs_waiting(ui->glyphs)) ui->wait_ms = 0;  // a glyph is missing from this frame: the next one has it
 }
 
 // ---- The window between runs ----
