@@ -102,7 +102,65 @@ static void check_tone(tally *t) {
 }
 #endif
 
+// One transport stream packet carrying `n` bytes (at most 184) of payload for a PID, stuffed to
+// size with an adaptation field.
+static void ts_packet(uint8_t *out, int pid, bool start, const uint8_t *payload, size_t n) {
+    static int counter;
+    size_t stuffing = 184 - n;
+    memset(out, 0xFF, 188);
+    out[0] = 0x47, out[1] = (uint8_t)((start ? 0x40 : 0) | pid >> 8), out[2] = (uint8_t)pid;
+    out[3] = (uint8_t)((stuffing ? 0x30 : 0x10) | (counter++ & 15));
+    if (stuffing) out[4] = (uint8_t)(stuffing - 1);
+    if (stuffing > 1) out[5] = 0;
+    memcpy(out + 188 - n, payload, n);
+}
+
+// A PES packet of H.264 at a 90 kHz timestamp, as one transport stream packet.
+static void pes_packet(uint8_t *out, int64_t pts, const uint8_t *es, size_t n) {
+    uint8_t p[184] = { 0, 0, 1, 0xE0, 0, 0, 0x80, 0x80, 5,
+                       (uint8_t)(0x21 | (pts >> 29 & 0x0E)), (uint8_t)(pts >> 22), (uint8_t)(1 | (pts >> 14 & 0xFE)), (uint8_t)(pts >> 7), (uint8_t)(1 | (pts << 1 & 0xFE)) };
+    memcpy(p + 14, es, n);
+    ts_packet(out, 0x101, true, p, 14 + n);
+}
+
+typedef struct { int n; size_t len[4]; double pts[4]; uint8_t last[4]; } units;
+
+static void note_unit(void *user, const gs_media_frame *f) {
+    units *u = user;
+    if (f->kind != GS_MEDIA_H264 || u->n == 4) return;
+    u->len[u->n] = f->len, u->pts[u->n] = f->pts, u->last[u->n] = f->data[f->len - 1], u->n++;
+}
+
+// Access units that do not end where PES packets do, as Twitch's transcodes send them: the second
+// packet begins with the last bytes of the first access unit, and the third holds two whole ones.
+static void test_ts_unaligned(void) {
+    static const uint8_t pat[] = { 0, 0x00, 0xB0, 0x0D, 0, 1, 0xC1, 0, 0, 0, 1, 0xF0, 0x00, 0, 0, 0, 0 };
+    static const uint8_t pmt[] = { 0, 0x02, 0xB0, 0x12, 0, 1, 0xC1, 0, 0, 0xE1, 0x01, 0xF0, 0, 0x1B, 0xE1, 0x01, 0xF0, 0, 0, 0, 0, 0 };
+    static const uint8_t first[] = { 0, 0, 0, 1, 9, 0xF0, 0, 0, 1, 0x41, 1, 2, 3 };              // a delimiter and a slice, cut short
+    static const uint8_t second[] = { 4, 5, 0xAA, 0, 0, 0, 1, 9, 0xF0, 0, 0, 1, 0x41, 6, 0xBB };  // its end, then the next access unit
+    static const uint8_t third[] = { 0, 0, 0, 1, 9, 0xF0, 0, 0, 1, 0x41, 7, 0xCC, 0, 0, 0, 1, 9, 0xF0, 0, 0, 1, 0x41, 8, 0xDD };
+    uint8_t ts[5 * 188];
+    ts_packet(ts, 0, true, pat, sizeof pat);
+    ts_packet(ts + 188, 0x1000, true, pmt, sizeof pmt);
+    pes_packet(ts + 2 * 188, 90000, first, sizeof first);
+    pes_packet(ts + 3 * 188, 93000, second, sizeof second);
+    pes_packet(ts + 4 * 188, 96000, third, sizeof third);
+    units u = { 0 };
+    gs_ts *t = gs_ts_new(note_unit, &u);
+    CHECK(gs_ts_feed(t, ts, sizeof ts));
+    gs_ts_end(t);
+    gs_ts_free(t);
+    CHECK(u.n == 4);
+    CHECK(u.len[0] == sizeof first + 3 && u.last[0] == 0xAA);  // the first got its end from the second packet
+    CHECK(u.len[1] == sizeof second - 3 && u.last[1] == 0xBB && u.last[2] == 0xCC && u.last[3] == 0xDD);
+    CHECK_NEAR(u.pts[0], 1.0, 1e-9);
+    CHECK_NEAR(u.pts[1], 93000 / 90000.0, 1e-9);
+    CHECK_NEAR(u.pts[2], 96000 / 90000.0, 1e-9);
+    CHECK_NEAR(u.pts[3], 99000 / 90000.0, 1e-9);  // a second access unit in one packet continues at the last spacing
+}
+
 void test_media(void) {
+    test_ts_unaligned();
     if (!test_streams) return;
     // Transport stream: 6 s at 30 fps, one keyframe a second, AAC frames of 1024 samples.
     tally a = replay_ts("a/ts", 3);
