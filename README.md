@@ -24,7 +24,7 @@ Every module works on all three desktop systems: Windows, macOS and Linux. Code 
 | `gs_stats` | A performance overlay in SDL's debug font: frame rate, frame time, process memory and CPU (Windows, Linux, macOS), audio load, the program file's size, renderer; the web shows the wasm heap and no CPU or file size |
 | `gs_pace` | Frame pacing: vsync (adaptive where supported, every nth refresh for caps that divide the refresh rate), a limiter for any cap, for vsync that is off or unsupported, and for vsync the driver reports but ignores, and 10 fps while the window is minimised or hidden; on the web the browser paces |
 | `gs_sha256` | SHA-256, for checking downloads against published checksums |
-| `gs_json` | A small JSON reader: a read-only tree with NULL-safe lookups and dotted paths |
+| `gs_json` | JSON read and written: a read-only tree with NULL-safe lookups and dotted paths for reading, and values that are built, changed, merged over defaults, and written compact or indented, to text or to a file replaced whole |
 | `gs_http` | HTTPS requests from worker threads: WinHTTP on Windows, the system's libcurl (loaded at run time) on Linux and macOS, and the curl program where neither is usable; whole bodies, files or streamed ranges, with a progress hook that can give a request up |
 | `gs_secret` | A small secret such as a sign-in token kept for the current user: encrypted with the Data Protection API on Windows, an owner-only file on Linux and macOS |
 | `gs_oauth` | Signing in with OAuth 2.0's device authorization grant: a short code the user enters in their own browser, then polling for tokens; no embedded browser |
