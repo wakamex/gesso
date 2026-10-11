@@ -137,6 +137,109 @@ static void test_ui_multiline(void) {
     }
 }
 
+static bool custom, first, second, space, clipped_hit;
+static float level;
+static bool gate;
+
+// A second small interface: two buttons with one label, a control of the app's own, a slider, and a
+// button that is disabled while `gate` is set.
+static void keyboard_frame(void) {
+    gs_ui_begin(ui);
+    first = gs_ui_button(ui, (gs_rect){ 0, 0, 80, 30 }, "Remove");
+    second = gs_ui_button(ui, (gs_rect){ 90, 0, 80, 30 }, "Remove");
+    custom = gs_ui_activated(ui, (gs_rect){ 180, 0, 80, 30 }, "custom");
+    gs_ui_focus_mark(ui, (gs_rect){ 180, 0, 80, 30 }, "custom", 4);
+    gs_ui_slider(ui, (gs_rect){ 0, 40, 200, 30 }, "level", &level, 0, 100);
+    gs_ui_disable(ui, gate, true);
+    gs_ui_toggle(ui, (gs_rect){ 0, 80, 80, 30 }, "Gated", &on);
+    gs_ui_disable(ui, false, false);
+    gs_rect window = { 0, 120, 100, 20 };  // a button half cut off by a clip: only what shows can be clicked
+    gs_ui_clip(ui, &window);
+    clipped_hit = gs_ui_button(ui, (gs_rect){ 0, 120, 100, 40 }, "Clipped");
+    gs_ui_clip(ui, NULL);
+    space = gs_ui_key(ui, SDLK_SPACE, 0);
+    gs_ui_end(ui);
+}
+
+static void test_ui_keyboard(void) {
+    // Tab walks the controls in the order drawn and Shift+Tab walks back, round and round.
+    gs_ui_focus(ui, NULL), frame();
+    key(SDLK_TAB, 0), frame();
+    CHECK(gs_ui_focused(ui, "field"));
+    text("q"), frame();
+    CHECK(!strcmp(field, "q"));
+    on = false;
+    key(SDLK_TAB, 0), frame();
+    CHECK(!gs_ui_focused(ui, "field"));
+    key(SDLK_SPACE, 0), frame();  // Space presses the toggle the keyboard has reached
+    CHECK(on);
+    key(SDLK_RETURN, 0), frame();
+    CHECK(!on);
+    choice = 0;
+    key(SDLK_TAB, 0), frame();
+    CHECK(gs_ui_focused(ui, "sort"));
+    key(SDLK_DOWN, 0), key(SDLK_DOWN, 0), frame();  // the arrows change a dropdown's choice
+    CHECK(choice == 2);
+    key(SDLK_UP, 0), frame();
+    CHECK(choice == 1);
+    selected = 0;
+    key(SDLK_TAB, 0), frame();
+    CHECK(gs_ui_focused(ui, "list"));
+    key(SDLK_DOWN, 0), frame();
+    CHECK(selected == 1);
+    key(SDLK_TAB, 0), frame();
+    CHECK(gs_ui_focused(ui, "field"));
+    key(SDLK_TAB, SDL_KMOD_SHIFT), frame();
+    CHECK(gs_ui_focused(ui, "list"));
+    field[0] = 0;
+
+    // Two buttons with one label are two stops; a control of the app's own is a third.
+    gs_ui_focus(ui, NULL), keyboard_frame();
+    key(SDLK_TAB, 0), keyboard_frame();
+    key(SDLK_SPACE, 0), keyboard_frame();
+    CHECK(first && !second && !space);
+    key(SDLK_TAB, 0), keyboard_frame();
+    key(SDLK_RETURN, 0), keyboard_frame();
+    CHECK(!first && second);
+    key(SDLK_TAB, 0), keyboard_frame();
+    CHECK(gs_ui_focused(ui, "custom"));
+    key(SDLK_SPACE, 0), keyboard_frame();
+    CHECK(custom);
+    key(SDLK_TAB, 0), keyboard_frame();
+    CHECK(gs_ui_focused(ui, "level"));
+    level = 50;
+    key(SDLK_RIGHT, 0), keyboard_frame();
+    CHECK(level == 55);
+    key(SDLK_HOME, 0), keyboard_frame();
+    CHECK(level == 0);
+    on = false;
+    key(SDLK_TAB, 0), key(SDLK_SPACE, 0), keyboard_frame(), keyboard_frame();
+    CHECK(on);  // the toggle, while it is enabled
+
+    // Disabled, it takes no click, and Tab passes it by.
+    gate = true, on = false;
+    keyboard_frame();
+    click(10, 95), keyboard_frame();
+    CHECK(!on);
+    gs_ui_focus(ui, "level"), keyboard_frame();
+    key(SDLK_TAB, 0), keyboard_frame();
+    key(SDLK_SPACE, 0), keyboard_frame();
+    CHECK(!on && clipped_hit);  // Tab went from the slider past the toggle to the button after it
+    gate = false;
+
+    // A click hides the mark and gives Space back to the app.
+    click(300, 250), keyboard_frame();
+    key(SDLK_SPACE, 0), keyboard_frame();
+    CHECK(space && !clipped_hit);
+
+    // What a clip cuts off cannot be clicked.
+    click(50, 150), keyboard_frame();
+    CHECK(!clipped_hit);
+    click(50, 130), keyboard_frame();
+    CHECK(clipped_hit);
+    gs_ui_focus(ui, NULL);
+}
+
 static SDL_Window *offscreen_window(int w, int h) {
     // (a window that brings its own graphics context: otherwise macOS's offscreen driver is asked for
     // OpenGL, which it cannot load, and no window is made)
@@ -292,6 +395,7 @@ void test_ui(void) {
     key(SDLK_RETURN, 0), frame();
     CHECK(activated);
 
+    test_ui_keyboard();
     test_ui_draw(r);
     test_ui_windows(w, fs);
     gs_ui_free(ui);

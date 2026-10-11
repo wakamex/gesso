@@ -1,5 +1,6 @@
 // An immediate-mode interface for apps: layout by cutting rectangles, a few widgets, hit testing,
-// one floating layer for dropdowns, menus and tooltips, and the window's state between runs.
+// one floating layer for dropdowns, menus and tooltips, a Tab order with a visible focus mark, and
+// the window's state between runs.
 // Everything is in points, which gs_ui turns into the display's pixels (SDL_GetWindowDisplayScale),
 // so the interface keeps its size across displays and text is drawn at full resolution.
 //
@@ -37,6 +38,7 @@ typedef struct {
     SDL_FColor background, panel, raised, text, muted, accent, accent_text, border, warning;
     float text_px, small_px, row;  // text sizes and a control's height, in points
     float radius;                  // of the controls' corners, in points; 0 (the default) for square ones
+    SDL_FColor focus;              // the ring around the control the keyboard has reached; the accent by default
 } gs_ui_style;
 
 typedef struct gs_ui gs_ui;
@@ -93,7 +95,10 @@ float gs_ui_text_wrapped(gs_ui *ui, gs_rect r, const char *text, float px, SDL_F
 float gs_ui_text_height(gs_ui *ui, const char *text, float px, float width);
 float gs_ui_line_height(const gs_ui *ui, float px);  // the height of one line of wrapped text at size px
 void gs_ui_texture(gs_ui *ui, gs_rect r, SDL_Texture *t, const SDL_FRect *src);  // fills r, cropping the source to keep its aspect
-void gs_ui_clip(gs_ui *ui, const gs_rect *r);  // NULL ends clipping
+// Clips drawing to r, and the pointer with it: a control cut off by the clip cannot be clicked where
+// it does not show. NULL ends clipping. A list ends its own clip with gs_ui_list_end and puts back
+// the one that was in force before it.
+void gs_ui_clip(gs_ui *ui, const gs_rect *r);
 void gs_ui_arrow(gs_ui *ui, gs_rect r, SDL_FColor c);  // a small downward triangle centred in r, as on a dropdown
 
 // ---- Input ----
@@ -101,8 +106,29 @@ void gs_ui_arrow(gs_ui *ui, gs_rect r, SDL_FColor c);  // a small downward trian
 bool gs_ui_hovered(gs_ui *ui, gs_rect r);
 bool gs_ui_clicked(gs_ui *ui, gs_rect r);  // the left button released over r after being pressed over it
 bool gs_ui_key(gs_ui *ui, SDL_Keycode key, SDL_Keymod mods);  // pressed this frame and not taken by a focused field
-void gs_ui_focus(gs_ui *ui, const char *id);  // gives a field or list the keyboard
+void gs_ui_focus(gs_ui *ui, const char *id);  // gives a control the keyboard; NULL takes it from all
 bool gs_ui_focused(gs_ui *ui, const char *id);
+
+// ---- The keyboard ----
+//
+// Tab and Shift+Tab move the focus through every control in the order drawn, round and round, and
+// gs_ui takes those keys. The control the keyboard has reached is marked with a ring in
+// gs_ui_style.focus (a text field by its accent edge, a list by a ring inside its edge), and is
+// worked with the keys: Space or Enter presses a button, a toggle, or opens a dropdown; the arrows
+// move a slider (Home and End to its ends), change a dropdown's choice and move through an open
+// menu's rows; a list and a text field take the keys they always did. A click hides the mark and
+// gives Space and Enter back to the app until Tab is pressed again, so an app's own shortcuts on
+// those keys keep working for someone using the mouse. Buttons and toggles are told apart by their
+// labels, and those with the same label by the order they are drawn in.
+//
+// A control of the app's own design joins in with gs_ui_activated, which is all of a button but its
+// look: true when r is clicked, or when Space or Enter is pressed while it has the keyboard. Draw the
+// control, then its focus mark with gs_ui_focus_mark, a ring `radius` round at its corners.
+bool gs_ui_activated(gs_ui *ui, gs_rect r, const char *id);
+void gs_ui_focus_mark(gs_ui *ui, gs_rect r, const char *id, float radius);
+// Controls drawn while disabled are shown and take no pointer or keys, and Tab passes them by; with
+// `dim` they are faded too. It lasts until it is set again or the frame ends.
+void gs_ui_disable(gs_ui *ui, bool disabled, bool dim);
 
 // ---- Widgets ----
 

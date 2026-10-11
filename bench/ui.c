@@ -1,6 +1,7 @@
 // Renders a page of gs_ui's controls and gs_draw's shapes, headless, to a PNG:
-//   zig build bench-ui -- OUT.png
-// For checking the controls' look on each system by eye.
+//   zig build bench-ui -- OUT.png [radius] [tabs]
+// For checking the controls' look on each system by eye: `radius` rounds their corners (6 unless
+// given) and `tabs` presses Tab that many times first, which marks the control it reaches.
 #include <SDL3/SDL.h>
 #include <stdio.h>
 
@@ -67,7 +68,7 @@ static void page(gs_ui *ui) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) return fprintf(stderr, "usage: bench-ui OUT.png [radius]\n"), 1;
+    if (argc < 2) return fprintf(stderr, "usage: bench-ui OUT.png [radius] [tabs]\n"), 1;
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
     if (!SDL_Init(SDL_INIT_VIDEO)) return fprintf(stderr, "%s\n", SDL_GetError()), 1;
@@ -76,7 +77,13 @@ int main(int argc, char **argv) {
     gs_fontset *fs = gs_fontset_system();
     gs_ui *ui = gs_ui_new(w, r, fs);
     gs_ui_style_of(ui)->radius = argc > 2 ? (float)SDL_atof(argv[2]) : 6;
-    for (int frame = 0; frame < 3; frame++) page(ui);  // (a glyph first drawn in one frame appears in the next)
+    page(ui);
+    for (int i = 0; i < (argc > 3 ? SDL_atoi(argv[3]) : 0); i++) {  // Tab pressed so many times, to see a control's focus mark
+        SDL_Event e = { .key = { .type = SDL_EVENT_KEY_DOWN, .key = SDLK_TAB, .down = true } };
+        gs_ui_event(ui, &e);
+        page(ui);
+    }
+    for (int frame = 0; frame < 2; frame++) page(ui);  // (a glyph first drawn in one frame appears in the next)
     SDL_Surface *s = SDL_RenderReadPixels(r, NULL), *c = s ? SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA32) : NULL;
     bool ok = c && stbi_write_png(argv[1], c->w, c->h, 4, c->pixels, c->pitch);
     SDL_DestroySurface(c), SDL_DestroySurface(s);

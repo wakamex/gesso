@@ -9,6 +9,8 @@
 #define STATES 128     // widgets with state between frames (ids hashed into a small table)
 #define FLOATING 64    // rows drawn in the floating layer per frame
 #define KEYS 32        // key presses kept per frame
+#define STOPS 256      // controls in the Tab order per frame
+#define DIM 0.45f      // the opacity of controls drawn disabled and dimmed
 #define TOOLTIP_MS 500
 #define BLINK_MS 530
 #define OUTSIDE -1e6f  // where the pointer is once it has left the window
@@ -50,6 +52,9 @@ typedef struct { fl_kind kind; gs_rect r; SDL_FColor c; char text[160]; float px
 
 typedef struct { char *text; int size4, width4; gs_wrap *wrap; } wrap_entry;
 
+typedef struct { uint32_t id; gs_rect r; } stop;        // a control the Tab key reaches
+typedef struct { gs_rect r; bool on; } clip_state;
+
 typedef struct {
     float x, y, wheel;
     bool down, pressed, released;
@@ -73,6 +78,13 @@ struct gs_ui {
     float press_x, press_y;  // where the left button went down
     char composition[128];   // the input method's text being composed
     uint32_t focus, drag;    // the widget with the keyboard; the slider being dragged
+    bool marked;             // the keyboard moved the focus last, so the control that has it is marked
+    stop stops[STOPS], last_stops[STOPS];  // the Tab order: this frame's as it is drawn, and the last frame's, which Tab walks
+    int nstops, nlast;
+    bool disabled, dim;      // controls drawn now take no input; and are faded
+    clip_state clip, list_clip;  // the clip in force, which the pointer cannot reach through; and the one a list put aside
+    gs_rect list_area;
+    bool list_marked;
     uint64_t caret_since;
     widget states[STATES];
     // The floating layer: what it covered last frame takes the pointer from the widgets under it.
@@ -84,6 +96,8 @@ struct gs_ui {
     gs_rect menu_rect;
     float menu_y;
     int menu_background;     // its background in the floating layer, sized when the menu ends
+    int menu_at, menu_count; // the row the keyboard highlights (from 1), and the rows so far
+    bool menu_choose;
     uint32_t tip;            // the tooltip's anchor
     uint64_t tip_since;
     gs_rect tip_rect;
@@ -124,6 +138,7 @@ gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
         .accent_text = { 0.04f, 0.07f, 0.06f, 1 }, .border = { 0.22f, 0.24f, 0.235f, 1 }, .warning = { 0.95f, 0.60f, 0.29f, 1 },
         .text_px = 14, .small_px = 12, .row = 30,
     };
+    ui->style.focus = ui->style.accent;
     ui->opacity = 1;
     ui->pending.x = ui->pending.y = OUTSIDE;  // until the pointer is seen in the window
     return ui;
@@ -190,6 +205,25 @@ bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
     }
 }
 
+static void set_focus(gs_ui *ui, uint32_t h) {
+    if (h == ui->focus) return;
+    ui->focus = h, ui->caret_since = ui->now;
+    if (SDL_TextInputActive(ui->win)) SDL_StopTextInput(ui->win);
+    ui->composition[0] = 0;
+}
+
+// Tab and Shift+Tab: the focus goes to the next or the previous of the controls the last frame drew,
+// round and round, starting at the first or the last when none of them has it.
+static void tab(gs_ui *ui, int step) {
+    if (!ui->nlast) return;
+    int at = -1;
+    for (int i = 0; i < ui->nlast; i++)
+        if (ui->last_stops[i].id == ui->focus) at = i;
+    at = at < 0 ? (step > 0 ? 0 : ui->nlast - 1) : (at + step + ui->nlast) % ui->nlast;
+    set_focus(ui, ui->last_stops[at].id);
+    ui->marked = true;
+}
+
 gs_rect gs_ui_begin(gs_ui *ui) {
     int ww, wh, pw, ph;
     SDL_GetWindowSize(ui->win, &ww, &wh);
@@ -206,6 +240,13 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     ui->float_last = ui->float_now, ui->float_last_on = ui->float_now_on;
     ui->float_now_on = false, ui->nfl = 0, ui->tip_wanted = false, ui->wait_ms = -1, ui->opacity = 1;
     if (!down) ui->drag = 0;
+    ui->disabled = ui->dim = false, ui->clip.on = false;
+    if (ui->in.pressed) ui->marked = false;
+    memcpy(ui->last_stops, ui->stops, sizeof(stop) * (size_t)ui->nstops);
+    ui->nlast = ui->nstops, ui->nstops = 0;
+    for (int i = 0; i < ui->in.nkeys; i++)
+        if (ui->in.keys[i] == SDLK_TAB && !(ui->in.mods[i] & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)))
+            ui->taken[i] = true, tab(ui, ui->in.mods[i] & SDL_KMOD_SHIFT ? -1 : 1);
     gs_glyphs_begin_frame(ui->glyphs);
     return ui->area;
 }
@@ -282,7 +323,7 @@ static void outline_now(gs_ui *ui, gs_rect r, float radius, float width, SDL_FCo
 }
 
 // A colour as it is drawn: faded by the opacity in force.
-static SDL_FColor ink(const gs_ui *ui, SDL_FColor c) { return c.a *= ui->opacity, c; }
+static SDL_FColor ink(const gs_ui *ui, SDL_FColor c) { return c.a *= ui->opacity * (ui->dim ? DIM : 1), c; }
 
 void gs_ui_opacity(gs_ui *ui, float opacity) { ui->opacity = SDL_clamp(opacity, 0, 1); }
 
@@ -372,29 +413,51 @@ void gs_ui_texture(gs_ui *ui, gs_rect r, SDL_Texture *t, const SDL_FRect *src) {
     SDL_FRect d = px(ui, r);
     float alpha = 1;
     SDL_GetTextureAlphaModFloat(t, &alpha);
-    if (ui->opacity < 1) SDL_SetTextureAlphaModFloat(t, alpha * ui->opacity);
+    float fade = ui->opacity * (ui->dim ? DIM : 1);
+    if (fade < 1) SDL_SetTextureAlphaModFloat(t, alpha * fade);
     SDL_RenderTexture(ui->r, t, &s, &d);
-    if (ui->opacity < 1) SDL_SetTextureAlphaModFloat(t, alpha);
+    if (fade < 1) SDL_SetTextureAlphaModFloat(t, alpha);
 }
 
 void gs_ui_clip(gs_ui *ui, const gs_rect *r) {
+    ui->clip.on = r != NULL;
     if (!r) { SDL_SetRenderClipRect(ui->r, NULL); return; }
+    ui->clip.r = *r;
     SDL_FRect f = px(ui, *r);
     SDL_Rect c = { (int)floorf(f.x), (int)floorf(f.y), (int)ceilf(f.w), (int)ceilf(f.h) };
     SDL_SetRenderClipRect(ui->r, &c);
 }
 
+// Clips to the part of r inside the clip in force, which it returns for clip_pop to put back: a
+// control that clips its own drawing leaves the clip of the list or page it is in as it was.
+static clip_state clip_push(gs_ui *ui, gs_rect r) {
+    clip_state before = ui->clip;
+    if (before.on) {
+        float x0 = fmaxf(r.x, before.r.x), y0 = fmaxf(r.y, before.r.y), x1 = fminf(r.x + r.w, before.r.x + before.r.w), y1 = fminf(r.y + r.h, before.r.y + before.r.h);
+        r = (gs_rect){ x0, y0, fmaxf(0, x1 - x0), fmaxf(0, y1 - y0) };
+    }
+    gs_ui_clip(ui, &r);
+    return before;
+}
+
+static void clip_pop(gs_ui *ui, clip_state before) { gs_ui_clip(ui, before.on ? &before.r : NULL); }
+
 // ---- Input ----
 
 // The pointer is free for a widget unless the floating layer covered it last frame (widgets in that
 // layer, drawn while in_float, are the ones it belongs to).
+static bool inert(const gs_ui *ui) { return ui->disabled; }
+
 static bool pointer_over(gs_ui *ui, gs_rect r, float x, float y) {
+    if (inert(ui)) return false;
     if (!ui->in_float && ui->float_last_on && gs_rect_contains(ui->float_last, x, y)) return false;
+    if (!ui->in_float && ui->clip.on && !gs_rect_contains(ui->clip.r, x, y)) return false;  // (cut off by a list's or a page's edge)
     return gs_rect_contains(r, x, y);
 }
 
 bool gs_ui_hovered(gs_ui *ui, gs_rect r) { return pointer_over(ui, r, ui->in.x, ui->in.y); }
 bool gs_ui_clicked(gs_ui *ui, gs_rect r) { return ui->in.released && pointer_over(ui, r, ui->in.x, ui->in.y) && pointer_over(ui, r, ui->press_x, ui->press_y); }
+static gs_rect outset(gs_rect r, float d) { return (gs_rect){ r.x - d, r.y - d, r.w + 2 * d, r.h + 2 * d }; }
 static bool pressed(gs_ui *ui, gs_rect r) { return ui->in.pressed && pointer_over(ui, r, ui->in.x, ui->in.y); }
 
 bool gs_ui_key(gs_ui *ui, SDL_Keycode key, SDL_Keymod mods) {
@@ -404,26 +467,59 @@ bool gs_ui_key(gs_ui *ui, SDL_Keycode key, SDL_Keymod mods) {
     return false;
 }
 
-void gs_ui_focus(gs_ui *ui, const char *id) {
-    uint32_t h = id ? hash(id) : 0;
-    if (h == ui->focus) return;
-    ui->focus = h, ui->caret_since = ui->now;
-    if (SDL_TextInputActive(ui->win)) SDL_StopTextInput(ui->win);
-    ui->composition[0] = 0;
+void gs_ui_focus(gs_ui *ui, const char *id) { set_focus(ui, id ? hash(id) : 0); }
+bool gs_ui_focused(gs_ui *ui, const char *id) { return ui->focus == hash(id); }
+
+void gs_ui_disable(gs_ui *ui, bool disabled, bool dim) { ui->disabled = disabled, ui->dim = dim; }
+
+// Enters a control into the Tab order. True when it has the keyboard.
+static bool stop_at(gs_ui *ui, uint32_t h, gs_rect r) {
+    if (inert(ui) || ui->in_float) return false;
+    if (ui->nstops < STOPS) ui->stops[ui->nstops++] = (stop){ h, r };
+    return ui->focus == h;
 }
 
-bool gs_ui_focused(gs_ui *ui, const char *id) { return ui->focus == hash(id); }
+// An id for a control that has only a label: the label's, or another when a control drawn earlier in
+// the frame has the same label, so each of several "Remove" buttons is a stop of its own.
+static uint32_t label_id(gs_ui *ui, const char *label) {
+    uint32_t h = hash(label);
+    for (int i = 0; i < ui->nstops; i++)
+        if (ui->stops[i].id == h) h = h * 16777619u + 1, h += !h, i = -1;
+    return h;
+}
+
+// Space or Enter for the control that has the keyboard. Only once the keyboard has moved the focus:
+// after a click those keys are the app's again, and an open menu or dropdown has them first.
+static bool act(gs_ui *ui, bool focused) {
+    return focused && ui->marked && !ui->float_last_on && (gs_ui_key(ui, SDLK_SPACE, 0) || gs_ui_key(ui, SDLK_RETURN, 0) || gs_ui_key(ui, SDLK_KP_ENTER, 0));
+}
+
+// The focus mark: a ring around the control the keyboard has reached.
+static void mark(gs_ui *ui, bool focused, gs_rect r, float radius) {
+    if (focused && ui->marked) gs_ui_outline(ui, outset(r, 3), radius + 3, 2, ui->style.focus);
+}
+
+bool gs_ui_activated(gs_ui *ui, gs_rect r, const char *id) {
+    bool focused = stop_at(ui, hash(id), r);
+    return gs_ui_clicked(ui, r) || act(ui, focused);
+}
+
+void gs_ui_focus_mark(gs_ui *ui, gs_rect r, const char *id, float radius) { mark(ui, ui->focus == hash(id) && !inert(ui), r, radius); }
 
 // ---- Widgets ----
 
 bool gs_ui_button(gs_ui *ui, gs_rect r, const char *label) {
-    bool hot = gs_ui_hovered(ui, r);
+    bool focused = stop_at(ui, label_id(ui, label), r), hot = gs_ui_hovered(ui, r);
     gs_ui_round(ui, r, ui->style.radius, hot ? ui->style.border : ui->style.raised);
     gs_ui_text(ui, gs_inset(r, 6), label, ui->style.text_px, ui->style.text, 0);
-    return gs_ui_clicked(ui, r);
+    mark(ui, focused, r, ui->style.radius);
+    return gs_ui_clicked(ui, r) || act(ui, focused);
 }
 
 bool gs_ui_toggle(gs_ui *ui, gs_rect r, const char *label, bool *on) {
+    bool focused = stop_at(ui, label_id(ui, label), r);
+    bool hit = gs_ui_clicked(ui, r) || act(ui, focused);
+    if (hit) *on = !*on;
     gs_rect box = { r.x, r.y + (r.h - 16) / 2, 16, 16 };
     float radius = fminf(ui->style.radius, 4);
     gs_ui_round(ui, box, radius, *on ? ui->style.accent : ui->style.raised);
@@ -432,22 +528,30 @@ bool gs_ui_toggle(gs_ui *ui, gs_rect r, const char *label, bool *on) {
     gs_rect rest = r;
     gs_cut_left(&rest, 22);
     gs_ui_text(ui, rest, label, ui->style.text_px, ui->style.text, -1);
-    bool hit = gs_ui_clicked(ui, r);
-    if (hit) *on = !*on;
+    mark(ui, focused, box, radius);
     return hit;
 }
 
 bool gs_ui_slider(gs_ui *ui, gs_rect r, const char *id, float *value, float min, float max) {
     uint32_t h = hash(id);
+    bool focused = stop_at(ui, h, r);
     if (pressed(ui, r)) ui->drag = h;
     float before = *value;
     if (ui->drag == h && max > min) *value = fminf(max, fmaxf(min, min + (ui->in.x - r.x) / r.w * (max - min)));
+    if (focused && ui->marked && max > min) {  // the arrows move it a twentieth of its range, Home and End to its ends
+        float step = (max - min) / 20;
+        while (gs_ui_key(ui, SDLK_RIGHT, 0) || gs_ui_key(ui, SDLK_UP, 0)) *value = fminf(max, *value + step);
+        while (gs_ui_key(ui, SDLK_LEFT, 0) || gs_ui_key(ui, SDLK_DOWN, 0)) *value = fmaxf(min, *value - step);
+        if (gs_ui_key(ui, SDLK_HOME, 0)) *value = min;
+        if (gs_ui_key(ui, SDLK_END, 0)) *value = max;
+    }
     float t = max > min ? (*value - min) / (max - min) : 0;
-    gs_rect track = { r.x, r.y + r.h / 2 - 2, r.w, 4 };
+    gs_rect track = { r.x, r.y + r.h / 2 - 2, r.w, 4 }, knob = { r.x + r.w * t - 5, r.y + r.h / 2 - 7, 10, 14 };
     float radius = ui->style.radius;
     gs_ui_round(ui, track, fminf(radius, 2), ui->style.raised);
     gs_ui_round(ui, (gs_rect){ track.x, track.y, track.w * t, track.h }, fminf(radius, 2), ui->style.accent);
-    gs_ui_round(ui, (gs_rect){ r.x + r.w * t - 5, r.y + r.h / 2 - 7, 10, 14 }, fminf(radius, 5), gs_ui_hovered(ui, r) || ui->drag == h ? ui->style.text : ui->style.muted);
+    gs_ui_round(ui, knob, fminf(radius, 5), gs_ui_hovered(ui, r) || ui->drag == h ? ui->style.text : ui->style.muted);
+    mark(ui, focused, knob, fminf(radius, 5));
     return *value != before;
 }
 
@@ -522,14 +626,14 @@ bool gs_ui_field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, c
         ui->caret_since = ui->now;
     }
     if (ui->focus == h && ui->in.pressed && !gs_rect_contains(r, ui->in.x, ui->in.y)) gs_ui_focus(ui, NULL);  // a click elsewhere leaves it
-    bool focused = ui->focus == h, changed = false;
+    bool focused = stop_at(ui, h, r), changed = false;
     if (focused) {
         if (!SDL_TextInputActive(ui->win)) SDL_StartTextInput(ui->win);
         changed = edit(ui, w, buf, size);
     }
     gs_ui_round(ui, r, ui->style.radius, ui->style.raised);
     gs_ui_outline(ui, r, ui->style.radius, 1, focused ? ui->style.accent : gs_ui_hovered(ui, r) ? ui->style.muted : ui->style.border);
-    gs_ui_clip(ui, &r);
+    clip_state outer = clip_push(ui, r);
     if (w->all && buf[0]) gs_ui_fill(ui, (gs_rect){ inner.x, r.y + 5, fminf(gs_ui_text_width(ui, buf, text_px), inner.w), r.h - 10 }, ui->style.border);
     if (buf[0] || ui->composition[0]) gs_ui_text(ui, (gs_rect){ inner.x, r.y, 1e6f, r.h }, buf, text_px, ui->style.text, -1);
     else if (placeholder) gs_ui_text(ui, inner, placeholder, text_px, ui->style.muted, -1);
@@ -547,7 +651,7 @@ bool gs_ui_field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, c
         SDL_Rect area = { (int)r.x, (int)r.y, (int)r.w, (int)r.h };  // where the input method's candidates go
         SDL_SetTextInputArea(ui->win, &area, (int)(cx - r.x));
     }
-    gs_ui_clip(ui, NULL);
+    clip_pop(ui, outer);
     return changed;
 }
 
@@ -722,7 +826,7 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
             w->cursor = at, w->want = false, ui->caret_since = ui->now;
         }
     }
-    bool focused = ui->focus == h, changed = false;
+    bool focused = stop_at(ui, h, r), changed = false;
     if (focused) {
         if (!SDL_TextInputActive(ui->win)) SDL_StartTextInput(ui->win);
         changed = area_edit(ui, w, buf, size, inner, &moved);
@@ -741,7 +845,7 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
 
     gs_ui_round(ui, r, ui->style.radius, ui->style.raised);
     gs_ui_outline(ui, r, ui->style.radius, 1, focused ? ui->style.accent : gs_ui_hovered(ui, r) ? ui->style.muted : ui->style.border);
-    gs_ui_clip(ui, &r);
+    clip_state outer = clip_push(ui, r);
     if (!buf[0] && !ui->composition[0] && placeholder) gs_ui_text(ui, (gs_rect){ inner.x, inner.y, inner.w, lh }, placeholder, px, ui->style.muted, -1);
     int lo = SDL_min(w->anchor, w->cursor), hi = SDL_max(w->anchor, w->cursor);
     bool has = w->anchored && lo != hi;
@@ -770,7 +874,7 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
         SDL_Rect area = { (int)r.x, (int)top, (int)r.w, (int)lh };  // where the input method's candidates go
         SDL_SetTextInputArea(ui->win, &area, (int)(cx - r.x));
     }
-    gs_ui_clip(ui, NULL);
+    clip_pop(ui, outer);
     return changed;
 }
 
@@ -783,18 +887,28 @@ void gs_ui_arrow(gs_ui *ui, gs_rect r, SDL_FColor c) {
 }
 
 bool gs_ui_dropdown(gs_ui *ui, gs_rect r, const char *id, const char *const *items, int count, int *selected) {
-    widget *w = state(ui, hash(id));
-    bool hot = gs_ui_hovered(ui, r);
+    uint32_t h = hash(id);
+    widget *w = state(ui, h);
+    bool focused = stop_at(ui, h, r), hot = gs_ui_hovered(ui, r), changed = false;
+    if (focused && ui->marked && count > 0) {  // the arrows change the choice, open or not; Space and Enter open and close the list
+        int next = *selected;
+        while (gs_ui_key(ui, SDLK_DOWN, 0)) next++;
+        while (gs_ui_key(ui, SDLK_UP, 0)) next--;
+        next = SDL_clamp(next, 0, count - 1);
+        changed = next != *selected, *selected = next;
+        if (gs_ui_key(ui, SDLK_SPACE, 0) || gs_ui_key(ui, SDLK_RETURN, 0) || gs_ui_key(ui, SDLK_KP_ENTER, 0)) w->open = !w->open;
+    }
+    if (ui->marked && !focused) w->open = false;  // Tab has moved on
     gs_ui_round(ui, r, ui->style.radius, hot || w->open ? ui->style.border : ui->style.raised);
     gs_rect label = gs_inset(r, 8);
     gs_ui_arrow(ui, gs_cut_right(&label, 12), ui->style.muted);
     gs_ui_text(ui, label, *selected >= 0 && *selected < count ? items[*selected] : "", ui->style.text_px, ui->style.text, -1);
+    mark(ui, focused, r, ui->style.radius);
     if (gs_ui_clicked(ui, r)) w->open = !w->open;
-    if (!w->open) return false;
+    if (!w->open) return changed;
     float row = ui->style.row;
     gs_rect list = { r.x, r.y + r.h + 2, r.w, row * count };
     if (list.y + list.h > ui->area.h) list.y = r.y - list.h - 2;  // above when there is no room below
-    bool changed = false;
     ui->in_float = true;
     gs_ui_round(ui, list, ui->style.radius, ui->style.panel);
     gs_ui_outline(ui, list, ui->style.radius, 1, ui->style.border);
@@ -802,7 +916,7 @@ bool gs_ui_dropdown(gs_ui *ui, gs_rect r, const char *id, const char *const *ite
         gs_rect item = { list.x, list.y + i * row, list.w, row };
         if (gs_ui_hovered(ui, item) || i == *selected) gs_ui_round(ui, gs_inset(item, 1), ui->style.radius, i == *selected ? ui->style.raised : ui->style.border);
         gs_ui_text(ui, gs_inset(item, 8), items[i], ui->style.text_px, ui->style.text, -1);
-        if (gs_ui_clicked(ui, item)) changed = *selected != i, *selected = i, w->open = false;
+        if (gs_ui_clicked(ui, item)) changed = changed || *selected != i, *selected = i, w->open = false;
     }
     ui->in_float = false;
     ui->float_now = list, ui->float_now_on = true;
@@ -821,13 +935,20 @@ void gs_ui_tooltip(gs_ui *ui, gs_rect r, const char *text) {
 
 void gs_ui_menu_toggle(gs_ui *ui, const char *id) {
     widget *w = state(ui, hash(id));
-    w->open = !w->open, w->opened = ui->frame;
+    w->open = !w->open, w->opened = ui->frame, w->cursor = 0;
 }
 
 bool gs_ui_menu_begin(gs_ui *ui, const char *id, gs_rect anchor, float width) {
     widget *w = state(ui, hash(id));
     if (!w->open) return false;
     ui->menu = hash(id);
+    // Up and Down move a highlight through its rows (w->cursor, from 1; the rows were counted last
+    // frame into w->anchor), and Space or Enter chooses the highlighted one.
+    int n = w->anchor;
+    while (n && gs_ui_key(ui, SDLK_DOWN, 0)) w->cursor = w->cursor % n + 1;
+    while (n && gs_ui_key(ui, SDLK_UP, 0)) w->cursor = w->cursor <= 1 ? n : w->cursor - 1;
+    ui->menu_choose = w->cursor && w->opened != ui->frame && (gs_ui_key(ui, SDLK_SPACE, 0) || gs_ui_key(ui, SDLK_RETURN, 0) || gs_ui_key(ui, SDLK_KP_ENTER, 0));
+    ui->menu_at = w->cursor, ui->menu_count = 0;
     ui->menu_rect = (gs_rect){ fminf(anchor.x, ui->area.w - width - 4), anchor.y + anchor.h + 2, width, 0 };
     ui->menu_y = ui->menu_rect.y;
     ui->in_float = true;
@@ -840,9 +961,10 @@ bool gs_ui_menu_begin(gs_ui *ui, const char *id, gs_rect anchor, float width) {
 bool gs_ui_menu_item(gs_ui *ui, const char *label, bool enabled) {
     gs_rect item = { ui->menu_rect.x, ui->menu_y, ui->menu_rect.w, ui->style.row };
     ui->menu_y += item.h;
-    if (enabled && gs_ui_hovered(ui, item)) gs_ui_round(ui, gs_inset(item, 1), ui->style.radius, ui->style.border);
+    bool at = ++ui->menu_count == ui->menu_at;
+    if (enabled && (at || gs_ui_hovered(ui, item))) gs_ui_round(ui, gs_inset(item, 1), ui->style.radius, ui->style.border);
     gs_ui_text(ui, gs_inset(item, 10), label, ui->style.text_px, enabled ? ui->style.text : ui->style.muted, -1);
-    bool chosen = enabled && gs_ui_clicked(ui, item);
+    bool chosen = enabled && (gs_ui_clicked(ui, item) || (at && ui->menu_choose));
     if (chosen) state(ui, ui->menu)->open = false;
     return chosen;
 }
@@ -854,9 +976,15 @@ void gs_ui_menu_end(gs_ui *ui) {
     ui->in_float = false;
     ui->float_now = ui->menu_rect, ui->float_now_on = true;
     widget *w = state(ui, ui->menu);
+    w->anchor = ui->menu_count;
     // A click elsewhere or Esc closes it; not the click that opened it, in this same frame.
     if (w->opened != ui->frame && ui->in.released && !gs_rect_contains(ui->menu_rect, ui->in.x, ui->in.y)) w->open = false;
     if (gs_ui_key(ui, SDLK_ESCAPE, 0)) w->open = false;
+}
+
+static void list_begin(gs_ui *ui, gs_rect area, bool focused) {
+    ui->list_area = area, ui->list_marked = focused && ui->marked;
+    ui->list_clip = clip_push(ui, area);
 }
 
 gs_ui_rows gs_ui_list(gs_ui *ui, gs_rect area, const char *id, int count, float row_h, int *selected) {
@@ -864,9 +992,9 @@ gs_ui_rows gs_ui_list(gs_ui *ui, gs_rect area, const char *id, int count, float 
     widget *w = state(ui, h);
     gs_ui_rows rows = { 0 };
     float max_scroll = fmaxf(0, count * row_h - area.h);
+    bool moved = false, focused = stop_at(ui, h, area);
     if (gs_ui_hovered(ui, area) && ui->in.wheel) w->scroll -= ui->in.wheel * row_h * 1.5f;
-    bool moved = false;
-    if (ui->focus == h && count) {
+    if (focused && count) {
         int page = (int)fmaxf(1, area.h / row_h - 1), sel = *selected;
         while (gs_ui_key(ui, SDLK_DOWN, 0)) sel++, moved = true;  // (every press since the last frame)
         while (gs_ui_key(ui, SDLK_UP, 0)) sel--, moved = true;
@@ -892,22 +1020,26 @@ gs_ui_rows gs_ui_list(gs_ui *ui, gs_rect area, const char *id, int count, float 
     rows.first = (int)(w->scroll / row_h);
     rows.end = SDL_min(count, (int)((w->scroll + area.h) / row_h) + 1);
     rows.y = area.y - w->scroll;
-    gs_ui_clip(ui, &area);
+    list_begin(ui, area, focused);
     return rows;
 }
 
-void gs_ui_list_end(gs_ui *ui) { gs_ui_clip(ui, NULL); }
+void gs_ui_list_end(gs_ui *ui) {
+    if (ui->list_marked) gs_ui_outline(ui, ui->list_area, ui->style.radius, 2, ui->style.focus);  // the focus mark, inside its edge
+    clip_pop(ui, ui->list_clip);
+}
 
 gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const float *heights) {
     widget *w = state(ui, hash(id));
     gs_ui_rows rows = { 0 };
+    bool focused = stop_at(ui, hash(id), area);
     float total = 0;
     for (int i = 0; i < count; i++) total += heights[i];
     for (int i = 0; i < w->prepended && i < count; i++) w->scroll += heights[i];  // (the rows in front pushed the place down)
     w->prepended = 0;
     float max_scroll = fmaxf(0, total - area.h), page = area.h * 0.9f;
     if (!w->away) w->scroll = max_scroll;
-    bool over = gs_ui_hovered(ui, area), focused = ui->focus == hash(id);
+    bool over = gs_ui_hovered(ui, area);
     if (over && ui->in.wheel) w->scroll -= ui->in.wheel * ui->style.row * 1.5f;
     if (over || focused) {
         while (gs_ui_key(ui, SDLK_PAGEUP, 0)) w->scroll -= page;
@@ -925,7 +1057,7 @@ gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const 
     rows.end = rows.first;
     for (float bottom = y; rows.end < count && bottom < w->scroll + area.h; bottom += heights[rows.end++]) {}
     rows.above = w->scroll, rows.below = max_scroll - w->scroll;
-    gs_ui_clip(ui, &area);
+    list_begin(ui, area, focused);
     return rows;
 }
 
@@ -959,7 +1091,7 @@ void gs_ui_end(gs_ui *ui) {
     } else {
         ui->tip = 0;
     }
-    SDL_SetRenderClipRect(ui->r, NULL);
+    gs_ui_clip(ui, NULL);
     for (int i = 0; i < ui->nfl; i++) {
         fl_item *f = &ui->fl[i];
         if (f->kind == FL_FILL) fill_now(ui, f->r, f->c);
