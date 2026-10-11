@@ -36,6 +36,7 @@ typedef struct {
     const char *map_url;  // the EXT-X-MAP initialization segment in effect (fragmented MP4), or NULL
     const char *tags;     // the tag lines before it other than EXTINF, newline-separated; "" when none
     bool discontinuity;   // EXT-X-DISCONTINUITY before it
+    double date;          // when its first sample was made, in Unix seconds (EXT-X-PROGRAM-DATE-TIME, carried on from the segment before when it has none); 0 when the playlist gives no dates
 } gs_hls_segment;
 
 typedef struct {

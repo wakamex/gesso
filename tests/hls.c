@@ -44,9 +44,11 @@ void test_hls(void) {
         CHECK(!strcmp(s[0].url, "https://cdn.example/v1/playlist/seg-1.mp4"));
         CHECK(!strcmp(s[0].map_url, "https://cdn.example/v1/playlist/init-0.mp4"));
         CHECK(!strcmp(s[0].tags, "#EXT-X-PROGRAM-DATE-TIME:2026-10-08T17:26:03.620Z"));
+        CHECK_NEAR(s[0].date, 1791480363.620, 0.0005);  // (date -u -d 2026-10-08T17:26:03.620Z +%s)
         CHECK(s[1].sequence == 2408 && s[1].discontinuity && !strcmp(s[1].title, "Amazon"));
         CHECK(!strcmp(s[1].map_url, "https://ads.example/init.mp4"));
         CHECK(strstr(s[1].tags, "twitch-stitched-ad") != NULL);
+        CHECK(s[1].date == 0);  // undated after a discontinuity: not carried across it
         CHECK(!strcmp(m->tail, "#EXT-X-TWITCH-PREFETCH:https://cdn.example/next.mp4"));
     }
     gs_hls_media_free(m);

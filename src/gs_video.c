@@ -486,6 +486,7 @@ gs_video_info gs_video_get_info(gs_video *v) {
         .queued = v->count,
         .decoded = v->decoded, .shown = v->shown, .dropped = v->dropped,
         .next_pts = v->count ? frame_seconds(v->queue[0]) : -1,
+        .shown_pts = v->shown ? v->last_shown_pts : -1,
         .error_ms = v->error_ms, .error_max_ms = v->error_max_ms, .jitter_ms = v->jitter_ms,
     };
     SDL_UnlockMutex(v->lock);

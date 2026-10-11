@@ -45,6 +45,9 @@ struct gs_live {
     int segments, discontinuities, skips, stalls, renewals;
     double edge;               // seconds of playlist after what has been fetched, at the last poll
     double margin;             // seconds behind the live edge it started at, which a stall refills
+    // The playlist's dates: the last segments' first times on the player's timeline and when they were made.
+    struct { double pts, date; } dated[32];
+    int ndated;
     // Adaptive play, from a master playlist: its video renditions by bitrate (lowest first), the one
     // in use, and the policy choosing (gs_abr, the loader's alone; the estimate is copied out under lock).
     gs_hls_variant ladder[16];
@@ -369,6 +372,7 @@ static int load(void *user) {
                 SDL_BroadcastCondition(l->wake);
             }
             l->segments++;
+            if (s->date > 0 && isfinite(frames.first)) l->dated[l->ndated++ % 32].pts = frames.first + offset, l->dated[(l->ndated - 1) % 32].date = s->date;
             double rest_of_playlist = 0;
             for (int k = i + 1; k < m->count; k++) rest_of_playlist += m->segments[k].duration;
             l->edge = rest_of_playlist;
@@ -513,6 +517,12 @@ gs_live_info gs_live_get_info(gs_live *l) {
     i.state = s, i.stalls = l->stalls;
     SDL_UnlockMutex(l->lock);
     if (l->video) i.video = gs_video_get_info(l->video);
+    // The date of what is showing: from the latest dated segment starting at or before it.
+    double at = l->video ? i.video.shown_pts : i.clock, best = -INFINITY;
+    SDL_LockMutex(l->lock);
+    for (int k = 0; at >= 0 && k < 32 && k < l->ndated; k++)
+        if (l->dated[k].pts <= at + 0.001 && l->dated[k].pts > best) best = l->dated[k].pts, i.date = l->dated[k].date + (at - l->dated[k].pts);
+    SDL_UnlockMutex(l->lock);
     return i;
 }
 

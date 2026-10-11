@@ -45,6 +45,7 @@ typedef struct {
     int segments, discontinuities, skips, stalls, renewals, switches;
     double bandwidth;         // the throughput estimate in bits a second (adaptive); 0 for a media playlist
     char message[160];        // what went wrong, when something did
+    double date;              // when what is showing (the picture, or the sound without video) was made, in Unix seconds, from the playlist's EXT-X-PROGRAM-DATE-TIME; 0 when it gives none
     gs_video_info video;      // with video
 } gs_live_info;
 

@@ -149,7 +149,23 @@ static void add_line(arena *a, const char *line, size_t n) {
     a->len += n;
 }
 
-typedef struct { long long sequence; double duration; size_t title, url, map, tags; bool discontinuity; } raw_segment;
+typedef struct { long long sequence; double duration; size_t title, url, map, tags; bool discontinuity; double date; } raw_segment;
+
+// Unix seconds for an ISO 8601 date and time such as 2026-10-08T17:26:03.620Z (or with a +hh:mm
+// offset); 0 when it is not one.
+static double iso_time(const char *s) {
+    int y, mo, d, h, mi, used = 0;
+    double sec;
+    if (SDL_sscanf(s, "%d-%d-%dT%d:%d:%lf%n", &y, &mo, &d, &h, &mi, &sec, &used) < 6) return 0;
+    y -= mo <= 2;  // days since 1970-01-01, counting years from March
+    long long era = (y >= 0 ? y : y - 399) / 400, yoe = y - era * 400;
+    long long doy = (153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1, doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    double t = (double)(era * 146097 + doe - 719468) * 86400 + h * 3600 + mi * 60 + sec;
+    const char *z = s + used;
+    int zh = 0, zm = 0;
+    if ((*z == '+' || *z == '-') && SDL_sscanf(z + 1, "%d:%d", &zh, &zm) >= 1) t -= (*z == '+' ? 1 : -1) * (zh * 3600 + zm * 60);
+    return t;
+}
 
 gs_hls_media *gs_hls_media_parse(const char *text, size_t len, const char *base_url) {
     const char *p = text, *end = text + len, *line;
@@ -197,8 +213,11 @@ gs_hls_media *gs_hls_media_parse(const char *text, size_t len, const char *base_
             SDL_strlcpy(buf, line, n + 1 < sizeof buf ? n + 1 : sizeof buf);
             char resolved[4096];
             if (!gs_hls_resolve(base_url, buf, resolved, sizeof resolved)) SDL_strlcpy(resolved, buf, sizeof resolved);
+            if (tags.data && tags.len < tags.cap) tags.data[tags.len] = 0;
+            const char *dated = tags.len ? SDL_strstr(tags.data, "#EXT-X-PROGRAM-DATE-TIME:") : NULL;
+            double date = dated ? iso_time(dated + 25) : count && !discontinuity && segs[count - 1].date ? segs[count - 1].date + segs[count - 1].duration : 0;
             segs[count] = (raw_segment){ sequence + count, duration, title, put(&a, resolved, strlen(resolved)), map,
-                                         put(&a, tags.data ? tags.data : "", tags.len), discontinuity };
+                                         put(&a, tags.data ? tags.data : "", tags.len), discontinuity, date };
             count++;
             tags.len = 0, discontinuity = extinf = false, title = empty;
         }
@@ -218,7 +237,7 @@ gs_hls_media *gs_hls_media_parse(const char *text, size_t len, const char *base_
             for (int i = 0; i < count; i++) {
                 raw_segment *r = &segs[i];
                 block->segments[i] = (gs_hls_segment){ r->sequence, r->duration, t + r->title, t + r->url,
-                                                       r->map == (size_t)-1 ? NULL : t + r->map, t + r->tags, r->discontinuity };
+                                                       r->map == (size_t)-1 ? NULL : t + r->map, t + r->tags, r->discontinuity, r->date };
             }
         }
         SDL_free(m);
