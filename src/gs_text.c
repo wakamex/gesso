@@ -29,6 +29,12 @@ struct gs_font {
     // records with CPAL, as in Windows' Segoe UI Emoji) or PNG strikes (CBLC and CBDT as in Noto Color Emoji, or
     // sbix as in Apple Color Emoji).
     uint32_t colr, cpal, cblc, cbdt, sbix;
+    // A variable font drawn off its default: its place on each axis, normalized (2.14 fixed point),
+    // the glyph variations table those apply to, and the weight asked for, which the shaper is told.
+    int16_t *coords;
+    int naxes;
+    uint32_t gvar;
+    float weight;
 };
 
 static uint16_t u16(const uint8_t *p) { return (uint16_t)(p[0] << 8 | p[1]); }
@@ -132,6 +138,7 @@ gs_font *gs_font_load(const char *path) {
 
 void gs_font_free(gs_font *f) {
     if (!f) return;
+    free(f->coords);
     if (kbts_FontIsValid(&f->kb)) kbts_FreeFont(&f->kb);
     font_unmap(f->data, f->len);
     free(f);
@@ -159,6 +166,308 @@ void gs_font_vmetrics(const gs_font *f, float px, float *ascent, float *descent,
     if (ascent) *ascent = a * s;
     if (descent) *descent = d * s;
     if (line_gap) *line_gap = g * s;
+}
+
+// ---- Variable fonts ----
+//
+// A variable font holds one set of outlines and, in its gvar table, how each glyph's points move
+// along each axis (weight, for one). stb_truetype draws the default outlines only, so a font set to
+// another weight has its glyphs built here: the points read from glyf, moved by gvar's deltas for the
+// font's place on its axes, and handed to stb_truetype's rasterizer. The shaper applies the matching
+// changes to advances and positioning itself. Fonts with TrueType outlines only (not CFF2).
+
+static bool shapeable(gs_font *f);
+
+bool gs_font_set_weight(gs_font *f, int weight) {
+    const uint8_t *d = f->info.data;
+    uint32_t fvar = find_table(d, f->len, f->info.fontstart, "fvar"), gvar = find_table(d, f->len, f->info.fontstart, "gvar");
+    if (!fvar || !gvar || f->info.loca <= 0 || !shapeable(f)) return false;
+    int axes = u16(d + fvar + 8), size = u16(d + fvar + 10), at = -1, kb_axes = 0, instances;
+    kbts_GetVariationInfo(&f->kb, &kb_axes, &instances);
+    if (!axes || axes != kb_axes || size < 20 || (size_t)fvar + u16(d + fvar + 4) + (size_t)axes * size > f->len) return false;
+    float *user = malloc(sizeof *user * (size_t)axes);
+    int16_t *coords = calloc((size_t)axes, sizeof *coords);
+    for (int i = 0; i < axes; i++) {  // every axis at its default but the weight
+        const uint8_t *axis = d + fvar + u16(d + fvar + 4) + (size_t)i * size;
+        float min = (int32_t)u32(axis + 4) / 65536.0f, def = (int32_t)u32(axis + 8) / 65536.0f, max = (int32_t)u32(axis + 12) / 65536.0f;
+        user[i] = def;
+        if (!memcmp(axis, "wght", 4)) at = i, user[i] = f->weight = SDL_clamp((float)weight, min, max);
+    }
+    if (at >= 0) kbts_NormalizeVariationVector(&f->kb, user, coords);
+    free(user);
+    bool moved = false;
+    for (int i = 0; i < axes; i++) moved = moved || coords[i];
+    free(f->coords);
+    f->coords = NULL, f->naxes = axes, f->gvar = gvar;
+    if (moved) f->coords = coords;  // (at its default, the outlines are the file's own)
+    else free(coords);
+    return at >= 0;
+}
+
+typedef struct { float x, y; bool on; } vpoint;
+typedef struct { stbtt_vertex *v; int n, cap; } outline;
+
+// Packed point numbers: how many, with the numbers in *out, or -1 for every point of the glyph.
+static int packed_points(const uint8_t **p, const uint8_t *end, uint16_t **out) {
+    *out = NULL;
+    if (*p >= end) return 0;
+    int count = *(*p)++;
+    if (!count) return -1;
+    if (count & 0x80) count = *p < end ? (count & 0x7F) << 8 | *(*p)++ : 0;
+    uint16_t *pts = malloc(sizeof *pts * (size_t)(count + 1));
+    int n = 0, at = 0;
+    while (pts && n < count && *p < end) {
+        int control = *(*p)++, run = (control & 0x7F) + 1;
+        for (; run && n < count && *p + (control & 0x80 ? 2 : 1) <= end; run--) {
+            at += control & 0x80 ? u16(*p) : **p;
+            *p += control & 0x80 ? 2 : 1;
+            pts[n++] = (uint16_t)at;
+        }
+    }
+    *out = pts;
+    return pts ? n : 0;
+}
+
+static void packed_deltas(const uint8_t **p, const uint8_t *end, float *out, int count) {
+    int n = 0;
+    while (n < count && *p < end) {
+        int control = *(*p)++, run = (control & 0x3F) + 1;
+        for (; run && n < count; run--) {
+            if (control & 0x80) out[n++] = 0;
+            else if (control & 0x40) {
+                if (*p + 2 > end) break;
+                out[n++] = (int16_t)u16(*p), *p += 2;
+            } else {
+                if (*p >= end) break;
+                out[n++] = (int8_t)*(*p)++;
+            }
+        }
+    }
+    for (; n < count; n++) out[n] = 0;
+}
+
+// A point between two that moved takes its share of their movement, by where it lies between them.
+static float between(float p, float a, float b, float da, float db) {
+    if (a == b) return da == db ? da : 0;
+    if (a > b) { float t = a; a = b, b = t, t = da, da = db, db = t; }
+    return p <= a ? da : p >= b ? db : da + (db - da) * (p - a) / (b - a);
+}
+
+// The movement of a glyph's n points (pts: where they are in the default outline; its contours end
+// at `ends`) for the font's place on its axes, added to dx and dy. A composite glyph's points are its
+// components' offsets, with no contours. Four phantom points follow either kind's, for its metrics.
+static void gvar_deltas(const gs_font *f, int glyph, const vpoint *pts, int n, const uint16_t *ends, int contours, float *dx, float *dy) {
+    const uint8_t *d = f->info.data, *gv = d + f->gvar, *limit = d + f->len;
+    if (gv + 20 > limit) return;
+    int axes = u16(gv + 4), shared = u16(gv + 6), flags = u16(gv + 14);
+    if (axes != f->naxes || glyph >= u16(gv + 12) || gv + 20 + (flags & 1 ? 4 : 2) * (size_t)(glyph + 2) > limit) return;
+    const uint8_t *offs = gv + 20;
+    uint32_t from = flags & 1 ? u32(offs + 4 * glyph) : 2u * u16(offs + 2 * glyph), to = flags & 1 ? u32(offs + 4 * glyph + 4) : 2u * u16(offs + 2 * glyph + 2);
+    const uint8_t *g = gv + u32(gv + 16) + from, *gend = gv + u32(gv + 16) + to, *tuples = gv + u32(gv + 8);
+    if (to < from + 4 || gend > limit || tuples + 2 * (size_t)axes * shared > limit) return;
+    int count = u16(g);
+    const uint8_t *header = g + 4, *data = g + u16(g + 2);
+    uint16_t *all = NULL, *own;
+    int nall = -1;
+    if (count & 0x8000) nall = packed_points(&data, gend, &all);  // point numbers its tuples share
+    float *work = malloc(sizeof *work * 4 * (size_t)n);  // a tuple's deltas as packed, then as placed on the points
+    bool *has = malloc((size_t)n);
+    for (int t = 0; work && has && t < (count & 0x0FFF) && header + 4 <= gend; t++) {
+        int size = u16(header), index = u16(header + 2);
+        const uint8_t *h = header + 4, *peak, *lo = NULL, *hi = NULL, *p = data, *pend = data + size;
+        if (index & 0x8000) peak = h, h += 2 * axes;
+        else peak = (index & 0x0FFF) < shared ? tuples + 2 * (size_t)axes * (index & 0x0FFF) : NULL;
+        if (index & 0x4000) lo = h, hi = h + 2 * axes, h += 4 * axes;
+        header = h, data = pend;
+        if (!peak || h > gend || pend > gend) break;
+        float scalar = 1;  // how much of this tuple applies here: 1 at its peak, falling to 0 at the edges of its region
+        for (int a = 0; a < axes && scalar; a++) {
+            float c = f->coords[a], pk = (int16_t)u16(peak + 2 * a);
+            if (pk == 0 || c == pk) continue;
+            if (lo) {
+                float s = (int16_t)u16(lo + 2 * a), e = (int16_t)u16(hi + 2 * a);
+                if (c < s || c > e) scalar = 0;
+                else if (c < pk) scalar *= pk != s ? (c - s) / (pk - s) : 1;
+                else scalar *= pk != e ? (e - c) / (e - pk) : 1;
+            } else if (c == 0 || (c < 0) != (pk < 0) || fabsf(c) > fabsf(pk)) scalar = 0;
+            else scalar *= c / pk;
+        }
+        if (!scalar) continue;
+        own = NULL;
+        int npts = index & 0x2000 ? packed_points(&p, pend, &own) : nall, nd = npts < 0 ? n : npts;
+        const uint16_t *use = index & 0x2000 ? own : all;
+        float *tx = malloc(sizeof *tx * 2 * (size_t)(nd + 1)), *ty = tx ? tx + nd : NULL;
+        if (tx) {
+            packed_deltas(&p, pend, tx, nd), packed_deltas(&p, pend, ty, nd);
+            if (npts < 0) {
+                for (int i = 0; i < n; i++) dx[i] += scalar * tx[i], dy[i] += scalar * ty[i];
+            } else {
+                // Deltas for some points: each contour's other points move with their neighbours that have one.
+                float *ex = work, *ey = work + n;
+                memset(work, 0, sizeof *work * 2 * (size_t)n), memset(has, 0, (size_t)n);
+                for (int i = 0; i < npts; i++)
+                    if (use[i] < n) ex[use[i]] = tx[i], ey[use[i]] = ty[i], has[use[i]] = true;
+                for (int c = 0, first = 0; c < contours; first = ends[c++] + 1) {
+                    int last = ends[c], refs = 0;
+                    if (last >= n - 4 || last < first) break;
+                    for (int i = first; i <= last; i++) refs += has[i];
+                    if (!refs || refs == last - first + 1) continue;
+                    for (int i = first; i <= last; i++) {
+                        if (has[i]) continue;
+                        int a = i, b = i;
+                        do a = a == first ? last : a - 1; while (!has[a]);
+                        do b = b == last ? first : b + 1; while (!has[b]);
+                        ex[i] = between(pts[i].x, pts[a].x, pts[b].x, ex[a], ex[b]), ey[i] = between(pts[i].y, pts[a].y, pts[b].y, ey[a], ey[b]);
+                    }
+                }
+                for (int i = 0; i < n; i++) dx[i] += scalar * ex[i], dy[i] += scalar * ey[i];
+            }
+        }
+        free(tx), free(own);
+    }
+    free(work), free(has), free(all);
+}
+
+static void vertex(outline *o, int type, float x, float y, float cx, float cy) {
+    if (o->n == o->cap) o->v = realloc(o->v, sizeof *o->v * (size_t)(o->cap = o->cap ? o->cap * 2 : 64));
+    stbtt_vertex *v = &o->v[o->n++];
+    v->type = (unsigned char)type, v->x = (short)lroundf(x), v->y = (short)lroundf(y), v->cx = (short)lroundf(cx), v->cy = (short)lroundf(cy);
+}
+
+// A contour's points as moves, lines and quadratic curves: two off-curve points in a row have an
+// on-curve point halfway between them.
+static void contour(outline *o, const vpoint *p, int n) {
+    if (n < 2) return;
+    int first = -1;
+    for (int i = 0; i < n && first < 0; i++)
+        if (p[i].on) first = i;
+    vpoint start = first >= 0 ? p[first] : (vpoint){ (p[n - 1].x + p[0].x) / 2, (p[n - 1].y + p[0].y) / 2, true }, ctrl = { 0 };
+    bool pending = false;
+    vertex(o, STBTT_vmove, start.x, start.y, 0, 0);
+    for (int k = 1; k <= (first >= 0 ? n - 1 : n); k++) {  // the points after the start, round the contour; all of them when the start is implied
+        vpoint q = first >= 0 ? p[(first + k) % n] : p[k - 1];
+        if (!q.on) {
+            if (pending) vertex(o, STBTT_vcurve, (ctrl.x + q.x) / 2, (ctrl.y + q.y) / 2, ctrl.x, ctrl.y);
+            ctrl = q, pending = true;
+        } else {
+            if (pending) vertex(o, STBTT_vcurve, q.x, q.y, ctrl.x, ctrl.y);
+            else vertex(o, STBTT_vline, q.x, q.y, 0, 0);
+            pending = false;
+        }
+    }
+    if (pending) vertex(o, STBTT_vcurve, start.x, start.y, ctrl.x, ctrl.y);
+    else vertex(o, STBTT_vline, start.x, start.y, 0, 0);
+}
+
+// A glyph's outline at the font's place on its axes, placed by m (x' = m0 x + m2 y + m4, y' = m1 x + m3 y + m5).
+static void varied_glyph(const gs_font *f, int glyph, const float m[6], outline *o, int depth) {
+    const stbtt_fontinfo *info = &f->info;
+    const uint8_t *d = info->data, *limit = d + f->len;
+    if (glyph < 0 || glyph >= info->numGlyphs || depth > 6) return;
+    uint32_t from = info->indexToLocFormat ? u32(d + info->loca + 4 * glyph) : 2u * u16(d + info->loca + 2 * glyph);
+    uint32_t to = info->indexToLocFormat ? u32(d + info->loca + 4 * glyph + 4) : 2u * u16(d + info->loca + 2 * glyph + 2);
+    const uint8_t *g = d + info->glyf + from, *end = d + info->glyf + to;
+    if (to < from + 10 || end > limit) return;  // (no outline: a space)
+    int contours = (int16_t)u16(g);
+    const uint8_t *p = g + 10;
+    if (contours >= 0) {
+        if (p + 2 * contours + 2 > end) return;
+        int n = contours ? u16(p + 2 * (contours - 1)) + 1 : 0;
+        uint16_t *ends = malloc(sizeof *ends * (size_t)(contours + 1));
+        vpoint *pts = calloc((size_t)n + 4, sizeof *pts);
+        uint8_t *flags = malloc((size_t)n + 1);
+        float *delta = calloc(2 * ((size_t)n + 4), sizeof *delta);
+        for (int i = 0; i < contours; i++) ends[i] = u16(p + 2 * i);
+        p += 2 * contours;
+        p += 2 + u16(p);  // (the instructions, which are for hinting)
+        bool ok = ends && pts && flags && delta;
+        for (int i = 0, repeat = 0; ok && i < n; i++) {
+            if (repeat) flags[i] = flags[i - 1], repeat--;
+            else {
+                if (p >= end) { ok = false; break; }
+                flags[i] = *p++;
+                if (flags[i] & 8) repeat = p < end ? *p++ : 0;
+            }
+        }
+        for (int axis = 0; ok && axis < 2; axis++) {  // the x coordinates, then the y: each a step from the last
+            int at = 0, is_short = axis ? 4 : 2, same = axis ? 32 : 16;
+            for (int i = 0; i < n; i++) {
+                if (flags[i] & is_short) {
+                    if (p >= end) { ok = false; break; }
+                    at += flags[i] & same ? *p : -(int)*p, p++;
+                } else if (!(flags[i] & same)) {
+                    if (p + 2 > end) { ok = false; break; }
+                    at += (int16_t)u16(p), p += 2;
+                }
+                if (axis) pts[i].y = (float)at; else pts[i].x = (float)at, pts[i].on = flags[i] & 1;
+            }
+        }
+        if (ok) {
+            gvar_deltas(f, glyph, pts, n + 4, ends, contours, delta, delta + n + 4);
+            for (int i = 0; i < n; i++) {
+                float x = pts[i].x + delta[i], y = pts[i].y + delta[n + 4 + i];
+                pts[i].x = m[0] * x + m[2] * y + m[4], pts[i].y = m[1] * x + m[3] * y + m[5];
+            }
+            for (int c = 0, first = 0; c < contours && ends[c] < n && ends[c] >= first; first = ends[c++] + 1) contour(o, pts + first, ends[c] - first + 1);
+        }
+        free(ends), free(pts), free(flags), free(delta);
+        return;
+    }
+    // A composite: other glyphs, each scaled and placed. Its points for gvar are their offsets.
+    enum { MAX = 64 };
+    struct { int glyph; float t[6]; } parts[MAX];
+    vpoint at[MAX + 4] = { 0 };
+    float delta[2 * (MAX + 4)] = { 0 };
+    int n = 0;
+    for (bool more = true; more && n < MAX && p + 4 <= end;) {
+        int flags = u16(p);
+        parts[n].glyph = u16(p + 2), p += 4;
+        float *t = parts[n].t;
+        t[0] = t[3] = 1, t[1] = t[2] = t[4] = t[5] = 0;
+        if (p + (flags & 1 ? 4 : 2) > end) break;
+        if (flags & 2) t[4] = flags & 1 ? (int16_t)u16(p) : (int8_t)p[0], t[5] = flags & 1 ? (int16_t)u16(p + 2) : (int8_t)p[1];  // (offsets; placing by matched points is not handled)
+        p += flags & 1 ? 4 : 2;
+        int scales = flags & 8 ? 1 : flags & 0x40 ? 2 : flags & 0x80 ? 4 : 0;
+        if (p + 2 * scales > end) break;
+        if (scales == 1) t[0] = t[3] = (int16_t)u16(p) / 16384.0f;
+        if (scales == 2) t[0] = (int16_t)u16(p) / 16384.0f, t[3] = (int16_t)u16(p + 2) / 16384.0f;
+        if (scales == 4) t[0] = (int16_t)u16(p) / 16384.0f, t[1] = (int16_t)u16(p + 2) / 16384.0f, t[2] = (int16_t)u16(p + 4) / 16384.0f, t[3] = (int16_t)u16(p + 6) / 16384.0f;
+        p += 2 * scales;
+        at[n].x = t[4], at[n].y = t[5];
+        more = flags & 0x20, n++;
+    }
+    gvar_deltas(f, glyph, at, n + 4, NULL, 0, delta, delta + n + 4);
+    for (int i = 0; i < n; i++) {
+        float *t = parts[i].t, ox = t[4] + delta[i], oy = t[5] + delta[n + 4 + i];
+        float child[6] = { m[0] * t[0] + m[2] * t[1], m[1] * t[0] + m[3] * t[1], m[0] * t[2] + m[2] * t[3], m[1] * t[2] + m[3] * t[3],
+                           m[0] * ox + m[2] * oy + m[4], m[1] * ox + m[3] * oy + m[5] };
+        varied_glyph(f, parts[i].glyph, child, o, depth + 1);
+    }
+}
+
+// A glyph's coverage at `scale` (pixels per font unit), with a clear pixel on each side, and where
+// its top left sits from the pen position. A font off its default axes has its outline built above.
+static unsigned char *glyph_cover(const gs_font *f, int glyph, float scale, int *w, int *h, int *ox, int *oy) {
+    outline o = { 0 };
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    if (f->coords) {
+        static const float identity[6] = { 1, 0, 0, 1, 0, 0 };
+        varied_glyph(f, glyph, identity, &o, 0);
+        float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
+        for (int i = 0; i < o.n; i++) {
+            minx = fminf(minx, o.v[i].x), maxx = fmaxf(maxx, o.v[i].x), miny = fminf(miny, o.v[i].y), maxy = fmaxf(maxy, o.v[i].y);
+            if (o.v[i].type == STBTT_vcurve) minx = fminf(minx, o.v[i].cx), maxx = fmaxf(maxx, o.v[i].cx), miny = fminf(miny, o.v[i].cy), maxy = fmaxf(maxy, o.v[i].cy);
+        }
+        if (o.n) x0 = (int)floorf(minx * scale), y0 = (int)floorf(-maxy * scale), x1 = (int)ceilf(maxx * scale), y1 = (int)ceilf(-miny * scale);
+    } else stbtt_GetGlyphBitmapBox(&f->info, glyph, scale, scale, &x0, &y0, &x1, &y1);
+    *w = x1 - x0 + 2, *h = y1 - y0 + 2, *ox = x0 - 1, *oy = y0 - 1;
+    unsigned char *cov = calloc((size_t)*w * (size_t)*h, 1);
+    if (cov && f->coords && o.n) {
+        stbtt__bitmap bitmap = { *w - 2, *h - 2, *w, cov + *w + 1 };
+        stbtt_Rasterize(&bitmap, 0.35f, o.v, o.n, scale, scale, 0, 0, x0, y0, 1, NULL);
+    } else if (cov && !f->coords) stbtt_MakeGlyphBitmap(&f->info, cov + *w + 1, *w - 2, *h - 2, *w, scale, scale, glyph);
+    free(o.v);
+    return cov;
 }
 
 // ---- Glyph atlas ----
@@ -384,21 +693,15 @@ static slot *lookup(gs_glyphs *g, const gs_font *f, int glyph, int size4) {
             float scale = em_scale(f, size4 / 4.0f);
             image img = { 0 };
             bool colour = colour_glyph(f, glyph, scale, &img);
-            if (!colour) {
-                int x0, y0, x1, y1;
-                stbtt_GetGlyphBitmapBox(&f->info, glyph, scale, scale, &x0, &y0, &x1, &y1);
-                img.w = x1 - x0 + 2, img.h = y1 - y0 + 2, img.ox = x0 - 1, img.oy = y0 - 1;  // one clear pixel each side for linear filtering
-            }
+            unsigned char *cov = colour ? NULL : glyph_cover(f, glyph, scale, &img.w, &img.h, &img.ox, &img.oy);  // (one clear pixel each side for linear filtering)
             int w = img.w, hh = img.h;
-            if (w > g->size || hh > g->size) return free(img.px), NULL;
+            if (w > g->size || hh > g->size) return free(img.px), free(cov), NULL;
             if (g->shelf_x + w > g->size) g->shelf_x = 0, g->shelf_y += g->shelf_h, g->shelf_h = 0;
-            if (g->shelf_y + hh > g->size) { free(img.px); break; }
+            if (g->shelf_y + hh > g->size) { free(img.px), free(cov); break; }
             uint32_t *px = img.px;
             if (!colour) {
-                unsigned char *cov = calloc((size_t)w * hh, 1);
-                stbtt_MakeGlyphBitmap(&f->info, cov + w + 1, w - 2, hh - 2, w, scale, scale, glyph);
                 px = malloc((size_t)w * hh * 4);
-                for (int k = 0; k < w * hh; k++) px[k] = SDL_Swap32LE(0x00FFFFFFu | (uint32_t)cov[k] << 24);
+                for (int k = 0; cov && k < w * hh; k++) px[k] = SDL_Swap32LE(0x00FFFFFFu | (uint32_t)cov[k] << 24);
                 free(cov);
             }
             SDL_Rect dst = { g->shelf_x, g->shelf_y, w, hh };
@@ -490,7 +793,7 @@ struct gs_fontset {
     gs_font *font[MAX_FONTS];
     kbts_shape_context *ctx[MAX_FONTS];  // a shaping context holding just this font, made on first use
     bool tried[MAX_FONTS], emoji[MAX_FONTS];
-    int n;
+    int n, weight;  // weight: what its variable fonts are set to as they load; 0 leaves them at their default
     cached_line cache[LINE_CACHE];
 };
 
@@ -522,26 +825,63 @@ void gs_fontset_prepend(gs_fontset *fs, const char *path) {
     forget_lines(fs);  // (their glyphs came from the old order)
 }
 
-gs_fontset *gs_fontset_system(void) {
+void gs_fontset_weight(gs_fontset *fs, int weight) { fs->weight = weight; }
+
+static void add_in(gs_fontset *fs, const char *dir, const char *name) {
+    char path[512];
+    SDL_snprintf(path, sizeof path, "%s%s", dir, name);
+    gs_fontset_add(fs, path);
+}
+
+// The system's fonts: its interface face (or a monospace one) at a weight first, then its fonts for
+// other scripts and emoji. A face is a file of that weight where the system has one, and a variable
+// font set to it otherwise.
+static gs_fontset *system_fonts(int weight, bool mono) {
     gs_fontset *fs = gs_fontset_new();
+    if (!fs) return NULL;
+    if (weight != 400) fs->weight = weight;
+    bool bold = weight >= 650, semi = weight >= 550 && !bold, medium = weight >= 450 && weight < 550;
 #if defined(_WIN32)
+    (void)medium;
     const char *root = SDL_getenv("SystemRoot");
     if (!root) root = SDL_getenv("SYSTEMROOT");
+    char dir[400];
+    SDL_snprintf(dir, sizeof dir, "%s\\Fonts\\", root ? root : "C:\\Windows");
+    // Segoe UI has no medium: 500 is drawn regular. Consolas has regular and bold.
+    if (mono) add_in(fs, dir, bold || semi ? "consolab.ttf" : "consola.ttf"), add_in(fs, dir, "CascadiaMono.ttf"), add_in(fs, dir, "cour.ttf");
+    add_in(fs, dir, bold ? "segoeuib.ttf" : semi ? "seguisb.ttf" : "segoeui.ttf");
     static const char *const names[] = { "segoeui.ttf", "seguiemj.ttf", "seguisym.ttf", "YuGothM.ttc", "msyh.ttc", "malgun.ttf", "Nirmala.ttc", "Nirmala.ttf", "tahoma.ttf", "arial.ttf" };
-    for (size_t i = 0; i < sizeof names / sizeof *names; i++) {
-        char path[512];
-        SDL_snprintf(path, sizeof path, "%s\\Fonts\\%s", root ? root : "C:\\Windows", names[i]);
-        gs_fontset_add(fs, path);
-    }
+    for (size_t i = (bold || semi ? 0 : 1); i < sizeof names / sizeof *names; i++) add_in(fs, dir, names[i]);
 #elif defined(__APPLE__)
+    (void)bold, (void)semi, (void)medium;  // (San Francisco is a variable font: any weight)
+    if (mono) add_in(fs, "/System/Library/Fonts/", "SFNSMono.ttf"), add_in(fs, "/System/Library/Fonts/", "Menlo.ttc");
     static const char *const paths[] = { "/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/Apple Color Emoji.ttc",
                                          "/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/AppleSDGothicNeo.ttc",
                                          "/System/Library/Fonts/Supplemental/GeezaPro.ttc", "/System/Library/Fonts/Kohinoor.ttc",
                                          "/System/Library/Fonts/Supplemental/Arial Unicode.ttf" };
     for (size_t i = 0; i < sizeof paths / sizeof *paths; i++) gs_fontset_add(fs, paths[i]);
 #else
+    // Noto's variable fonts take any weight (Fedora); elsewhere a file of the weight, where it is installed.
+    const char *style = bold ? "Bold" : semi ? "SemiBold" : medium ? "Medium" : "Regular";
+    char name[64];
+    if (mono) {
+        gs_fontset_add(fs, "/usr/share/fonts/google-noto-vf/NotoSansMono[wght].ttf");
+        SDL_snprintf(name, sizeof name, "NotoSansMono-%s.ttf", style);
+        add_in(fs, "/usr/share/fonts/truetype/noto/", name), add_in(fs, "/usr/share/fonts/noto/", name);
+        add_in(fs, "/usr/share/fonts/adwaita-mono-fonts/", bold || semi ? "AdwaitaMono-Bold.ttf" : "AdwaitaMono-Regular.ttf");
+        add_in(fs, "/usr/share/fonts/liberation-mono-fonts/", bold || semi ? "LiberationMono-Bold.ttf" : "LiberationMono-Regular.ttf");
+        add_in(fs, "/usr/share/fonts/truetype/liberation/", bold || semi ? "LiberationMono-Bold.ttf" : "LiberationMono-Regular.ttf");
+        add_in(fs, "/usr/share/fonts/dejavu-sans-mono-fonts/", bold || semi ? "DejaVuSansMono-Bold.ttf" : "DejaVuSansMono.ttf");
+        add_in(fs, "/usr/share/fonts/truetype/dejavu/", bold || semi ? "DejaVuSansMono-Bold.ttf" : "DejaVuSansMono.ttf");
+    }
+    gs_fontset_add(fs, "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf");
+    if (weight != 400) {
+        SDL_snprintf(name, sizeof name, "NotoSans-%s.ttf", style);
+        add_in(fs, "/usr/share/fonts/truetype/noto/", name), add_in(fs, "/usr/share/fonts/noto/", name);
+        if (bold || semi) add_in(fs, "/usr/share/fonts/dejavu-sans-fonts/", "DejaVuSans-Bold.ttf"), add_in(fs, "/usr/share/fonts/truetype/dejavu/", "DejaVuSans-Bold.ttf");
+    }
     static const char *const paths[] = {
-        "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf", "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
         "/usr/share/fonts/noto/NotoSans-Regular.ttf", "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/google-noto-color-emoji-fonts/NotoColorEmoji.ttf", "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
@@ -570,6 +910,10 @@ gs_fontset *gs_fontset_system(void) {
     return fs;
 }
 
+gs_fontset *gs_fontset_system(void) { return system_fonts(400, false); }
+gs_fontset *gs_fontset_system_weight(int weight) { return system_fonts(weight, false); }
+gs_fontset *gs_fontset_system_mono(int weight) { return system_fonts(weight, true); }
+
 static void forget_lines(gs_fontset *fs) {
     for (int i = 0; i < LINE_CACHE; i++) {
         free(fs->cache[i].text);
@@ -589,7 +933,10 @@ void gs_fontset_free(gs_fontset *fs) {
 }
 
 static gs_font *font_at(gs_fontset *fs, int i) {
-    if (!fs->tried[i]) fs->tried[i] = true, fs->font[i] = gs_font_load(fs->path[i]);
+    if (!fs->tried[i]) {
+        fs->tried[i] = true, fs->font[i] = gs_font_load(fs->path[i]);
+        if (fs->font[i] && fs->weight) gs_font_set_weight(fs->font[i], fs->weight);
+    }
     return fs->font[i];
 }
 
@@ -646,7 +993,11 @@ static int choose(gs_fontset *fs, const char *p, const char *end) {
 }
 
 static kbts_shape_context *context(gs_fontset *fs, int i) {
-    if (!fs->ctx[i] && (fs->ctx[i] = kbts_CreateShapeContext(NULL, NULL))) kbts_ShapePushFont(fs->ctx[i], &fs->font[i]->kb);
+    if (!fs->ctx[i] && (fs->ctx[i] = kbts_CreateShapeContext(NULL, NULL))) {
+        kbts_variation weight = { KBTS_FOURCC('w', 'g', 'h', 't'), fs->font[i]->weight };
+        if (fs->font[i]->coords) kbts_ShapePushFont2(fs->ctx[i], &fs->font[i]->kb, &weight, 1, NULL);  // (advances and positioning for that weight)
+        else kbts_ShapePushFont(fs->ctx[i], &fs->font[i]->kb);
+    }
     return fs->ctx[i];
 }
 
@@ -942,6 +1293,26 @@ gs_wrap *gs_fontset_wrap(gs_fontset *fs, float px, const char *utf8, float width
         ps = pe;
     }
     free(cum), free(flags);
+    return w;
+}
+
+gs_wrap *gs_fontset_wrap_lines(gs_fontset *fs, float px, const char *utf8, float width, int max_lines) {
+    gs_wrap *w = gs_fontset_wrap(fs, px, utf8, width);
+    if (!w || max_lines < 1 || w->count <= max_lines) return w;
+    w->count = max_lines, w->cut = true;
+    // The last line kept gives up characters from its end until an ellipsis fits after it.
+    gs_wrap_line *last = &w->lines[max_lines - 1];
+    float ellipsis = gs_fontset_width(fs, px, "\xE2\x80\xA6");
+    char *text = malloc((size_t)(last->end - last->start) + 1);
+    for (int end = last->end; text;) {
+        while (end > last->start && (utf8[end - 1] == ' ' || utf8[end - 1] == '\t')) end--;
+        memcpy(text, utf8 + last->start, (size_t)(end - last->start)), text[end - last->start] = 0;
+        const gs_line *l = gs_fontset_line_dir(fs, px, text, last->rtl ? GS_DIR_RTL : GS_DIR_LTR);
+        float fits = l ? l->width : 0;
+        if (fits + ellipsis <= width || end == last->start) { last->end = end, last->width = fits + ellipsis; break; }
+        end = last->start + gs_utf8_grapheme_prev(text, end - last->start);
+    }
+    free(text);
     return w;
 }
 

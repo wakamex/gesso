@@ -49,11 +49,11 @@ typedef struct {
 } widget;
 
 typedef enum { FL_FILL, FL_TEXT, FL_FRAME, FL_ROUND, FL_OUTLINE } fl_kind;
-typedef struct { fl_kind kind; gs_rect r; SDL_FColor c; char text[160]; float px; int align; float radius, width; } fl_item;
+typedef struct { fl_kind kind; gs_rect r; SDL_FColor c; char text[160]; float px; int align; float radius, width; gs_fontset *fonts; } fl_item;
 
 #define WRAPS 256      // texts kept wrapped
 
-typedef struct { char *text; int size4, width4; gs_wrap *wrap; } wrap_entry;
+typedef struct { char *text; int size4, width4, max; gs_fontset *fonts; gs_wrap *wrap; } wrap_entry;
 
 typedef struct { uint32_t id, page; gs_rect r; } stop;  // a control the Tab key reaches, and the page it is in
 typedef struct { gs_rect r; bool on; } clip_state;
@@ -72,7 +72,7 @@ struct gs_ui {
     SDL_Window *win;
     SDL_Renderer *r;
     gs_glyphs *glyphs;
-    gs_fontset *fonts;
+    gs_fontset *fonts, *own_fonts;  // the fonts text is drawn with now, and the ones it was made with
     gs_ui_style style;
     float scale, opacity;
     gs_rect area;
@@ -145,7 +145,7 @@ static widget *state(gs_ui *ui, uint32_t id) {
 gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
     gs_ui *ui = calloc(1, sizeof *ui);
     if (!ui) return NULL;
-    ui->win = win, ui->r = r, ui->fonts = fonts;
+    ui->win = win, ui->r = r, ui->fonts = ui->own_fonts = fonts;
     ui->glyphs = gs_glyphs_new(r, 2048);
     ui->style = (gs_ui_style){
         .background = { 0.067f, 0.075f, 0.071f, 1 }, .panel = { 0.098f, 0.110f, 0.106f, 1 }, .raised = { 0.153f, 0.169f, 0.165f, 1 },
@@ -262,7 +262,7 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     ui->float_last = ui->float_now, ui->float_last_on = ui->float_now_on;
     ui->float_now_on = false, ui->nfl = 0, ui->tip_wanted = false, ui->wait_ms = -1, ui->opacity = 1;
     if (!down) ui->drag = 0;
-    ui->disabled = ui->dim = false, ui->clip.on = false, ui->page = 0, ui->cursor_want = 0;
+    ui->disabled = ui->dim = false, ui->clip.on = false, ui->page = 0, ui->cursor_want = 0, ui->fonts = ui->own_fonts;
     bool was_modal = ui->modal_last;
     ui->modal_last = ui->modal_now, ui->modal_now = ui->in_modal = false;
     if (was_modal && !ui->modal_last) set_focus(ui, ui->modal_focus);  // the modal is gone: the keyboard goes back
@@ -340,7 +340,7 @@ static fl_item *defer(gs_ui *ui, fl_kind kind, gs_rect r, SDL_FColor c, const ch
     static fl_item spare;
     if (ui->nfl == FLOATING) return &spare;
     fl_item *f = &ui->fl[ui->nfl++];
-    *f = (fl_item){ kind, r, c, "", size, align, 0, 0 };
+    *f = (fl_item){ kind, r, c, "", size, align, 0, 0, ui->fonts };
     if (text) SDL_strlcpy(f->text, text, sizeof f->text);
     return f;
 }
@@ -357,6 +357,8 @@ static void outline_now(gs_ui *ui, gs_rect r, float radius, float width, SDL_FCo
 
 // A colour as it is drawn: faded by the opacity in force.
 static SDL_FColor ink(const gs_ui *ui, SDL_FColor c) { return c.a *= ui->opacity * (ui->dim ? DIM : 1), c; }
+
+void gs_ui_font(gs_ui *ui, gs_fontset *fonts) { ui->fonts = fonts ? fonts : ui->own_fonts; }
 
 void gs_ui_opacity(gs_ui *ui, float opacity) { ui->opacity = SDL_clamp(opacity, 0, 1); }
 
@@ -391,13 +393,17 @@ float gs_ui_text(gs_ui *ui, gs_rect r, const char *text, float size, SDL_FColor 
 // ---- Wrapped text ----
 
 // `text` broken into lines of at most `width` points, kept for the frames that draw it again.
-static const gs_wrap *wrap_of(gs_ui *ui, const char *text, float size, float width) {
+static const gs_wrap *wrap_lines(gs_ui *ui, const char *text, float size, float width, int max);
+static const gs_wrap *wrap_of(gs_ui *ui, const char *text, float size, float width) { return wrap_lines(ui, text, size, width, 0); }
+
+// The same held to `max` lines (0: as many as it takes).
+static const gs_wrap *wrap_lines(gs_ui *ui, const char *text, float size, float width, int max) {
     float s = ui->scale > 0 ? ui->scale : 1;
     int size4 = (int)lroundf(size * s * 4), width4 = (int)lroundf(width * s * 4);
-    wrap_entry *e = &ui->wraps[(hash(text) ^ (uint32_t)size4 * 40503u ^ (uint32_t)width4 * 2654435761u) % WRAPS];
-    if (e->wrap && e->size4 == size4 && e->width4 == width4 && !strcmp(e->text, text)) return e->wrap;
+    wrap_entry *e = &ui->wraps[(hash(text) ^ (uint32_t)size4 * 40503u ^ (uint32_t)width4 * 2654435761u ^ (uint32_t)(uintptr_t)ui->fonts ^ (uint32_t)max * 97u) % WRAPS];
+    if (e->wrap && e->size4 == size4 && e->width4 == width4 && e->max == max && e->fonts == ui->fonts && !strcmp(e->text, text)) return e->wrap;
     SDL_free(e->text), gs_wrap_free(e->wrap);
-    *e = (wrap_entry){ SDL_strdup(text), size4, width4, gs_fontset_wrap(ui->fonts, size * s, text, width * s) };
+    *e = (wrap_entry){ SDL_strdup(text), size4, width4, max, ui->fonts, gs_fontset_wrap_lines(ui->fonts, size * s, text, width * s, max) };
     return e->wrap;
 }
 
@@ -433,6 +439,25 @@ float gs_ui_text_wrapped(gs_ui *ui, gs_rect r, const char *text, float size, SDL
     int first = r.y < 0 ? (int)(-r.y / lh) : 0;  // (only the lines on screen are drawn)
     for (int i = first; i < w->count && r.y + i * lh < ui->area.h; i++)
         wrapped_line(ui, text, &w->lines[i], size, r.x, r.w, r.y + i * lh, lh, c);
+    return w->count * lh;
+}
+
+float gs_ui_text_lines(gs_ui *ui, gs_rect r, const char *text, float size, SDL_FColor c, int max_lines, bool *cut) {
+    const gs_wrap *w = wrap_lines(ui, text, size, r.w, SDL_max(1, max_lines));
+    if (cut) *cut = w && w->cut;
+    if (!w) return 0;
+    float lh = gs_ui_line_height(ui, size), s = ui->scale;
+    c = ink(ui, c);
+    for (int i = 0; i < w->count; i++) {
+        const gs_wrap_line *ln = &w->lines[i];
+        if (!w->cut || i < w->count - 1) { wrapped_line(ui, text, ln, size, r.x, r.w, r.y + i * lh, lh, c); continue; }
+        // The last line of a text cut short, with its ellipsis.
+        size_t n = (size_t)(ln->end - ln->start);
+        if (n + 4 > ui->piece_cap) ui->piece = realloc(ui->piece, ui->piece_cap = n + 4 + 256);
+        memcpy(ui->piece, text + ln->start, n), memcpy(ui->piece + n, "\xE2\x80\xA6", 4);
+        const gs_line *l = gs_fontset_line_dir(ui->fonts, size * s, ui->piece, ln->rtl ? GS_DIR_RTL : GS_DIR_LTR);
+        if (l && l->count) gs_line_draw(ui->glyphs, l, roundf((r.x + (ln->rtl ? r.w - l->width / s : 0)) * s), roundf((r.y + i * lh + lh / 2 + size * 0.36f) * s), c);
+    }
     return w->count * lh;
 }
 
@@ -1471,7 +1496,7 @@ void gs_ui_end(gs_ui *ui) {
         else if (f->kind == FL_FRAME) frame_now(ui, f->r, f->c);
         else if (f->kind == FL_ROUND) round_now(ui, f->r, f->radius, f->c);
         else if (f->kind == FL_OUTLINE) outline_now(ui, f->r, f->radius, f->width, f->c);
-        else text_now(ui, f->r, f->text, f->px, f->c, f->align);
+        else ui->fonts = f->fonts, text_now(ui, f->r, f->text, f->px, f->c, f->align);
     }
     if (gs_glyphs_waiting(ui->glyphs)) ui->wait_ms = 0;  // a glyph is missing from this frame: the next one has it
     if (ui->modal_last && !ui->modal_now) ui->wait_ms = 0;   // a modal has gone: the next frame takes input again

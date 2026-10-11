@@ -51,6 +51,21 @@ uint32_t gs_utf8_next(const char **s);
 typedef struct gs_fontset gs_fontset;
 gs_fontset *gs_fontset_new(void);
 gs_fontset *gs_fontset_system(void);  // the platform's UI font with fallbacks for most scripts and emoji
+// The same at a weight: 400 regular, 500 medium, 600 semibold, 700 bold. macOS's San Francisco and
+// the Noto fonts Fedora installs are variable fonts and are drawn at exactly the weight asked for,
+// fallback scripts included. Windows has Segoe UI as files, regular, semibold and bold, so 500 is
+// drawn regular; a Linux system with Noto as separate files gets the file of that weight where it is
+// installed, and otherwise DejaVu's bold for 600 and up and the regular face below that.
+gs_fontset *gs_fontset_system_weight(int weight);
+// The system's monospace face first, then the same fallbacks: SF Mono, Consolas (regular, and bold
+// for 600 and up), Noto Sans Mono or the first of Adwaita Mono, Liberation Mono and DejaVu Sans Mono.
+// Its digits are all one width, so a running timer does not shift.
+gs_fontset *gs_fontset_system_mono(int weight);
+// Sets the weight a set's variable fonts are drawn at (those with a weight axis and TrueType
+// outlines), for an app's own fonts; other fonts are unchanged. Call it before the set is first used.
+void gs_fontset_weight(gs_fontset *fs, int weight);
+// One font's weight, along its weight axis: false for a font without one. Before it is first drawn.
+bool gs_font_set_weight(gs_font *f, int weight);
 void gs_fontset_add(gs_fontset *fs, const char *path);  // missing files are skipped
 // The same, but the font is tried before the others: an app's own emoji or text font, shipped beside
 // it, takes its characters ahead of the system's (Windows' emoji font draws a flag as two letters and
@@ -106,6 +121,10 @@ int gs_utf8_grapheme_prev(const char *utf8, int offset);
 // line or in whitespace between two. There is always one line, an empty text's included, and one
 // after a final newline.
 typedef struct { int start, end; float width; bool rtl; } gs_wrap_line;  // rtl: its paragraph's direction, the same for all its lines
-typedef struct { gs_wrap_line *lines; int count; } gs_wrap;
+typedef struct { gs_wrap_line *lines; int count; bool cut; } gs_wrap;  // cut: lines were left out (gs_fontset_wrap_lines)
 gs_wrap *gs_fontset_wrap(gs_fontset *fs, float px, const char *utf8, float width);  // free with gs_wrap_free
+// The same held to `max_lines` lines. When the text has more, `cut` is set and the last line kept
+// ends early enough for an ellipsis to follow it within the width: draw that line's range and then
+// "…". Its width counts the ellipsis.
+gs_wrap *gs_fontset_wrap_lines(gs_fontset *fs, float px, const char *utf8, float width, int max_lines);
 void gs_wrap_free(gs_wrap *w);

@@ -115,6 +115,18 @@ static void page(gs_ui *ui) {
     r.y += 320, r.h -= 320;
     form(ui, r);
     if (ask) gs_ui_confirm(ui, "Remove this model? Its file is deleted from the disk, and this can't be undone.", "Remove", "Cancel", true);
+    // Weights and a monospace face: the system's font at 400, 500, 600 and 700, and a timer.
+    static gs_fontset *weights[4], *mono;
+    for (int i = 0; i < 4; i++) {
+        if (!weights[i]) weights[i] = gs_fontset_system_weight(400 + 100 * i);
+        gs_ui_font(ui, weights[i]);
+        gs_ui_text(ui, (gs_rect){ 20 + 90.0f * i, 440, 90, 24 }, i == 0 ? "Regular" : i == 1 ? "Medium" : i == 2 ? "Semibold" : "Bold", 16, st->text, -1);
+    }
+    if (!mono) mono = gs_fontset_system_mono(400);
+    gs_ui_font(ui, mono);
+    gs_ui_text(ui, (gs_rect){ 20, 470, 200, 24 }, "00:41.7  11:11.1", 16, st->text, -1);
+    gs_ui_font(ui, NULL);
+    gs_ui_text_lines(ui, (gs_rect){ 20, 500, 340, 40 }, "A detail held to two lines: the rest of a long message is left out and the last line ends with an ellipsis, so the card keeps its height whatever arrives.", st->small_px, st->muted, 2, NULL);
     gs_ui_end(ui);
 }
 
@@ -123,7 +135,13 @@ int main(int argc, char **argv) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
     if (!SDL_Init(SDL_INIT_VIDEO)) return fprintf(stderr, "%s\n", SDL_GetError()), 1;
-    SDL_Window *w = SDL_CreateWindow("bench-ui", 800, 640, 0);
+    // (a window that brings its own graphics context: macOS's offscreen driver cannot load OpenGL for one)
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, 800);
+    SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, 640);
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_EXTERNAL_GRAPHICS_CONTEXT_BOOLEAN, true);
+    SDL_Window *w = SDL_CreateWindowWithProperties(props);
+    SDL_DestroyProperties(props);
     SDL_Renderer *r = SDL_CreateRenderer(w, NULL);
     gs_fontset *fs = gs_fontset_system();
     gs_ui *ui = gs_ui_new(w, r, fs);

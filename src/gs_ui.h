@@ -86,6 +86,11 @@ float gs_ui_ease(gs_ui *ui, const char *id, float target, int ms);
 // 1 right (a right-to-left line aligns to the right when align is -1). Returns its width.
 float gs_ui_text(gs_ui *ui, gs_rect r, const char *text, float px, SDL_FColor c, int align);
 float gs_ui_text_width(gs_ui *ui, const char *text, float px);
+// Text drawn and measured from here on uses `fonts` (a heavier weight for a heading, a monospace
+// face for a timer: gs_fontset_system_weight, gs_fontset_system_mono), until it is set again or the
+// frame ends; NULL goes back to the fonts the gs_ui was made with. The controls' own text follows it
+// too, so set it back before drawing them. The font set must outlive the frames that use it.
+void gs_ui_font(gs_ui *ui, gs_fontset *fonts);
 // Text wrapped to the width of r, from the top of r down, in the base layer (not in a menu or
 // dropdown). It breaks lines where Unicode allows (after spaces, between CJK characters), at each
 // newline, and inside a word wider than the line; a right-to-left line aligns to the right. Returns
@@ -94,6 +99,10 @@ float gs_ui_text_width(gs_ui *ui, const char *text, float px);
 // drawn each frame without being broken into lines each time.
 float gs_ui_text_wrapped(gs_ui *ui, gs_rect r, const char *text, float px, SDL_FColor c);
 float gs_ui_text_height(gs_ui *ui, const char *text, float px, float width);
+// Wrapped text held to `max_lines` lines: when it has more, the last line shown ends with an
+// ellipsis and *cut (which may be NULL) is set, for showing the whole text some other way, in a
+// tooltip, say. Returns the height of what it drew.
+float gs_ui_text_lines(gs_ui *ui, gs_rect r, const char *text, float px, SDL_FColor c, int max_lines, bool *cut);
 float gs_ui_line_height(const gs_ui *ui, float px);  // the height of one line of wrapped text at size px
 void gs_ui_texture(gs_ui *ui, gs_rect r, SDL_Texture *t, const SDL_FRect *src);  // fills r, cropping the source to keep its aspect
 // Clips drawing to r, and the pointer with it: a control cut off by the clip cannot be clicked where

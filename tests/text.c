@@ -76,6 +76,27 @@ void test_text(void) {
         for (int i = 0; dir && i < dir->count; i++) CHECK(!dir->lines[i].rtl);
         gs_wrap_free(dir);
     }
+    // Held to two lines, a longer text is cut and its last line leaves room for an ellipsis.
+    if (unit > 0) {
+        const char *longer = "one two three four five six seven eight nine ten eleven twelve";
+        gs_wrap *all = gs_fontset_wrap(fs, 20, longer, unit * 4), *two = gs_fontset_wrap_lines(fs, 20, longer, unit * 4, 2);
+        CHECK(all && two && all->count > 2 && !all->cut && two->count == 2 && two->cut);
+        if (all && two && all->count > 2) {
+            CHECK(two->lines[0].end == all->lines[0].end && two->lines[1].start == all->lines[1].start);
+            CHECK(two->lines[1].end <= all->lines[1].end && two->lines[1].end > two->lines[1].start && two->lines[1].width <= unit * 4);
+        }
+        gs_wrap_free(all), gs_wrap_free(two);
+        two = gs_fontset_wrap_lines(fs, 20, "short", unit * 4, 2);
+        CHECK(two && two->count == 1 && !two->cut);
+        gs_wrap_free(two);
+    }
+    // The system's face at a heavier weight is wider, and its monospace face gives every character one width.
+    gs_fontset *regular = gs_fontset_system_weight(400), *bold = gs_fontset_system_weight(700), *mono = gs_fontset_system_mono(400);
+    float w400 = gs_fontset_width(regular, 40, "Hamburgefonstiv"), w700 = gs_fontset_width(bold, 40, "Hamburgefonstiv");
+    if (w400 > 0) CHECK(w700 > w400);
+    float narrow = gs_fontset_width(mono, 40, "iii111"), wide = gs_fontset_width(mono, 40, "mmm000");
+    if (narrow > 0 && wide > 0 && gs_fontset_width(mono, 40, "i") != gs_fontset_width(fs, 40, "i")) CHECK_NEAR(narrow, wide, 0.01);  // (where there is a monospace face)
+    gs_fontset_free(regular), gs_fontset_free(bold), gs_fontset_free(mono);
     // An emoji font put first takes the emoji and leaves digits and spaces, which it often has too,
     // to the text font. Tried with the system's emoji font, or the one GS_TEST_EMOJI_FONT names.
     static const char *const emoji_fonts[] = { "/usr/share/fonts/google-noto-color-emoji-fonts/NotoColorEmoji.ttf", "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",

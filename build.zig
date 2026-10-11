@@ -261,6 +261,19 @@ pub fn build(b: *std.Build) void {
     ui_run.addPassthruArgs();
     b.step("bench-ui", "Render a page of the interface's controls and shapes to a PNG").dependOn(&ui_run.step);
 
+    // zig build bench-weight -- FONT.ttf WEIGHT STATIC.ttf: a variable font at a weight against a static instance of it.
+    const weight_bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    weight_bench.addCSourceFile(.{ .file = b.path("bench/weight.c"), .flags = flags });
+    weight_bench.addIncludePath(b.path("src"));
+    weight_bench.addIncludePath(b.path("vendor/stb"));
+    useSdk(weight_bench, macos_sdk);
+    weight_bench.linkLibrary(lib);
+    const weight_exe = b.addExecutable(.{ .name = "bench-weight", .root_module = weight_bench });
+    const weight_run = b.addRunArtifact(weight_exe);
+    weight_run.step.dependOn(&b.addInstallArtifact(weight_exe, .{}).step);
+    weight_run.addPassthruArgs();
+    b.step("bench-weight", "Compare a variable font at a weight with a static instance of it").dependOn(&weight_run.step);
+
     // zig build bench-video -Dvideo -- FILE.h264: decoding paths compared on this machine (bench/video.c).
     if (av) |a| {
         const bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
