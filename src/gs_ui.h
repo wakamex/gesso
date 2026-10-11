@@ -16,7 +16,7 @@
 // It provides rows and columns, scrolling lists (of equal or differing row heights), a scrolling
 // page of controls, wrapped text, single-line and multi-line text fields with input-method
 // composition, masked and number fields, buttons, links, toggles, switches, radio buttons, sliders,
-// dropdowns, menus, tooltips and modal questions. It does not provide rich text editing, menu bars,
+// dropdowns, menus, tooltips, modal questions and a field that captures a hotkey. It does not provide rich text editing, menu bars,
 // drag and drop, or themes beyond the colours in gs_ui_style.
 #pragma once
 #include <SDL3/SDL.h>
@@ -204,6 +204,22 @@ void gs_ui_list_end(gs_ui *ui);
 // `above` is small the reader has reached the top of the rows held: time to load older ones.
 gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const float *heights);
 void gs_ui_flow_prepended(gs_ui *ui, const char *id, int n);
+
+// A field that takes a key combination, for choosing a hotkey. It shows `shown` (how the app writes
+// the combination it holds, or the placeholder when that is empty) until it is clicked, or Space or
+// Enter is pressed on it. Then it waits, showing "Press keys…", and every key pressed in the window
+// is its own: a combination of at least one modifier and a key is written to `out` as an accelerator
+// and the call returns true; Esc, Tab, a click elsewhere and the window losing the keyboard end the
+// wait with nothing taken. While gs_ui_capturing is true the app should release the global hotkeys
+// it holds, or the system delivers the user's presses to them and not to the window.
+//
+// An accelerator is modifiers and a key joined by +, as Electron writes them: "CommandOrControl+Shift+Space",
+// "Alt+F5", "CommandOrControl+num3". Ctrl is CommandOrControl and the Windows or Super key is Super; on macOS
+// Control is Control and Command is Command. gs_ui_accelerator writes one from a key press (false
+// for a key alone, a modifier alone, or a key with no such name).
+bool gs_ui_hotkey(gs_ui *ui, gs_rect r, const char *id, const char *shown, const char *placeholder, char *out, size_t size);
+bool gs_ui_capturing(const gs_ui *ui);
+bool gs_ui_accelerator(SDL_Scancode key, SDL_Keymod mods, char *out, size_t size);
 
 // A page taller than its area: controls and text scrolled by the wheel, by Page Up and Page Down
 // while the pointer is over it, and by a thumb at its right edge. gs_ui_page_begin returns the page,

@@ -63,6 +63,7 @@ typedef struct {
     bool down, pressed, released;
     SDL_Keycode keys[KEYS];
     SDL_Keymod mods[KEYS];
+    SDL_Scancode scans[KEYS];
     int nkeys;
     char text[256];
 } input;
@@ -94,6 +95,9 @@ struct gs_ui {
     uint32_t modal_focus;    // what had the keyboard before it
     uint32_t number;         // the number field being edited, and its text
     char number_text[32];
+    uint32_t capture;        // the hotkey field waiting for a key combination
+    char captured[64];       // the combination pressed for it
+    bool capture_drawn;
     int cursor_want, cursor_now;  // the pointer's shape: 0 the default, 1 a hand, 2 a text beam
     SDL_Cursor *cursors[3];
     uint64_t caret_since;
@@ -202,9 +206,9 @@ bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
         return false;
     case SDL_EVENT_MOUSE_WHEEL: p->wheel += e->wheel.y; return false;
     case SDL_EVENT_WINDOW_MOUSE_LEAVE: p->x = p->y = OUTSIDE; return false;  // nothing is under a pointer that has left
-    case SDL_EVENT_WINDOW_FOCUS_LOST: ui->composition[0] = 0; return false;
+    case SDL_EVENT_WINDOW_FOCUS_LOST: ui->composition[0] = 0, ui->capture = 0; return false;  // (keys pressed elsewhere are not a hotkey field's)
     case SDL_EVENT_KEY_DOWN:  // (whether a key is taken is settled while drawing: see gs_ui_key)
-        if (p->nkeys < KEYS) p->keys[p->nkeys] = e->key.key, p->mods[p->nkeys++] = e->key.mod;
+        if (p->nkeys < KEYS) p->keys[p->nkeys] = e->key.key, p->scans[p->nkeys] = e->key.scancode, p->mods[p->nkeys++] = e->key.mod;
         return false;
     case SDL_EVENT_TEXT_INPUT:
         SDL_strlcat(p->text, e->text.text, sizeof p->text);
@@ -268,6 +272,14 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     for (int i = 0; i < ui->in.nkeys; i++)
         if (ui->in.keys[i] == SDLK_TAB && !(ui->in.mods[i] & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)))
             ui->taken[i] = true, tab(ui, ui->in.mods[i] & SDL_KMOD_SHIFT ? -1 : 1);
+    // A hotkey field that waits for keys has every key left: Esc ends the wait, a combination fills it.
+    ui->captured[0] = 0, ui->capture_drawn = false;
+    for (int i = 0; ui->capture && i < ui->in.nkeys; i++) {
+        if (ui->taken[i]) { ui->capture = 0; break; }  // (Tab has moved on)
+        ui->taken[i] = true;
+        if (ui->in.keys[i] == SDLK_ESCAPE) ui->capture = 0;
+        else if (!ui->captured[0]) gs_ui_accelerator(ui->in.scans[i], ui->in.mods[i], ui->captured, sizeof ui->captured);
+    }
     gs_glyphs_begin_frame(ui->glyphs);
     return ui->area;
 }
@@ -1242,6 +1254,85 @@ void gs_ui_flow_prepended(gs_ui *ui, const char *id, int n) { state(ui, hash(id)
 
 
 
+// ---- A hotkey field ----
+
+// Electron's name for a key, or NULL for one that cannot be part of a hotkey.
+static const char *accelerator_key(SDL_Scancode sc, char *buf, size_t size) {
+    if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z) return snprintf(buf, size, "%c", 'A' + (int)(sc - SDL_SCANCODE_A)), buf;
+    if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_9) return snprintf(buf, size, "%c", '1' + (int)(sc - SDL_SCANCODE_1)), buf;
+    if (sc >= SDL_SCANCODE_KP_1 && sc <= SDL_SCANCODE_KP_9) return snprintf(buf, size, "num%c", '1' + (int)(sc - SDL_SCANCODE_KP_1)), buf;
+    if (sc >= SDL_SCANCODE_F1 && sc <= SDL_SCANCODE_F12) return snprintf(buf, size, "F%d", 1 + (int)(sc - SDL_SCANCODE_F1)), buf;
+    if (sc >= SDL_SCANCODE_F13 && sc <= SDL_SCANCODE_F24) return snprintf(buf, size, "F%d", 13 + (int)(sc - SDL_SCANCODE_F13)), buf;
+    switch (sc) {
+    case SDL_SCANCODE_0: return "0";
+    case SDL_SCANCODE_KP_0: return "num0";
+    case SDL_SCANCODE_SPACE: return "Space";
+    case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER: return "Enter";
+    case SDL_SCANCODE_TAB: return "Tab";
+    case SDL_SCANCODE_KP_PERIOD: return "numdec";
+    case SDL_SCANCODE_KP_PLUS: return "numadd";
+    case SDL_SCANCODE_KP_MINUS: return "numsub";
+    case SDL_SCANCODE_KP_MULTIPLY: return "nummult";
+    case SDL_SCANCODE_KP_DIVIDE: return "numdiv";
+    case SDL_SCANCODE_SEMICOLON: return ";";
+    case SDL_SCANCODE_APOSTROPHE: return "'";
+    case SDL_SCANCODE_COMMA: return ",";
+    case SDL_SCANCODE_PERIOD: return ".";
+    case SDL_SCANCODE_SLASH: return "/";
+    case SDL_SCANCODE_BACKSLASH: return "\\";
+    case SDL_SCANCODE_LEFTBRACKET: return "[";
+    case SDL_SCANCODE_RIGHTBRACKET: return "]";
+    case SDL_SCANCODE_GRAVE: return "`";
+    case SDL_SCANCODE_MINUS: return "-";
+    case SDL_SCANCODE_EQUALS: return "=";
+    case SDL_SCANCODE_UP: return "Up";
+    case SDL_SCANCODE_DOWN: return "Down";
+    case SDL_SCANCODE_LEFT: return "Left";
+    case SDL_SCANCODE_RIGHT: return "Right";
+    case SDL_SCANCODE_HOME: return "Home";
+    case SDL_SCANCODE_END: return "End";
+    case SDL_SCANCODE_PAGEUP: return "PageUp";
+    case SDL_SCANCODE_PAGEDOWN: return "PageDown";
+    case SDL_SCANCODE_INSERT: return "Insert";
+    case SDL_SCANCODE_DELETE: return "Delete";
+    case SDL_SCANCODE_BACKSPACE: return "Backspace";
+    default: return NULL;
+    }
+}
+
+bool gs_ui_accelerator(SDL_Scancode key, SDL_Keymod mods, char *out, size_t size) {
+    char buf[16];
+    const char *name = accelerator_key(key, buf, sizeof buf);
+    bool ctrl = mods & SDL_KMOD_CTRL, gui = mods & SDL_KMOD_GUI, alt = mods & SDL_KMOD_ALT, shift = mods & SDL_KMOD_SHIFT;
+    if (!name || !(ctrl || gui || alt || shift)) return false;
+#ifdef __APPLE__
+    const char *ctrl_name = "Control+", *gui_name = "Command+";
+#else
+    const char *ctrl_name = "CommandOrControl+", *gui_name = "Super+";
+#endif
+    snprintf(out, size, "%s%s%s%s%s", ctrl ? ctrl_name : "", gui ? gui_name : "", alt ? "Alt+" : "", shift ? "Shift+" : "", name);
+    return true;
+}
+
+bool gs_ui_capturing(const gs_ui *ui) { return ui->capture != 0; }
+
+bool gs_ui_hotkey(gs_ui *ui, gs_rect r, const char *id, const char *shown, const char *placeholder, char *out, size_t size) {
+    uint32_t h = hash(id);
+    bool focused = stop_at(ui, h, r), got = false;
+    if (ui->capture == h && (ui->focus != h || inert(ui) || (ui->in.pressed && !gs_rect_contains(r, ui->in.x, ui->in.y)))) ui->capture = 0;  // the keyboard has gone elsewhere, or a click has
+    if (ui->capture == h && ui->captured[0]) SDL_strlcpy(out, ui->captured, size), got = true, ui->capture = 0;
+    else if (ui->capture != h && (gs_ui_clicked(ui, r) || act(ui, focused))) set_focus(ui, h), ui->capture = h, focused = true;
+    bool waiting = ui->capture == h;
+    if (waiting) ui->capture_drawn = true;
+    const char *text = waiting ? "Press keys\xE2\x80\xA6" : got ? out : shown && *shown ? shown : placeholder ? placeholder : "";
+    bool set = waiting || got || (shown && *shown);
+    gs_ui_round(ui, r, ui->style.radius, ui->style.raised);
+    gs_ui_outline(ui, r, ui->style.radius, 1, waiting ? ui->style.accent : gs_ui_hovered(ui, r) ? ui->style.muted : ui->style.border);
+    gs_ui_text(ui, (gs_rect){ r.x + 10, r.y, fmaxf(0, r.w - 20), r.h }, text, ui->style.text_px, waiting ? ui->style.accent : set ? ui->style.text : ui->style.muted, -1);
+    if (!waiting) mark(ui, focused, r, ui->style.radius);
+    return got;
+}
+
 // ---- A page ----
 
 #define PAGE_BAR 10  // the width of the strip at a page's right edge that takes the pointer for its scroll thumb
@@ -1384,6 +1475,7 @@ void gs_ui_end(gs_ui *ui) {
     }
     if (gs_glyphs_waiting(ui->glyphs)) ui->wait_ms = 0;  // a glyph is missing from this frame: the next one has it
     if (ui->modal_last && !ui->modal_now) ui->wait_ms = 0;   // a modal has gone: the next frame takes input again
+    if (!ui->capture_drawn) ui->capture = 0;  // (a hotkey field no longer drawn waits for nothing)
     if (ui->cursor_want != ui->cursor_now) {  // the pointer's shape, for a link or a field under it
         static const SDL_SystemCursor shapes[3] = { SDL_SYSTEM_CURSOR_DEFAULT, SDL_SYSTEM_CURSOR_POINTER, SDL_SYSTEM_CURSOR_TEXT };
         int want = ui->cursor_now = ui->cursor_want;

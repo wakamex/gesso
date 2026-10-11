@@ -38,12 +38,15 @@ static void form(gs_ui *ui, gs_rect r) {
         if (gs_ui_radio(ui, gs_cut_left(&row, 80), names[i], names[i], radio == i)) radio = i;
     gs_ui_stops(ui, row, "stops", &stops, 5);
     gs_cut_top(&r, 8);
-    row = gs_cut_top(&r, 22);
+    row = gs_cut_top(&r, st->row);
     gs_rect link = gs_cut_left(&row, 120);
     gs_ui_link(ui, link, "Read the guide");
     gs_ui_tooltip(ui, link, "A tooltip longer than one line wraps to several, so a line that was cut short can show all of its text when the pointer rests on it.");
+    static char hotkey[64] = "Ctrl+Shift+Space";
+    gs_ui_hotkey(ui, gs_cut_right(&row, 150), "hotkey", hotkey, "Not set", hotkey, sizeof hotkey);
+    gs_cut_right(&row, 10);
     gs_ui_disable(ui, true, true);
-    gs_ui_button(ui, gs_cut_right(&row, 90), "Disabled");
+    gs_ui_button(ui, gs_cut_right(&row, 80), "Disabled");
     gs_ui_disable(ui, false, false);
     gs_cut_top(&r, 8);
     gs_ui_outline(ui, r, st->radius, 1, st->border);

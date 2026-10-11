@@ -358,6 +358,65 @@ static void test_ui_form(void) {
     gs_ui_focus(ui, NULL);
 }
 
+static char hotkey[64];
+static bool hotkey_set, capturing;
+
+static void hotkey_frame(void) {
+    gs_ui_begin(ui);
+    hotkey_set = gs_ui_hotkey(ui, (gs_rect){ 0, 0, 200, 30 }, "hotkey", hotkey, "Not set", hotkey, sizeof hotkey);
+    gs_ui_button(ui, (gs_rect){ 0, 40, 80, 30 }, "After");
+    capturing = gs_ui_capturing(ui);
+    space = gs_ui_key(ui, SDLK_SPACE, 0);
+    gs_ui_end(ui);
+}
+
+static void scan(SDL_Scancode sc, SDL_Keycode k, SDL_Keymod mod) {
+    SDL_Event e = { .key = { .type = SDL_EVENT_KEY_DOWN, .scancode = sc, .key = k, .mod = mod, .down = true } };
+    gs_ui_event(ui, &e);
+}
+
+static void test_ui_hotkey(void) {
+    char a[64];
+    CHECK(gs_ui_accelerator(SDL_SCANCODE_F5, SDL_KMOD_LALT, a, sizeof a) && !strcmp(a, "Alt+F5"));
+    CHECK(gs_ui_accelerator(SDL_SCANCODE_KP_3, SDL_KMOD_LSHIFT | SDL_KMOD_RALT, a, sizeof a) && !strcmp(a, "Alt+Shift+num3"));
+#ifdef __APPLE__
+    CHECK(gs_ui_accelerator(SDL_SCANCODE_SPACE, SDL_KMOD_LGUI | SDL_KMOD_LSHIFT, a, sizeof a) && !strcmp(a, "Command+Shift+Space"));
+#else
+    CHECK(gs_ui_accelerator(SDL_SCANCODE_SPACE, SDL_KMOD_LCTRL | SDL_KMOD_LSHIFT, a, sizeof a) && !strcmp(a, "CommandOrControl+Shift+Space"));
+#endif
+    CHECK(!gs_ui_accelerator(SDL_SCANCODE_A, 0, a, sizeof a) && !gs_ui_accelerator(SDL_SCANCODE_LSHIFT, SDL_KMOD_LSHIFT, a, sizeof a));
+
+    // A click starts the wait; a key alone is swallowed, a combination fills the field and ends it.
+    gs_ui_focus(ui, NULL), hotkey_frame();
+    click(50, 15), hotkey_frame();
+    CHECK(capturing && !hotkey_set);
+    scan(SDL_SCANCODE_SPACE, SDLK_SPACE, 0), hotkey_frame();
+    CHECK(capturing && !space && !hotkey[0]);  // not the app's while the field waits
+    scan(SDL_SCANCODE_K, SDLK_K, SDL_KMOD_LALT | SDL_KMOD_LSHIFT), hotkey_frame();
+    CHECK(hotkey_set && !strcmp(hotkey, "Alt+Shift+K"));
+    hotkey_frame();
+    CHECK(!capturing);
+    // Esc ends the wait and keeps what was there; so does Tab, which moves on.
+    click(50, 15), hotkey_frame();
+    scan(SDL_SCANCODE_ESCAPE, SDLK_ESCAPE, 0), hotkey_frame();
+    CHECK(!capturing && !strcmp(hotkey, "Alt+Shift+K"));
+    click(50, 15), hotkey_frame();
+    key(SDLK_TAB, 0), hotkey_frame();
+    CHECK(!capturing && !gs_ui_focused(ui, "hotkey"));
+    click(50, 15), hotkey_frame();
+    click(300, 200), hotkey_frame();  // a click elsewhere
+    CHECK(!capturing);
+    gs_ui_focus(ui, "hotkey"), key(SDLK_TAB, 0), hotkey_frame();
+    // With the keyboard: Shift+Tab back to it, Enter to start, and the window losing the keyboard ends it.
+    key(SDLK_TAB, SDL_KMOD_SHIFT), hotkey_frame();
+    key(SDLK_RETURN, 0), hotkey_frame();
+    CHECK(capturing);
+    SDL_Event lost = { .window = { .type = SDL_EVENT_WINDOW_FOCUS_LOST } };
+    gs_ui_event(ui, &lost), hotkey_frame();
+    CHECK(!capturing);
+    gs_ui_focus(ui, NULL);
+}
+
 static SDL_Window *offscreen_window(int w, int h) {
     // (a window that brings its own graphics context: otherwise macOS's offscreen driver is asked for
     // OpenGL, which it cannot load, and no window is made)
@@ -515,6 +574,7 @@ void test_ui(void) {
 
     test_ui_keyboard();
     test_ui_form();
+    test_ui_hotkey();
     test_ui_draw(r);
     test_ui_windows(w, fs);
     gs_ui_free(ui);
