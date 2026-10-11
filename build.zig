@@ -193,7 +193,7 @@ pub fn build(b: *std.Build) void {
     const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
     mod.addCSourceFiles(.{
         .root = b.path("src"),
-        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c" },
+        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_draw.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c" },
         .flags = flags,
     });
     mod.addIncludePath(b.path("src"));
@@ -247,6 +247,19 @@ pub fn build(b: *std.Build) void {
     text_run.step.dependOn(&b.addInstallArtifact(text_exe, .{}).step);
     text_run.addPassthruArgs();
     b.step("bench-text", "Render a test page of scripts and emoji to a PNG").dependOn(&text_run.step);
+
+    // zig build bench-ui -- OUT.png: a page of gs_ui's controls and gs_draw's shapes.
+    const ui_bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    ui_bench.addCSourceFile(.{ .file = b.path("bench/ui.c"), .flags = flags });
+    ui_bench.addIncludePath(b.path("src"));
+    ui_bench.addIncludePath(b.path("vendor/stb"));
+    useSdk(ui_bench, macos_sdk);
+    ui_bench.linkLibrary(lib);
+    const ui_exe = b.addExecutable(.{ .name = "bench-ui", .root_module = ui_bench });
+    const ui_run = b.addRunArtifact(ui_exe);
+    ui_run.step.dependOn(&b.addInstallArtifact(ui_exe, .{}).step);
+    ui_run.addPassthruArgs();
+    b.step("bench-ui", "Render a page of the interface's controls and shapes to a PNG").dependOn(&ui_run.step);
 
     // zig build bench-video -Dvideo -- FILE.h264: decoding paths compared on this machine (bench/video.c).
     if (av) |a| {

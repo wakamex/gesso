@@ -2,6 +2,7 @@
 #include <SDL3/SDL.h>
 #include <string.h>
 
+#include "gs_draw.h"
 #include "gs_ui.h"
 #include "test.h"
 
@@ -136,6 +137,72 @@ static void test_ui_multiline(void) {
     }
 }
 
+static float red_at(SDL_Surface *s, int x, int y) {
+    Uint8 r, g, b, a;
+    return SDL_ReadSurfacePixel(s, x, y, &r, &g, &b, &a) ? r / 255.0f : -1;
+}
+
+// gs_draw's shapes by their pixels, and gs_ui's opacity and eased values.
+static void test_ui_draw(SDL_Renderer *r) {
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
+    SDL_RenderClear(r);
+    SDL_FColor white = { 1, 1, 1, 1 };
+    gs_draw_round(r, (SDL_FRect){ 10, 10, 40, 40 }, 12, white);
+    gs_draw_outline(r, (SDL_FRect){ 60, 10, 40, 40 }, 8, 3, white);
+    gs_draw_circle(r, 130, 30, 10, gs_rgba(0xff0000, 0.5f));
+    gs_draw_line(r, 150, 30, 190, 30, 6, white);
+    gs_draw_triangle(r, 200, 10, 240, 30, 200, 50, white);
+    gs_draw_triangle(r, 250, 10, 250, 50, 290, 30, white);  // (given the other way round)
+    SDL_Surface *s = SDL_RenderReadPixels(r, NULL);
+    CHECK(s);
+    if (s) {
+        CHECK(red_at(s, 30, 30) > 0.95f && red_at(s, 30, 11) > 0.95f && red_at(s, 48, 30) > 0.95f);  // filled to its edges
+        CHECK(red_at(s, 10, 10) < 0.05f && red_at(s, 49, 49) < 0.05f && red_at(s, 30, 8) < 0.05f);   // not in its corners, nor outside
+        CHECK(red_at(s, 80, 30) < 0.05f && red_at(s, 80, 11) > 0.95f && red_at(s, 61, 30) > 0.95f && red_at(s, 80, 15) < 0.05f);  // a stroke 3 wide
+        CHECK_NEAR(red_at(s, 130, 30), 0.5, 0.02);  // blended at half opacity
+        CHECK(red_at(s, 170, 30) > 0.95f && red_at(s, 170, 35) < 0.05f && red_at(s, 148, 30) > 0.95f);  // round ends reach past the points
+        CHECK(red_at(s, 210, 30) > 0.95f && red_at(s, 260, 30) > 0.95f && red_at(s, 235, 12) < 0.05f);
+    }
+    SDL_DestroySurface(s);
+    CHECK(gs_ease(0) == 0 && gs_ease(1) == 1 && gs_ease(0.5f) > 0.5f && gs_ease(2) == 1);
+
+    gs_ui_begin(ui);
+    CHECK(gs_ui_ease(ui, "ease", 10, 1000) == 10);  // at its target when first asked
+    gs_ui_end(ui);
+    CHECK(gs_ui_wait_ms(ui) == -1);
+    gs_ui_begin(ui);
+    float v = gs_ui_ease(ui, "ease", 20, 100000);
+    gs_ui_end(ui);
+    CHECK(v >= 10 && v < 11 && gs_ui_wait_ms(ui) >= 0 && gs_ui_wait_ms(ui) <= 16);  // on its way, and asking for frames
+    gs_ui_begin(ui);
+    CHECK(gs_ui_ease(ui, "ease", 20, 0) == 20);
+    gs_ui_wake(ui, 250);
+    gs_ui_end(ui);
+    CHECK(gs_ui_wait_ms(ui) == 250);
+
+    // Opacity fades what is drawn, controls included, and a frame starts opaque.
+    gs_ui_begin(ui);
+    gs_ui_fill(ui, (gs_rect){ 0, 0, 400, 300 }, (SDL_FColor){ 0, 0, 0, 1 });
+    gs_ui_opacity(ui, 0.5f);
+    gs_ui_fill(ui, (gs_rect){ 0, 0, 20, 20 }, white);
+    gs_ui_round(ui, (gs_rect){ 30, 0, 20, 20 }, 5, white);
+    gs_ui_end(ui);
+    gs_ui_begin(ui);
+    gs_ui_fill(ui, (gs_rect){ 60, 0, 20, 20 }, white);
+    gs_ui_progress(ui, (gs_rect){ 100, 0, 100, 10 }, 0.5f);
+    gs_ui_end(ui);
+    s = SDL_RenderReadPixels(r, NULL);
+    if (s) {
+        CHECK_NEAR(red_at(s, 10, 10), 0.5, 0.02);
+        CHECK_NEAR(red_at(s, 40, 10), 0.5, 0.02);
+        CHECK(red_at(s, 70, 10) > 0.95f);
+        gs_ui_style *st = gs_ui_style_of(ui);
+        CHECK_NEAR(red_at(s, 120, 5), st->accent.r, 0.02);  // the filled half of the bar
+        CHECK_NEAR(red_at(s, 180, 5), st->raised.r, 0.02);
+    }
+    SDL_DestroySurface(s);
+}
+
 void test_ui(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
@@ -187,6 +254,7 @@ void test_ui(void) {
     key(SDLK_RETURN, 0), frame();
     CHECK(activated);
 
+    test_ui_draw(r);
     gs_ui_free(ui);
     gs_fontset_free(fs);
 

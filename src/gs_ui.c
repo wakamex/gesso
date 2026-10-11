@@ -1,5 +1,6 @@
 #include "gs_ui.h"
 
+#include "gs_draw.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,10 +37,13 @@ typedef struct {
     int prepended;    // rows added in front of a flow, to be told apart from rows added after
     float want_x;     // the column a text area's cursor keeps moving up and down along
     bool want;
+    float from, to, value;  // an eased value: where it set out from, where it is going, where it is
+    uint64_t since;         // when it set out
+    bool eased;
 } widget;
 
-typedef enum { FL_FILL, FL_TEXT, FL_FRAME } fl_kind;
-typedef struct { fl_kind kind; gs_rect r; SDL_FColor c; char text[160]; float px; int align; } fl_item;
+typedef enum { FL_FILL, FL_TEXT, FL_FRAME, FL_ROUND, FL_OUTLINE } fl_kind;
+typedef struct { fl_kind kind; gs_rect r; SDL_FColor c; char text[160]; float px; int align; float radius, width; } fl_item;
 
 #define WRAPS 256      // texts kept wrapped
 
@@ -60,7 +64,7 @@ struct gs_ui {
     gs_glyphs *glyphs;
     gs_fontset *fonts;
     gs_ui_style style;
-    float scale;
+    float scale, opacity;
     gs_rect area;
     uint64_t frame, now;
     input pending, in;
@@ -119,6 +123,7 @@ gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
         .accent_text = { 0.04f, 0.07f, 0.06f, 1 }, .border = { 0.22f, 0.24f, 0.235f, 1 }, .warning = { 0.95f, 0.60f, 0.29f, 1 },
         .text_px = 14, .small_px = 12, .row = 30,
     };
+    ui->opacity = 1;
     return ui;
 }
 
@@ -138,6 +143,8 @@ int gs_ui_wait_ms(const gs_ui *ui) { return ui->wait_ms; }
 static void wake_within(gs_ui *ui, int ms) {
     if (ui->wait_ms < 0 || ms < ui->wait_ms) ui->wait_ms = ms;
 }
+
+void gs_ui_wake(gs_ui *ui, int ms) { wake_within(ui, SDL_max(0, ms)); }
 
 bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
     input *p = &ui->pending;
@@ -178,7 +185,7 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     if (ui->in.pressed) ui->press_x = ui->in.x, ui->press_y = ui->in.y;
     memset(ui->taken, 0, sizeof ui->taken);
     ui->float_last = ui->float_now, ui->float_last_on = ui->float_now_on;
-    ui->float_now_on = false, ui->nfl = 0, ui->tip_wanted = false, ui->wait_ms = -1;
+    ui->float_now_on = false, ui->nfl = 0, ui->tip_wanted = false, ui->wait_ms = -1, ui->opacity = 1;
     if (!down) ui->drag = 0;
     gs_glyphs_begin_frame(ui->glyphs);
     return ui->area;
@@ -236,19 +243,56 @@ static float text_now(gs_ui *ui, gs_rect r, const char *text, float size, SDL_FC
     return width / s;
 }
 
-static void defer(gs_ui *ui, fl_kind kind, gs_rect r, SDL_FColor c, const char *text, float size, int align) {
-    if (ui->nfl == FLOATING) return;
+static fl_item *defer(gs_ui *ui, fl_kind kind, gs_rect r, SDL_FColor c, const char *text, float size, int align) {
+    static fl_item spare;
+    if (ui->nfl == FLOATING) return &spare;
     fl_item *f = &ui->fl[ui->nfl++];
-    *f = (fl_item){ kind, r, c, "", size, align };
+    *f = (fl_item){ kind, r, c, "", size, align, 0, 0 };
     if (text) SDL_strlcpy(f->text, text, sizeof f->text);
+    return f;
 }
 
-void gs_ui_fill(gs_ui *ui, gs_rect r, SDL_FColor c) { ui->in_float ? defer(ui, FL_FILL, r, c, NULL, 0, 0) : fill_now(ui, r, c); }
-void gs_ui_frame(gs_ui *ui, gs_rect r, SDL_FColor c) { ui->in_float ? defer(ui, FL_FRAME, r, c, NULL, 0, 0) : frame_now(ui, r, c); }
+static void round_now(gs_ui *ui, gs_rect r, float radius, SDL_FColor c) {
+    if (radius <= 0) fill_now(ui, r, c);
+    else gs_draw_round(ui->r, px(ui, r), radius * ui->scale, c);
+}
+
+static void outline_now(gs_ui *ui, gs_rect r, float radius, float width, SDL_FColor c) {
+    if (radius <= 0 && width == 1) frame_now(ui, r, c);
+    else gs_draw_outline(ui->r, px(ui, r), radius * ui->scale, width == 1 ? fmaxf(1, floorf(ui->scale)) : width * ui->scale, c);
+}
+
+// A colour as it is drawn: faded by the opacity in force.
+static SDL_FColor ink(const gs_ui *ui, SDL_FColor c) { return c.a *= ui->opacity, c; }
+
+void gs_ui_opacity(gs_ui *ui, float opacity) { ui->opacity = SDL_clamp(opacity, 0, 1); }
+
+void gs_ui_fill(gs_ui *ui, gs_rect r, SDL_FColor c) { ui->in_float ? (void)defer(ui, FL_FILL, r, ink(ui, c), NULL, 0, 0) : fill_now(ui, r, ink(ui, c)); }
+void gs_ui_frame(gs_ui *ui, gs_rect r, SDL_FColor c) { ui->in_float ? (void)defer(ui, FL_FRAME, r, ink(ui, c), NULL, 0, 0) : frame_now(ui, r, ink(ui, c)); }
+
+void gs_ui_round(gs_ui *ui, gs_rect r, float radius, SDL_FColor c) {
+    if (ui->in_float) defer(ui, FL_ROUND, r, ink(ui, c), NULL, 0, 0)->radius = radius;
+    else round_now(ui, r, radius, ink(ui, c));
+}
+
+void gs_ui_outline(gs_ui *ui, gs_rect r, float radius, float width, SDL_FColor c) {
+    if (ui->in_float) {
+        fl_item *f = defer(ui, FL_OUTLINE, r, ink(ui, c), NULL, 0, 0);
+        f->radius = radius, f->width = width;
+    } else outline_now(ui, r, radius, width, ink(ui, c));
+}
+
+void gs_ui_circle(gs_ui *ui, float cx, float cy, float radius, SDL_FColor c) { gs_ui_round(ui, (gs_rect){ cx - radius, cy - radius, 2 * radius, 2 * radius }, radius, c); }
+
+void gs_ui_progress(gs_ui *ui, gs_rect r, float fraction) {
+    gs_ui_round(ui, r, r.h / 2, ui->style.raised);
+    float w = r.w * SDL_clamp(fraction, 0, 1);
+    if (w > 0) gs_ui_round(ui, (gs_rect){ r.x, r.y, fmaxf(w, fminf(r.h, r.w)), r.h }, r.h / 2, ui->style.accent);
+}
 
 float gs_ui_text(gs_ui *ui, gs_rect r, const char *text, float size, SDL_FColor c, int align) {
-    if (ui->in_float) return defer(ui, FL_TEXT, r, c, text, size, align), gs_ui_text_width(ui, text, size);
-    return text_now(ui, r, text, size, c, align);
+    if (ui->in_float) return defer(ui, FL_TEXT, r, ink(ui, c), text, size, align), gs_ui_text_width(ui, text, size);
+    return text_now(ui, r, text, size, ink(ui, c), align);
 }
 
 // ---- Wrapped text ----
@@ -292,6 +336,7 @@ float gs_ui_text_wrapped(gs_ui *ui, gs_rect r, const char *text, float size, SDL
     const gs_wrap *w = wrap_of(ui, text, size, r.w);
     if (!w) return 0;
     float lh = gs_ui_line_height(ui, size);
+    c = ink(ui, c);
     int first = r.y < 0 ? (int)(-r.y / lh) : 0;  // (only the lines on screen are drawn)
     for (int i = first; i < w->count && r.y + i * lh < ui->area.h; i++)
         wrapped_line(ui, text, &w->lines[i], size, r.x, r.w, r.y + i * lh, lh, c);
@@ -306,7 +351,11 @@ void gs_ui_texture(gs_ui *ui, gs_rect r, SDL_Texture *t, const SDL_FRect *src) {
     if (have > want) s.x += (s.w - s.h * want) / 2, s.w = s.h * want;
     else if (have < want) s.y += (s.h - s.w / want) / 2, s.h = s.w / want;
     SDL_FRect d = px(ui, r);
+    float alpha = 1;
+    SDL_GetTextureAlphaModFloat(t, &alpha);
+    if (ui->opacity < 1) SDL_SetTextureAlphaModFloat(t, alpha * ui->opacity);
     SDL_RenderTexture(ui->r, t, &s, &d);
+    if (ui->opacity < 1) SDL_SetTextureAlphaModFloat(t, alpha);
 }
 
 void gs_ui_clip(gs_ui *ui, const gs_rect *r) {
@@ -350,16 +399,17 @@ bool gs_ui_focused(gs_ui *ui, const char *id) { return ui->focus == hash(id); }
 
 bool gs_ui_button(gs_ui *ui, gs_rect r, const char *label) {
     bool hot = gs_ui_hovered(ui, r);
-    gs_ui_fill(ui, r, hot ? ui->style.border : ui->style.raised);
+    gs_ui_round(ui, r, ui->style.radius, hot ? ui->style.border : ui->style.raised);
     gs_ui_text(ui, gs_inset(r, 6), label, ui->style.text_px, ui->style.text, 0);
     return gs_ui_clicked(ui, r);
 }
 
 bool gs_ui_toggle(gs_ui *ui, gs_rect r, const char *label, bool *on) {
     gs_rect box = { r.x, r.y + (r.h - 16) / 2, 16, 16 };
-    gs_ui_fill(ui, box, *on ? ui->style.accent : ui->style.raised);
-    gs_ui_frame(ui, box, gs_ui_hovered(ui, r) ? ui->style.text : ui->style.border);
-    if (*on) gs_ui_fill(ui, gs_inset(box, 4), ui->style.accent_text);
+    float radius = fminf(ui->style.radius, 4);
+    gs_ui_round(ui, box, radius, *on ? ui->style.accent : ui->style.raised);
+    gs_ui_outline(ui, box, radius, 1, gs_ui_hovered(ui, r) ? ui->style.text : ui->style.border);
+    if (*on) gs_ui_round(ui, gs_inset(box, 4), radius / 2, ui->style.accent_text);
     gs_rect rest = r;
     gs_cut_left(&rest, 22);
     gs_ui_text(ui, rest, label, ui->style.text_px, ui->style.text, -1);
@@ -375,9 +425,10 @@ bool gs_ui_slider(gs_ui *ui, gs_rect r, const char *id, float *value, float min,
     if (ui->drag == h && max > min) *value = fminf(max, fmaxf(min, min + (ui->in.x - r.x) / r.w * (max - min)));
     float t = max > min ? (*value - min) / (max - min) : 0;
     gs_rect track = { r.x, r.y + r.h / 2 - 2, r.w, 4 };
-    gs_ui_fill(ui, track, ui->style.raised);
-    gs_ui_fill(ui, (gs_rect){ track.x, track.y, track.w * t, track.h }, ui->style.accent);
-    gs_ui_fill(ui, (gs_rect){ r.x + r.w * t - 5, r.y + r.h / 2 - 7, 10, 14 }, gs_ui_hovered(ui, r) || ui->drag == h ? ui->style.text : ui->style.muted);
+    float radius = ui->style.radius;
+    gs_ui_round(ui, track, fminf(radius, 2), ui->style.raised);
+    gs_ui_round(ui, (gs_rect){ track.x, track.y, track.w * t, track.h }, fminf(radius, 2), ui->style.accent);
+    gs_ui_round(ui, (gs_rect){ r.x + r.w * t - 5, r.y + r.h / 2 - 7, 10, 14 }, fminf(radius, 5), gs_ui_hovered(ui, r) || ui->drag == h ? ui->style.text : ui->style.muted);
     return *value != before;
 }
 
@@ -457,8 +508,8 @@ bool gs_ui_field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, c
         if (!SDL_TextInputActive(ui->win)) SDL_StartTextInput(ui->win);
         changed = edit(ui, w, buf, size);
     }
-    gs_ui_fill(ui, r, ui->style.raised);
-    gs_ui_frame(ui, r, focused ? ui->style.accent : gs_ui_hovered(ui, r) ? ui->style.muted : ui->style.border);
+    gs_ui_round(ui, r, ui->style.radius, ui->style.raised);
+    gs_ui_outline(ui, r, ui->style.radius, 1, focused ? ui->style.accent : gs_ui_hovered(ui, r) ? ui->style.muted : ui->style.border);
     gs_ui_clip(ui, &r);
     if (w->all && buf[0]) gs_ui_fill(ui, (gs_rect){ inner.x, r.y + 5, fminf(gs_ui_text_width(ui, buf, text_px), inner.w), r.h - 10 }, ui->style.border);
     if (buf[0] || ui->composition[0]) gs_ui_text(ui, (gs_rect){ inner.x, r.y, 1e6f, r.h }, buf, text_px, ui->style.text, -1);
@@ -669,8 +720,8 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
     }
     w->scroll = fminf(max_scroll, fmaxf(0, w->scroll));
 
-    gs_ui_fill(ui, r, ui->style.raised);
-    gs_ui_frame(ui, r, focused ? ui->style.accent : gs_ui_hovered(ui, r) ? ui->style.muted : ui->style.border);
+    gs_ui_round(ui, r, ui->style.radius, ui->style.raised);
+    gs_ui_outline(ui, r, ui->style.radius, 1, focused ? ui->style.accent : gs_ui_hovered(ui, r) ? ui->style.muted : ui->style.border);
     gs_ui_clip(ui, &r);
     if (!buf[0] && !ui->composition[0] && placeholder) gs_ui_text(ui, (gs_rect){ inner.x, inner.y, inner.w, lh }, placeholder, px, ui->style.muted, -1);
     int lo = SDL_min(w->anchor, w->cursor), hi = SDL_max(w->anchor, w->cursor);
@@ -684,7 +735,7 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
             if (hi > ln->end) x1 += 4;  // (the line end it runs past)
             gs_ui_fill(ui, (gs_rect){ fminf(x0, x1), top, fabsf(x1 - x0), lh }, ui->style.border);
         }
-        wrapped_line(ui, buf, ln, px, inner.x, inner.w, top, lh, ui->style.text);
+        wrapped_line(ui, buf, ln, px, inner.x, inner.w, top, lh, ink(ui, ui->style.text));
     }
     if (focused && wr) {
         const gs_wrap_line *ln = &wr->lines[cline];
@@ -706,6 +757,7 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
 
 void gs_ui_arrow(gs_ui *ui, gs_rect r, SDL_FColor c) {
     float s = ui->scale, w = fminf(r.w, 8), cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    c = ink(ui, c);
     SDL_Vertex v[3] = { { { (cx - w / 2) * s, (cy - w / 4) * s }, c, { 0 } }, { { (cx + w / 2) * s, (cy - w / 4) * s }, c, { 0 } },
                         { { cx * s, (cy + w / 4) * s }, c, { 0 } } };
     SDL_RenderGeometry(ui->r, NULL, v, 3, NULL, 0);
@@ -714,7 +766,7 @@ void gs_ui_arrow(gs_ui *ui, gs_rect r, SDL_FColor c) {
 bool gs_ui_dropdown(gs_ui *ui, gs_rect r, const char *id, const char *const *items, int count, int *selected) {
     widget *w = state(ui, hash(id));
     bool hot = gs_ui_hovered(ui, r);
-    gs_ui_fill(ui, r, hot || w->open ? ui->style.border : ui->style.raised);
+    gs_ui_round(ui, r, ui->style.radius, hot || w->open ? ui->style.border : ui->style.raised);
     gs_rect label = gs_inset(r, 8);
     gs_ui_arrow(ui, gs_cut_right(&label, 12), ui->style.muted);
     gs_ui_text(ui, label, *selected >= 0 && *selected < count ? items[*selected] : "", ui->style.text_px, ui->style.text, -1);
@@ -725,11 +777,11 @@ bool gs_ui_dropdown(gs_ui *ui, gs_rect r, const char *id, const char *const *ite
     if (list.y + list.h > ui->area.h) list.y = r.y - list.h - 2;  // above when there is no room below
     bool changed = false;
     ui->in_float = true;
-    gs_ui_fill(ui, list, ui->style.panel);
-    gs_ui_frame(ui, list, ui->style.border);
+    gs_ui_round(ui, list, ui->style.radius, ui->style.panel);
+    gs_ui_outline(ui, list, ui->style.radius, 1, ui->style.border);
     for (int i = 0; i < count; i++) {
         gs_rect item = { list.x, list.y + i * row, list.w, row };
-        if (gs_ui_hovered(ui, item) || i == *selected) gs_ui_fill(ui, gs_inset(item, 1), i == *selected ? ui->style.raised : ui->style.border);
+        if (gs_ui_hovered(ui, item) || i == *selected) gs_ui_round(ui, gs_inset(item, 1), ui->style.radius, i == *selected ? ui->style.raised : ui->style.border);
         gs_ui_text(ui, gs_inset(item, 8), items[i], ui->style.text_px, ui->style.text, -1);
         if (gs_ui_clicked(ui, item)) changed = *selected != i, *selected = i, w->open = false;
     }
@@ -762,14 +814,14 @@ bool gs_ui_menu_begin(gs_ui *ui, const char *id, gs_rect anchor, float width) {
     ui->in_float = true;
     // Its background goes first; its height is known once the items are in.
     ui->menu_background = ui->nfl;
-    defer(ui, FL_FILL, ui->menu_rect, ui->style.panel, NULL, 0, 0);
+    defer(ui, FL_ROUND, ui->menu_rect, ui->style.panel, NULL, 0, 0)->radius = ui->style.radius;
     return true;
 }
 
 bool gs_ui_menu_item(gs_ui *ui, const char *label, bool enabled) {
     gs_rect item = { ui->menu_rect.x, ui->menu_y, ui->menu_rect.w, ui->style.row };
     ui->menu_y += item.h;
-    if (enabled && gs_ui_hovered(ui, item)) gs_ui_fill(ui, gs_inset(item, 1), ui->style.border);
+    if (enabled && gs_ui_hovered(ui, item)) gs_ui_round(ui, gs_inset(item, 1), ui->style.radius, ui->style.border);
     gs_ui_text(ui, gs_inset(item, 10), label, ui->style.text_px, enabled ? ui->style.text : ui->style.muted, -1);
     bool chosen = enabled && gs_ui_clicked(ui, item);
     if (chosen) state(ui, ui->menu)->open = false;
@@ -779,7 +831,7 @@ bool gs_ui_menu_item(gs_ui *ui, const char *label, bool enabled) {
 void gs_ui_menu_end(gs_ui *ui) {
     ui->menu_rect.h = ui->menu_y - ui->menu_rect.y;
     if (ui->menu_background < ui->nfl) ui->fl[ui->menu_background].r.h = ui->menu_rect.h;
-    defer(ui, FL_FRAME, ui->menu_rect, ui->style.border, NULL, 0, 0);
+    gs_ui_outline(ui, ui->menu_rect, ui->style.radius, 1, ui->style.border);
     ui->in_float = false;
     ui->float_now = ui->menu_rect, ui->float_now_on = true;
     widget *w = state(ui, ui->menu);
@@ -860,6 +912,16 @@ gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const 
 
 void gs_ui_flow_prepended(gs_ui *ui, const char *id, int n) { state(ui, hash(id))->prepended = n; }
 
+float gs_ui_ease(gs_ui *ui, const char *id, float target, int ms) {
+    widget *w = state(ui, hash(id));
+    if (!w->eased) w->eased = true, w->from = w->to = w->value = target;
+    if (target != w->to) w->from = w->value, w->to = target, w->since = ui->now;
+    float t = ms > 0 && w->from != w->to ? (float)(ui->now - w->since) / (float)ms : 1;
+    w->value = t >= 1 ? w->to : w->from + (w->to - w->from) * gs_ease(t);
+    if (t < 1) wake_within(ui, 16);
+    return w->value;
+}
+
 
 void gs_ui_end(gs_ui *ui) {
     if (ui->tip_wanted) {
@@ -867,8 +929,10 @@ void gs_ui_end(gs_ui *ui) {
         if (rest >= TOOLTIP_MS) {
             float w = gs_ui_text_width(ui, ui->tip_text, ui->style.small_px) + 16;
             gs_rect r = { fminf(ui->tip_rect.x, ui->area.w - w - 4), ui->tip_rect.y + ui->tip_rect.h + 4, w, 24 };
-            defer(ui, FL_FILL, r, ui->style.raised, NULL, 0, 0);
-            defer(ui, FL_FRAME, r, ui->style.border, NULL, 0, 0);
+            fl_item *f = defer(ui, FL_ROUND, r, ui->style.raised, NULL, 0, 0);
+            f->radius = ui->style.radius;
+            f = defer(ui, FL_OUTLINE, r, ui->style.border, NULL, 0, 0);
+            f->radius = ui->style.radius, f->width = 1;
             defer(ui, FL_TEXT, gs_inset(r, 8), ui->style.text, ui->tip_text, ui->style.small_px, -1);
         } else if (ui->wait_ms < 0 || (int)(TOOLTIP_MS - rest) < ui->wait_ms) {
             ui->wait_ms = (int)(TOOLTIP_MS - rest);
@@ -881,6 +945,8 @@ void gs_ui_end(gs_ui *ui) {
         fl_item *f = &ui->fl[i];
         if (f->kind == FL_FILL) fill_now(ui, f->r, f->c);
         else if (f->kind == FL_FRAME) frame_now(ui, f->r, f->c);
+        else if (f->kind == FL_ROUND) round_now(ui, f->r, f->radius, f->c);
+        else if (f->kind == FL_OUTLINE) outline_now(ui, f->r, f->radius, f->width, f->c);
         else text_now(ui, f->r, f->text, f->px, f->c, f->align);
     }
     if (gs_glyphs_waiting(ui->glyphs)) ui->wait_ms = 0;  // a glyph is missing from this frame: the next one has it

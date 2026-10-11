@@ -31,6 +31,7 @@ bool gs_rect_contains(gs_rect r, float x, float y);
 typedef struct {
     SDL_FColor background, panel, raised, text, muted, accent, accent_text, border, warning;
     float text_px, small_px, row;  // text sizes and a control's height, in points
+    float radius;                  // of the controls' corners, in points; 0 (the default) for square ones
 } gs_ui_style;
 
 typedef struct gs_ui gs_ui;
@@ -47,12 +48,30 @@ void gs_ui_end(gs_ui *ui);
 // about to show), or -1 when it waits for events; for apps that draw only when something changes.
 // It is 0 after a frame that drew a glyph new to the atlas, which shows from the next frame on.
 int gs_ui_wait_ms(const gs_ui *ui);
+// Asks for another frame within `ms`, for something the app draws that changes by itself (a
+// progress bar, a clock): gs_ui_wait_ms after this frame is no more than that.
+void gs_ui_wake(gs_ui *ui, int ms);
 float gs_ui_scale(const gs_ui *ui);  // pixels per point
 
 // ---- Drawing ----
 
 void gs_ui_fill(gs_ui *ui, gs_rect r, SDL_FColor c);
 void gs_ui_frame(gs_ui *ui, gs_rect r, SDL_FColor c);  // a one-point outline
+// Smooth shapes (gs_draw.h, here in points): a rounded rectangle filled, its outline `width` points
+// thick inside its edge, and a disc.
+void gs_ui_round(gs_ui *ui, gs_rect r, float radius, SDL_FColor c);
+void gs_ui_outline(gs_ui *ui, gs_rect r, float radius, float width, SDL_FColor c);
+void gs_ui_circle(gs_ui *ui, float cx, float cy, float radius, SDL_FColor c);
+// Everything drawn from here on, controls included, is faded to this opacity, until it is set again
+// or the frame ends (each frame starts at 1): for a panel that fades in, or a part shown dimmed.
+void gs_ui_opacity(gs_ui *ui, float opacity);
+// A bar filled to `fraction` (0 to 1) in the accent colour, with round ends.
+void gs_ui_progress(gs_ui *ui, gs_rect r, float fraction);
+// A value that moves to `target` over `ms` milliseconds, fast at first and settling (gs_ease), and
+// keeps frames coming while it moves. Call it each frame with where the value should be and draw
+// with what it returns: a panel's height, an opacity, a knob's position. The first call for an id
+// returns the target at once.
+float gs_ui_ease(gs_ui *ui, const char *id, float target, int ms);
 // One line of text in r, vertically centred and cut with an ellipsis to fit; align -1 left, 0 centre,
 // 1 right (a right-to-left line aligns to the right when align is -1). Returns its width.
 float gs_ui_text(gs_ui *ui, gs_rect r, const char *text, float px, SDL_FColor c, int align);
