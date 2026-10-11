@@ -1,7 +1,8 @@
 // Renders a page of gs_ui's controls and gs_draw's shapes, headless, to a PNG:
-//   zig build bench-ui -- OUT.png [radius] [tabs]
+//   zig build bench-ui -- OUT.png [radius] [tabs] [ask|tip]
 // For checking the controls' look on each system by eye: `radius` rounds their corners (6 unless
-// given) and `tabs` presses Tab that many times first, which marks the control it reaches.
+// given) and `tabs` presses Tab that many times first, which marks the control it reaches; `ask` shows a question over
+// the page and `tip` a tooltip.
 #include <SDL3/SDL.h>
 #include <stdio.h>
 
@@ -14,6 +15,50 @@ static bool on = true, off;
 static float volume = 0.4f;
 static int choice = 1, selected = 2;
 static const char *const items[] = { "Small", "Medium", "Large" };
+
+static char key[64] = "sk-1234567890", plain[64] = "Kept on Esc";
+static double amount = 12.5;
+static bool sw_on = true, sw_off;
+static int radio = 1, stops = 2;
+static bool ask, tip;
+
+static void form(gs_ui *ui, gs_rect r) {
+    gs_ui_style *st = gs_ui_style_of(ui);
+    gs_rect row = gs_cut_top(&r, st->row);
+    gs_ui_input(ui, gs_cut_left(&row, 150), "key", key, sizeof key, "API key", GS_UI_MASKED);
+    gs_cut_left(&row, 10);
+    gs_ui_number(ui, gs_cut_left(&row, 70), "amount", &amount, 0, 100, 0.5, 1);
+    gs_cut_left(&row, 10);
+    gs_ui_switch(ui, (gs_rect){ row.x, row.y + 4, 40, 22 }, "sw on", &sw_on);
+    gs_ui_switch(ui, (gs_rect){ row.x + 50, row.y + 4, 40, 22 }, "sw off", &sw_off);
+    gs_cut_top(&r, 8);
+    row = gs_cut_top(&r, st->row);
+    static const char *const names[] = { "Raw", "Clean", "Both" };
+    for (int i = 0; i < 3; i++)
+        if (gs_ui_radio(ui, gs_cut_left(&row, 80), names[i], names[i], radio == i)) radio = i;
+    gs_ui_stops(ui, row, "stops", &stops, 5);
+    gs_cut_top(&r, 8);
+    row = gs_cut_top(&r, 22);
+    gs_rect link = gs_cut_left(&row, 120);
+    gs_ui_link(ui, link, "Read the guide");
+    gs_ui_tooltip(ui, link, "A tooltip longer than one line wraps to several, so a line that was cut short can show all of its text when the pointer rests on it.");
+    gs_ui_disable(ui, true, true);
+    gs_ui_button(ui, gs_cut_right(&row, 90), "Disabled");
+    gs_ui_disable(ui, false, false);
+    gs_cut_top(&r, 8);
+    gs_ui_outline(ui, r, st->radius, 1, st->border);
+    gs_rect page = gs_ui_page_begin(ui, gs_inset(r, 1), "page");
+    page = (gs_rect){ page.x + 10, page.y + 10, page.w - 30, page.h };
+    for (int i = 0; i < 6; i++) {
+        char title[32];
+        SDL_snprintf(title, sizeof title, "Section %d", i + 1);
+        gs_ui_text(ui, gs_cut_top(&page, 24), title, st->text_px, st->text, -1);
+        page.y += gs_ui_text_wrapped(ui, page, "A page holds more than its area shows and scrolls by the wheel, the keys and its thumb.", st->small_px, st->muted) + 6;
+        gs_ui_input(ui, gs_cut_top(&page, st->row), title, plain, sizeof plain, NULL, GS_UI_KEEP);
+        gs_cut_top(&page, 12);
+    }
+    gs_ui_page_end(ui, page.y);
+}
 
 static void page(gs_ui *ui) {
     gs_ui_style *st = gs_ui_style_of(ui);
@@ -64,15 +109,18 @@ static void page(gs_ui *ui) {
     float s = gs_ui_scale(ui);
     for (int i = 0; i < 8; i++) gs_draw_line(ren, (r.x + 10 + (float)i * 40) * s, (r.y + 180) * s, (r.x + 40 + (float)i * 40) * s, (r.y + 180 + (float)i * 6) * s, (1 + (float)i) * s, st->text);
     gs_draw_triangle(ren, (r.x + 10) * s, (r.y + 250) * s, (r.x + 60) * s, (r.y + 275) * s, (r.x + 10) * s, (r.y + 300) * s, st->accent);
+    r.y += 320, r.h -= 320;
+    form(ui, r);
+    if (ask) gs_ui_confirm(ui, "Remove this model? Its file is deleted from the disk, and this can't be undone.", "Remove", "Cancel", true);
     gs_ui_end(ui);
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) return fprintf(stderr, "usage: bench-ui OUT.png [radius] [tabs]\n"), 1;
+    if (argc < 2) return fprintf(stderr, "usage: bench-ui OUT.png [radius] [tabs] [ask|tip]\n"), 1;
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
     if (!SDL_Init(SDL_INIT_VIDEO)) return fprintf(stderr, "%s\n", SDL_GetError()), 1;
-    SDL_Window *w = SDL_CreateWindow("bench-ui", 800, 520, 0);
+    SDL_Window *w = SDL_CreateWindow("bench-ui", 800, 640, 0);
     SDL_Renderer *r = SDL_CreateRenderer(w, NULL);
     gs_fontset *fs = gs_fontset_system();
     gs_ui *ui = gs_ui_new(w, r, fs);
@@ -83,7 +131,14 @@ int main(int argc, char **argv) {
         gs_ui_event(ui, &e);
         page(ui);
     }
-    for (int frame = 0; frame < 2; frame++) page(ui);  // (a glyph first drawn in one frame appears in the next)
+    ask = argc > 4 && !SDL_strcmp(argv[4], "ask"), tip = argc > 4 && !SDL_strcmp(argv[4], "tip");
+    if (tip) {  // the pointer rests on the link until its tooltip shows
+        SDL_Event e = { .motion = { .type = SDL_EVENT_MOUSE_MOTION, .x = 440, .y = 430 } };
+        gs_ui_event(ui, &e);
+        page(ui);
+        SDL_Delay(600);
+    }
+    for (int frame = 0; frame < 3; frame++) page(ui);  // (a glyph first drawn in one frame appears in the next)
     SDL_Surface *s = SDL_RenderReadPixels(r, NULL), *c = s ? SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA32) : NULL;
     bool ok = c && stbi_write_png(argv[1], c->w, c->h, 4, c->pixels, c->pitch);
     SDL_DestroySurface(c), SDL_DestroySurface(s);

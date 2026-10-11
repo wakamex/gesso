@@ -12,6 +12,7 @@
 #define STOPS 256      // controls in the Tab order per frame
 #define DIM 0.45f      // the opacity of controls drawn disabled and dimmed
 #define TOOLTIP_MS 500
+#define TOOLTIP_W 280    // the widest a tooltip gets before its text wraps, in points
 #define BLINK_MS 530
 #define OUTSIDE -1e6f  // where the pointer is once it has left the window
 
@@ -43,6 +44,8 @@ typedef struct {
     float from, to, value;  // an eased value: where it set out from, where it is going, where it is
     uint64_t since;         // when it set out
     bool eased;
+    gs_rect view;           // a page's area
+    float extent, grab;     // the height of its content; where on its scroll thumb the pointer holds it
 } widget;
 
 typedef enum { FL_FILL, FL_TEXT, FL_FRAME, FL_ROUND, FL_OUTLINE } fl_kind;
@@ -52,7 +55,7 @@ typedef struct { fl_kind kind; gs_rect r; SDL_FColor c; char text[160]; float px
 
 typedef struct { char *text; int size4, width4; gs_wrap *wrap; } wrap_entry;
 
-typedef struct { uint32_t id; gs_rect r; } stop;        // a control the Tab key reaches
+typedef struct { uint32_t id, page; gs_rect r; } stop;  // a control the Tab key reaches, and the page it is in
 typedef struct { gs_rect r; bool on; } clip_state;
 
 typedef struct {
@@ -85,6 +88,14 @@ struct gs_ui {
     clip_state clip, list_clip;  // the clip in force, which the pointer cannot reach through; and the one a list put aside
     gs_rect list_area;
     bool list_marked;
+    uint32_t page;           // the page being drawn
+    clip_state page_clip;
+    bool modal_last, modal_now, in_modal;  // a modal was drawn last frame, has been drawn in this one, is being drawn
+    uint32_t modal_focus;    // what had the keyboard before it
+    uint32_t number;         // the number field being edited, and its text
+    char number_text[32];
+    int cursor_want, cursor_now;  // the pointer's shape: 0 the default, 1 a hand, 2 a text beam
+    SDL_Cursor *cursors[3];
     uint64_t caret_since;
     widget states[STATES];
     // The floating layer: what it covered last frame takes the pointer from the widgets under it.
@@ -101,7 +112,7 @@ struct gs_ui {
     uint32_t tip;            // the tooltip's anchor
     uint64_t tip_since;
     gs_rect tip_rect;
-    char tip_text[160];
+    char tip_text[400];
     bool tip_wanted;
     int wait_ms;
     wrap_entry wraps[WRAPS];  // wrapped text kept, so text drawn every frame is broken into lines once
@@ -147,6 +158,7 @@ gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
 void gs_ui_free(gs_ui *ui) {
     if (!ui) return;
     gs_glyphs_free(ui->glyphs);
+    for (int i = 1; i < 3; i++) SDL_DestroyCursor(ui->cursors[i]);
     for (int i = 0; i < WRAPS; i++) SDL_free(ui->wraps[i].text), gs_wrap_free(ui->wraps[i].wrap);
     free(ui->piece);
     free(ui);
@@ -220,8 +232,14 @@ static void tab(gs_ui *ui, int step) {
     for (int i = 0; i < ui->nlast; i++)
         if (ui->last_stops[i].id == ui->focus) at = i;
     at = at < 0 ? (step > 0 ? 0 : ui->nlast - 1) : (at + step + ui->nlast) % ui->nlast;
-    set_focus(ui, ui->last_stops[at].id);
+    const stop *to = &ui->last_stops[at];
+    set_focus(ui, to->id);
     ui->marked = true;
+    if (to->page) {  // brought into view in its page, with room around it
+        widget *page = state(ui, to->page);
+        gs_rect v = page->view;
+        if (to->r.y < v.y + 12 || to->r.y + to->r.h > v.y + v.h - 12) page->scroll += to->r.y + to->r.h / 2 - (v.y + v.h / 2), page->eased = false;
+    }
 }
 
 gs_rect gs_ui_begin(gs_ui *ui) {
@@ -240,7 +258,10 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     ui->float_last = ui->float_now, ui->float_last_on = ui->float_now_on;
     ui->float_now_on = false, ui->nfl = 0, ui->tip_wanted = false, ui->wait_ms = -1, ui->opacity = 1;
     if (!down) ui->drag = 0;
-    ui->disabled = ui->dim = false, ui->clip.on = false;
+    ui->disabled = ui->dim = false, ui->clip.on = false, ui->page = 0, ui->cursor_want = 0;
+    bool was_modal = ui->modal_last;
+    ui->modal_last = ui->modal_now, ui->modal_now = ui->in_modal = false;
+    if (was_modal && !ui->modal_last) set_focus(ui, ui->modal_focus);  // the modal is gone: the keyboard goes back
     if (ui->in.pressed) ui->marked = false;
     memcpy(ui->last_stops, ui->stops, sizeof(stop) * (size_t)ui->nstops);
     ui->nlast = ui->nstops, ui->nstops = 0;
@@ -446,7 +467,9 @@ static void clip_pop(gs_ui *ui, clip_state before) { gs_ui_clip(ui, before.on ? 
 
 // The pointer is free for a widget unless the floating layer covered it last frame (widgets in that
 // layer, drawn while in_float, are the ones it belongs to).
-static bool inert(const gs_ui *ui) { return ui->disabled; }
+// Under a modal, what is not in it takes nothing: no pointer, no keys, no place in the Tab order.
+static bool covered(const gs_ui *ui) { return ui->modal_last && !ui->in_modal; }
+static bool inert(const gs_ui *ui) { return ui->disabled || covered(ui); }
 
 static bool pointer_over(gs_ui *ui, gs_rect r, float x, float y) {
     if (inert(ui)) return false;
@@ -461,6 +484,7 @@ static gs_rect outset(gs_rect r, float d) { return (gs_rect){ r.x - d, r.y - d, 
 static bool pressed(gs_ui *ui, gs_rect r) { return ui->in.pressed && pointer_over(ui, r, ui->in.x, ui->in.y); }
 
 bool gs_ui_key(gs_ui *ui, SDL_Keycode key, SDL_Keymod mods) {
+    if (covered(ui)) return false;
     for (int i = 0; i < ui->in.nkeys; i++)
         if (!ui->taken[i] && ui->in.keys[i] == key && (mods ? (ui->in.mods[i] & mods) != 0 : !(ui->in.mods[i] & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))))
             return ui->taken[i] = true;
@@ -475,7 +499,7 @@ void gs_ui_disable(gs_ui *ui, bool disabled, bool dim) { ui->disabled = disabled
 // Enters a control into the Tab order. True when it has the keyboard.
 static bool stop_at(gs_ui *ui, uint32_t h, gs_rect r) {
     if (inert(ui) || ui->in_float) return false;
-    if (ui->nstops < STOPS) ui->stops[ui->nstops++] = (stop){ h, r };
+    if (ui->nstops < STOPS) ui->stops[ui->nstops++] = (stop){ h, ui->page, r };
     return ui->focus == h;
 }
 
@@ -508,12 +532,91 @@ void gs_ui_focus_mark(gs_ui *ui, gs_rect r, const char *id, float radius) { mark
 
 // ---- Widgets ----
 
-bool gs_ui_button(gs_ui *ui, gs_rect r, const char *label) {
-    bool focused = stop_at(ui, label_id(ui, label), r), hot = gs_ui_hovered(ui, r);
-    gs_ui_round(ui, r, ui->style.radius, hot ? ui->style.border : ui->style.raised);
-    gs_ui_text(ui, gs_inset(r, 6), label, ui->style.text_px, ui->style.text, 0);
+// A button with an id: plain, or filled in `fill` with the accent's text colour.
+static bool button(gs_ui *ui, gs_rect r, uint32_t h, const char *label, const SDL_FColor *fill) {
+    bool focused = stop_at(ui, h, r), hot = gs_ui_hovered(ui, r);
+    gs_ui_round(ui, r, ui->style.radius, fill ? (hot ? ui->style.text : *fill) : hot ? ui->style.border : ui->style.raised);
+    gs_ui_text(ui, gs_inset(r, 6), label, ui->style.text_px, fill ? ui->style.accent_text : ui->style.text, 0);
     mark(ui, focused, r, ui->style.radius);
     return gs_ui_clicked(ui, r) || act(ui, focused);
+}
+
+bool gs_ui_button(gs_ui *ui, gs_rect r, const char *label) { return button(ui, r, label_id(ui, label), label, NULL); }
+
+static SDL_FColor mix(SDL_FColor a, SDL_FColor b, float t) {
+    return (SDL_FColor){ a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t };
+}
+
+static float ease_to(gs_ui *ui, widget *w, float target, int ms) {
+    if (!w->eased) w->eased = true, w->from = w->to = w->value = target;
+    if (target != w->to) w->from = w->value, w->to = target, w->since = ui->now;
+    float t = ms > 0 && w->from != w->to ? (float)(ui->now - w->since) / (float)ms : 1;
+    w->value = t >= 1 ? w->to : w->from + (w->to - w->from) * gs_ease(t);
+    if (t < 1) wake_within(ui, 16);
+    return w->value;
+}
+
+float gs_ui_ease(gs_ui *ui, const char *id, float target, int ms) { return ease_to(ui, state(ui, hash(id)), target, ms); }
+
+bool gs_ui_switch(gs_ui *ui, gs_rect r, const char *id, bool *on) {
+    uint32_t h = hash(id);
+    bool focused = stop_at(ui, h, r), hit = gs_ui_clicked(ui, r) || act(ui, focused);
+    if (hit) *on = !*on;
+    float t = ease_to(ui, state(ui, h), *on ? 1 : 0, 120), half = r.h / 2;
+    gs_ui_round(ui, r, half, mix(ui->style.raised, ui->style.accent, t));
+    SDL_FColor edge = gs_ui_hovered(ui, r) ? ui->style.muted : ui->style.border;
+    edge.a *= 1 - t;
+    gs_ui_outline(ui, r, half, 1, edge);
+    gs_ui_circle(ui, r.x + half + (r.w - r.h) * t, r.y + half, half - 3, mix(ui->style.muted, ui->style.accent_text, t));
+    mark(ui, focused, r, half);
+    return hit;
+}
+
+bool gs_ui_radio(gs_ui *ui, gs_rect r, const char *id, const char *label, bool selected) {
+    bool focused = stop_at(ui, hash(id), r), hit = gs_ui_clicked(ui, r) || act(ui, focused);
+    gs_rect ring = { r.x + 1, r.y + r.h / 2 - 8, 16, 16 };
+    gs_ui_outline(ui, ring, 8, 1.5f, selected ? ui->style.accent : gs_ui_hovered(ui, r) ? ui->style.text : ui->style.muted);
+    if (selected) gs_ui_circle(ui, ring.x + 8, ring.y + 8, 4.5f, ui->style.accent);
+    gs_ui_text(ui, (gs_rect){ r.x + 26, r.y, fmaxf(0, r.w - 26), r.h }, label, ui->style.text_px, ui->style.text, -1);
+    mark(ui, focused, ring, 8);
+    return hit && !selected;
+}
+
+bool gs_ui_stops(gs_ui *ui, gs_rect r, const char *id, int *value, int count) {
+    if (count < 2) return false;
+    uint32_t h = hash(id);
+    bool focused = stop_at(ui, h, r);
+    int before = *value;
+    float x0 = r.x + 9, x1 = r.x + r.w - 9, y = r.y + r.h / 2;
+    if (pressed(ui, r)) ui->drag = h;
+    if (ui->drag == h) *value = (int)floorf((ui->in.x - x0) / (x1 - x0) * (float)(count - 1) + 0.5f);
+    if (focused && ui->marked) {
+        while (gs_ui_key(ui, SDLK_RIGHT, 0) || gs_ui_key(ui, SDLK_UP, 0)) ++*value;
+        while (gs_ui_key(ui, SDLK_LEFT, 0) || gs_ui_key(ui, SDLK_DOWN, 0)) --*value;
+        if (gs_ui_key(ui, SDLK_HOME, 0)) *value = 0;
+        if (gs_ui_key(ui, SDLK_END, 0)) *value = count - 1;
+    }
+    *value = SDL_clamp(*value, 0, count - 1);
+    float knob = x0 + (x1 - x0) * (float)*value / (float)(count - 1);
+    gs_ui_round(ui, (gs_rect){ x0, y - 2, x1 - x0, 4 }, 2, ui->style.raised);
+    gs_ui_round(ui, (gs_rect){ x0, y - 2, knob - x0, 4 }, 2, ui->style.accent);
+    for (int i = 0; i < count; i++) gs_ui_circle(ui, x0 + (x1 - x0) * (float)i / (float)(count - 1), y, 2.5f, i <= *value ? ui->style.accent : ui->style.muted);
+    gs_ui_circle(ui, knob, y, 8, gs_ui_hovered(ui, r) || ui->drag == h ? ui->style.text : ui->style.accent);
+    mark(ui, focused, (gs_rect){ knob - 8, y - 8, 16, 16 }, 8);
+    return *value != before;
+}
+
+bool gs_ui_link(gs_ui *ui, gs_rect r, const char *label) {
+    float size = ui->style.text_px;
+    float width = gs_ui_text_width(ui, label, size);
+    gs_rect hit = { r.x, r.y, width > 0 ? fminf(r.w, width) : r.w, r.h };
+    bool focused = stop_at(ui, label_id(ui, label), hit), hot = gs_ui_hovered(ui, hit);
+    if (hot) ui->cursor_want = 1;
+    SDL_FColor c = hot ? ui->style.text : ui->style.accent;
+    gs_ui_text(ui, hit, label, size, c, -1);
+    gs_ui_fill(ui, (gs_rect){ hit.x, r.y + r.h / 2 + size * 0.36f + 2, hit.w, 1 }, c);
+    mark(ui, focused, hit, 2);
+    return gs_ui_clicked(ui, hit) || act(ui, focused);
 }
 
 bool gs_ui_toggle(gs_ui *ui, gs_rect r, const char *label, bool *on) {
@@ -556,7 +659,7 @@ bool gs_ui_slider(gs_ui *ui, gs_rect r, const char *id, float *value, float min,
 }
 
 // The field's edits: typed text, and the keys that move the cursor or change the text.
-static bool edit(gs_ui *ui, widget *w, char *buf, size_t size) {
+static bool edit(gs_ui *ui, widget *w, char *buf, size_t size, bool secret) {
     bool changed = false;
     size_t len = strlen(buf);
     if (w->cursor > (int)len) w->cursor = (int)len;
@@ -565,6 +668,7 @@ static bool edit(gs_ui *ui, widget *w, char *buf, size_t size) {
     for (int i = 0; i < ui->in.nkeys; i++) {
         SDL_Keycode k = ui->in.keys[i];
         bool ctrl = ui->in.mods[i] & (SDL_KMOD_CTRL | SDL_KMOD_GUI);
+        if (ui->taken[i]) continue;
         if (ctrl && k == SDLK_V) {
             char *paste = SDL_GetClipboardText();
             size_t n = 0;
@@ -574,7 +678,7 @@ static bool edit(gs_ui *ui, widget *w, char *buf, size_t size) {
             typed = clean;
         } else if (ctrl && k == SDLK_A) {
             w->all = true;
-        } else if (ctrl && (k == SDLK_C || k == SDLK_X) && w->all && len) {
+        } else if (ctrl && (k == SDLK_C || k == SDLK_X) && w->all && len && !secret) {  // (what is shown as dots is not copied out)
             SDL_SetClipboardText(buf);  // (only when the user copies)
             if (k == SDLK_X) buf[0] = 0, len = 0, w->cursor = 0, w->all = false, changed = true;
         } else if (k == SDLK_BACKSPACE || k == SDLK_DELETE) {
@@ -613,33 +717,59 @@ static bool edit(gs_ui *ui, widget *w, char *buf, size_t size) {
     return changed;
 }
 
-bool gs_ui_field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, const char *placeholder) {
+// buf as a masked field shows it, a bullet for each character, and where its cursor is among them.
+static int bullets(const char *buf, int cursor, char *out, size_t size) {
+    int at = 0, n = 0;
+    for (int i = 0; buf[i] && (size_t)n + 4 < size; i = gs_utf8_grapheme_next(buf, i)) {
+        if (i < cursor) at = n + 3;
+        memcpy(out + n, "\xE2\x80\xA2", 3), n += 3;
+    }
+    out[n] = 0;
+    return at;
+}
+
+static bool field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, const char *placeholder, int flags) {
     uint32_t h = hash(id);
     widget *w = state(ui, h);
     float s = ui->scale, pad = 8, text_px = ui->style.text_px;
     gs_rect inner = gs_inset(r, pad);
     inner.y = r.y, inner.h = r.h;
+    char dots[768];
+    bool was = stop_at(ui, h, r), masked = (flags & GS_UI_MASKED) && !((flags & GS_UI_REVEAL) && was);
+    if (gs_ui_hovered(ui, r)) ui->cursor_want = 2;
     if (pressed(ui, r)) {
         if (ui->focus != h) gs_ui_focus(ui, id);
-        const gs_line *l = gs_fontset_line(ui->fonts, text_px * s, buf);
-        w->cursor = l ? gs_line_hit(l, (ui->in.x - inner.x) * s, buf) : 0, w->all = false;
+        if (masked) bullets(buf, 0, dots, sizeof dots);
+        const gs_line *l = gs_fontset_line(ui->fonts, text_px * s, masked ? dots : buf);
+        int at = l ? gs_line_hit(l, (ui->in.x - inner.x) * s, masked ? dots : buf) : 0;
+        if (masked) {  // (the bullet's place, as the character's)
+            int to = 0;
+            for (int n = at / 3; n > 0 && buf[to]; n--) to = gs_utf8_grapheme_next(buf, to);
+            at = to;
+        }
+        w->cursor = at, w->all = false;
         ui->caret_since = ui->now;
     }
     if (ui->focus == h && ui->in.pressed && !gs_rect_contains(r, ui->in.x, ui->in.y)) gs_ui_focus(ui, NULL);  // a click elsewhere leaves it
-    bool focused = stop_at(ui, h, r), changed = false;
+    bool focused = ui->focus == h && !inert(ui), changed = false;
+    if (focused && (flags & GS_UI_KEEP) && gs_ui_key(ui, SDLK_ESCAPE, 0)) gs_ui_focus(ui, NULL), focused = false;  // Esc lets go and keeps the text
+    masked = (flags & GS_UI_MASKED) && !((flags & GS_UI_REVEAL) && focused);
     if (focused) {
         if (!SDL_TextInputActive(ui->win)) SDL_StartTextInput(ui->win);
-        changed = edit(ui, w, buf, size);
+        changed = edit(ui, w, buf, size, masked);
     }
+    if (!focused) w->all = false;  // (a selection is the focused field's)
+    int cursor = masked ? bullets(buf, w->cursor, dots, sizeof dots) : w->cursor;
+    const char *shown = masked ? dots : buf;
     gs_ui_round(ui, r, ui->style.radius, ui->style.raised);
     gs_ui_outline(ui, r, ui->style.radius, 1, focused ? ui->style.accent : gs_ui_hovered(ui, r) ? ui->style.muted : ui->style.border);
     clip_state outer = clip_push(ui, r);
-    if (w->all && buf[0]) gs_ui_fill(ui, (gs_rect){ inner.x, r.y + 5, fminf(gs_ui_text_width(ui, buf, text_px), inner.w), r.h - 10 }, ui->style.border);
-    if (buf[0] || ui->composition[0]) gs_ui_text(ui, (gs_rect){ inner.x, r.y, 1e6f, r.h }, buf, text_px, ui->style.text, -1);
+    if (w->all && buf[0]) gs_ui_fill(ui, (gs_rect){ inner.x, r.y + 5, fminf(gs_ui_text_width(ui, shown, text_px), inner.w), r.h - 10 }, ui->style.border);
+    if (buf[0] || ui->composition[0]) gs_ui_text(ui, (gs_rect){ inner.x, r.y, 1e6f, r.h }, shown, text_px, ui->style.text, -1);
     else if (placeholder) gs_ui_text(ui, inner, placeholder, text_px, ui->style.muted, -1);
     if (focused) {
-        const gs_line *l = gs_fontset_line(ui->fonts, text_px * s, buf);
-        float cx = inner.x + (l ? gs_line_caret(l, w->cursor) / s : 0);
+        const gs_line *l = gs_fontset_line(ui->fonts, text_px * s, shown);
+        float cx = inner.x + (l ? gs_line_caret(l, cursor) / s : 0);
         if (ui->composition[0]) {  // what the input method is composing, underlined at the cursor
             float cw = gs_ui_text(ui, (gs_rect){ cx, r.y, 1e6f, r.h }, ui->composition, text_px, ui->style.accent, -1);
             gs_ui_fill(ui, (gs_rect){ cx, r.y + r.h - 7, cw, 1 }, ui->style.accent);
@@ -653,6 +783,51 @@ bool gs_ui_field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, c
     }
     clip_pop(ui, outer);
     return changed;
+}
+
+bool gs_ui_field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, const char *placeholder) { return field(ui, r, id, buf, size, placeholder, 0); }
+bool gs_ui_input(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, const char *placeholder, int flags) { return field(ui, r, id, buf, size, placeholder, flags); }
+
+static void number_text(char *out, size_t size, double value, int decimals) { snprintf(out, size, "%.*f", SDL_clamp(decimals, 0, 9), value); }
+
+bool gs_ui_number(gs_ui *ui, gs_rect r, const char *id, double *value, double min, double max, double step, int decimals) {
+    uint32_t h = hash(id);
+    double before = *value;
+    if (ui->focus != h || inert(ui)) {  // at rest it shows the value
+        char shown[32];
+        if (ui->number == h) ui->number = 0;
+        number_text(shown, sizeof shown, *value, decimals);
+        field(ui, r, id, shown, sizeof shown, NULL, GS_UI_KEEP);
+        return false;
+    }
+    widget *w = state(ui, h);
+    if (ui->number != h) {  // taken up: its text is the value's, all selected, so that typing replaces it
+        ui->number = h;
+        number_text(ui->number_text, sizeof ui->number_text, *value, decimals);
+        w->all = true, w->cursor = (int)strlen(ui->number_text);
+    }
+    char *typed = ui->in.text, *keep = typed;  // only what a number is written with gets in
+    for (; *typed; typed++) {
+        char c = *typed == ',' ? '.' : *typed;
+        if ((c >= '0' && c <= '9') || c == '-' || (c == '.' && decimals > 0)) *keep++ = c;
+    }
+    *keep = 0;
+    int steps = 0;
+    bool commit = false;
+    while (gs_ui_key(ui, SDLK_UP, 0)) steps++;
+    while (gs_ui_key(ui, SDLK_DOWN, 0)) steps--;
+    for (int i = 0; i < ui->in.nkeys; i++) commit = commit || ui->in.keys[i] == SDLK_RETURN || ui->in.keys[i] == SDLK_KP_ENTER;  // (Enter stays the app's)
+    field(ui, r, id, ui->number_text, sizeof ui->number_text, NULL, GS_UI_KEEP);
+    char *end;
+    double v = SDL_strtod(ui->number_text, &end), unit = pow(10, SDL_clamp(decimals, 0, 9));
+    if (end == ui->number_text) v = *value;  // (nothing of a number yet)
+    if (steps) v += steps * step;
+    *value = SDL_clamp(round(v * unit) / unit, min, max);
+    if (steps || commit) {  // written out again as the value it came to
+        number_text(ui->number_text, sizeof ui->number_text, *value, decimals);
+        w->cursor = (int)strlen(ui->number_text), w->all = false;
+    }
+    return *value != before;
 }
 
 // ---- Text area ----
@@ -747,6 +922,7 @@ static bool area_edit(gs_ui *ui, widget *w, char *buf, size_t size, gs_rect inne
         SDL_Keycode k = ui->in.keys[i];
         SDL_Keymod mods = ui->in.mods[i];
         bool ctrl = mods & (SDL_KMOD_CTRL | SDL_KMOD_GUI), shift = mods & SDL_KMOD_SHIFT;
+        if (ui->taken[i]) continue;
         int len = (int)strlen(buf);
         w->cursor = SDL_clamp(w->cursor, 0, len), w->anchor = SDL_clamp(w->anchor, 0, len);
         bool has = w->anchored && w->anchor != w->cursor;
@@ -808,6 +984,7 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
     gs_rect inner = { r.x + AREA_PAD_X, r.y + AREA_PAD_Y, fmaxf(1, r.w - 2 * AREA_PAD_X), fmaxf(1, r.h - 2 * AREA_PAD_Y) };
     bool moved = false;
     w->cursor = SDL_clamp(w->cursor, 0, (int)strlen(buf)), w->anchor = SDL_clamp(w->anchor, 0, (int)strlen(buf));
+    if (gs_ui_hovered(ui, r)) ui->cursor_want = 2;
     if (pressed(ui, r)) {  // a press puts the cursor under the pointer and starts a drag selection
         if (ui->focus != h) gs_ui_focus(ui, id);
         ui->drag = h;
@@ -835,7 +1012,7 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
     const gs_wrap *wr = wrap_of(ui, buf, px, inner.w);
     int lines = wr ? wr->count : 1;
     float max_scroll = fmaxf(0, lines * lh - inner.h);
-    if (gs_ui_hovered(ui, r) && ui->in.wheel) w->scroll -= ui->in.wheel * lh * 3;
+    if (gs_ui_hovered(ui, r) && ui->in.wheel && max_scroll > 0) w->scroll -= ui->in.wheel * lh * 3, ui->in.wheel = 0;  // (taken from a page it is in)
     int cline = wr ? line_at(wr, w->cursor) : 0;
     if (moved && focused) {  // keep the cursor's line in view
         if (cline * lh < w->scroll) w->scroll = cline * lh;
@@ -993,7 +1170,7 @@ gs_ui_rows gs_ui_list(gs_ui *ui, gs_rect area, const char *id, int count, float 
     gs_ui_rows rows = { 0 };
     float max_scroll = fmaxf(0, count * row_h - area.h);
     bool moved = false, focused = stop_at(ui, h, area);
-    if (gs_ui_hovered(ui, area) && ui->in.wheel) w->scroll -= ui->in.wheel * row_h * 1.5f;
+    if (gs_ui_hovered(ui, area) && ui->in.wheel && max_scroll > 0) w->scroll -= ui->in.wheel * row_h * 1.5f, ui->in.wheel = 0;  // (taken from a page it is in)
     if (focused && count) {
         int page = (int)fmaxf(1, area.h / row_h - 1), sel = *selected;
         while (gs_ui_key(ui, SDLK_DOWN, 0)) sel++, moved = true;  // (every press since the last frame)
@@ -1040,7 +1217,7 @@ gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const 
     float max_scroll = fmaxf(0, total - area.h), page = area.h * 0.9f;
     if (!w->away) w->scroll = max_scroll;
     bool over = gs_ui_hovered(ui, area);
-    if (over && ui->in.wheel) w->scroll -= ui->in.wheel * ui->style.row * 1.5f;
+    if (over && ui->in.wheel && max_scroll > 0) w->scroll -= ui->in.wheel * ui->style.row * 1.5f, ui->in.wheel = 0;
     if (over || focused) {
         while (gs_ui_key(ui, SDLK_PAGEUP, 0)) w->scroll -= page;
         while (gs_ui_key(ui, SDLK_PAGEDOWN, 0)) w->scroll += page;
@@ -1063,28 +1240,133 @@ gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const 
 
 void gs_ui_flow_prepended(gs_ui *ui, const char *id, int n) { state(ui, hash(id))->prepended = n; }
 
-float gs_ui_ease(gs_ui *ui, const char *id, float target, int ms) {
-    widget *w = state(ui, hash(id));
-    if (!w->eased) w->eased = true, w->from = w->to = w->value = target;
-    if (target != w->to) w->from = w->value, w->to = target, w->since = ui->now;
-    float t = ms > 0 && w->from != w->to ? (float)(ui->now - w->since) / (float)ms : 1;
-    w->value = t >= 1 ? w->to : w->from + (w->to - w->from) * gs_ease(t);
-    if (t < 1) wake_within(ui, 16);
-    return w->value;
+
+
+// ---- A page ----
+
+#define PAGE_BAR 10  // the width of the strip at a page's right edge that takes the pointer for its scroll thumb
+
+static gs_rect page_thumb(const widget *w) {
+    gs_rect v = w->view;
+    float h = fmaxf(28, v.h * v.h / w->extent), max = w->extent - v.h;
+    return (gs_rect){ v.x + v.w - 7, v.y + (v.h - h) * (max > 0 ? w->scroll / max : 0), 4, h };
 }
 
+gs_rect gs_ui_page_begin(gs_ui *ui, gs_rect area, const char *id) {
+    uint32_t h = hash(id);
+    widget *w = state(ui, h);
+    w->view = area;
+    float max = fmaxf(0, w->extent - area.h);
+    if (max > 0) {  // the thumb, dragged
+        gs_rect thumb = page_thumb(w), bar = { area.x + area.w - PAGE_BAR, area.y, PAGE_BAR, area.h };
+        if (pressed(ui, bar)) ui->drag = h, w->grab = gs_rect_contains((gs_rect){ bar.x, thumb.y, bar.w, thumb.h }, ui->in.x, ui->in.y) ? ui->in.y - thumb.y : thumb.h / 2;
+        if (ui->drag == h && area.h > thumb.h) w->scroll = (ui->in.y - w->grab - area.y) / (area.h - thumb.h) * max, w->eased = false;
+    }
+    if (w->eased) {  // gliding to where gs_ui_page_scroll_to sent it
+        float to = SDL_clamp(w->to, 0, max), d = to - w->scroll;
+        if (fabsf(d) < 0.5f) w->scroll = to, w->eased = false;
+        else w->scroll += d * (1 - expf(-(float)(ui->now - w->since) / 70)), wake_within(ui, 16);
+        w->since = ui->now;
+    }
+    w->scroll = SDL_clamp(w->scroll, 0, max);
+    ui->page = h;
+    ui->page_clip = clip_push(ui, area);
+    return (gs_rect){ area.x, area.y - floorf(w->scroll), area.w, 1e6f };
+}
+
+void gs_ui_page_end(gs_ui *ui, float bottom) {
+    widget *w = state(ui, ui->page);
+    gs_rect area = w->view;
+    float extent = fmaxf(0, bottom - (area.y - floorf(w->scroll))), before = w->scroll;
+    if (fabsf(extent - w->extent) > 0.5f) w->extent = extent, wake_within(ui, 0);  // (the next frame knows how far it scrolls)
+    float max = fmaxf(0, w->extent - area.h);
+    // What its content left of the wheel and the keys is the page's, from the next frame on.
+    if (gs_ui_hovered(ui, area)) {
+        if (ui->in.wheel) w->scroll -= ui->in.wheel * 48, ui->in.wheel = 0, w->eased = false;
+        while (gs_ui_key(ui, SDLK_PAGEDOWN, 0)) w->scroll += area.h * 0.9f, w->eased = false;
+        while (gs_ui_key(ui, SDLK_PAGEUP, 0)) w->scroll -= area.h * 0.9f, w->eased = false;
+    }
+    w->scroll = SDL_clamp(w->scroll, 0, max);
+    if (w->scroll != before) wake_within(ui, 0);
+    if (max > 0) {
+        gs_rect thumb = page_thumb(w), bar = { area.x + area.w - PAGE_BAR, area.y, PAGE_BAR, area.h };
+        SDL_FColor c = ui->drag == ui->page || gs_ui_hovered(ui, bar) ? ui->style.text : ui->style.muted;
+        c.a *= 0.5f;
+        gs_ui_round(ui, thumb, 2, c);
+    }
+    clip_pop(ui, ui->page_clip);
+    ui->page = 0;
+}
+
+float gs_ui_page_scroll(gs_ui *ui, const char *id) { return state(ui, hash(id))->scroll; }
+
+void gs_ui_page_scroll_to(gs_ui *ui, const char *id, float y, bool glide) {
+    widget *w = state(ui, hash(id));
+    if (glide) w->to = y, w->eased = true, w->since = ui->now;
+    else w->scroll = y, w->eased = false;
+    wake_within(ui, 0);
+}
+
+// ---- A modal ----
+
+gs_rect gs_ui_modal_begin(gs_ui *ui, float width, float height) {
+    bool first = !ui->modal_last;
+    gs_ui_clip(ui, NULL);
+    ui->opacity = 1, ui->dim = false, ui->page = 0;
+    ui->in_modal = ui->modal_now = true;
+    ui->disabled = first;  // the click or key that opened it is not an answer to it
+    if (first) ui->modal_focus = ui->focus, set_focus(ui, 0), wake_within(ui, 0);
+    fill_now(ui, ui->area, (SDL_FColor){ 0, 0, 0, 0.55f });
+    width = fminf(width, ui->area.w - 32), height = fminf(height, ui->area.h - 32);
+    gs_rect box = { (ui->area.w - width) / 2, (ui->area.h - height) / 2, width, height };
+    gs_ui_round(ui, box, ui->style.radius * 2, ui->style.panel);
+    gs_ui_outline(ui, box, ui->style.radius * 2, 1, ui->style.border);
+    return box;
+}
+
+void gs_ui_modal_end(gs_ui *ui) { ui->in_modal = ui->disabled = false; }
+
+int gs_ui_confirm(gs_ui *ui, const char *question, const char *yes, const char *no, bool danger) {
+    float size = ui->style.text_px, pad = 20, row_h = ui->style.row;
+    float width = fminf(420, ui->area.w - 32), text_h = gs_ui_text_height(ui, question, size, width - 2 * pad);
+    uint32_t yes_id = hash("gs_ui confirm yes"), no_id = hash("gs_ui confirm no");
+    bool first = !ui->modal_last;
+    gs_rect box = gs_ui_modal_begin(ui, width, text_h + row_h + 3 * pad);
+    if (first) set_focus(ui, no_id), ui->marked = true;  // Enter on a question just asked declines it
+    gs_ui_text_wrapped(ui, (gs_rect){ box.x + pad, box.y + pad, box.w - 2 * pad, text_h }, question, size, ui->style.text);
+    gs_rect row = { box.x + pad, box.y + box.h - pad - row_h, box.w - 2 * pad, row_h };
+    int answer = 0;
+    if (button(ui, gs_cut_right(&row, gs_ui_text_width(ui, yes, size) + 28), yes_id, yes, danger ? &ui->style.warning : &ui->style.accent)) answer = 1;
+    gs_cut_right(&row, 10);
+    if (button(ui, gs_cut_right(&row, gs_ui_text_width(ui, no, size) + 28), no_id, no, NULL)) answer = -1;
+    // The question has the keyboard whether or not the mark shows: Enter or Space answers with the
+    // button that has the focus, and Esc declines.
+    if (!first && !answer && (gs_ui_key(ui, SDLK_RETURN, 0) || gs_ui_key(ui, SDLK_KP_ENTER, 0) || gs_ui_key(ui, SDLK_SPACE, 0))) answer = ui->focus == yes_id ? 1 : -1;
+    if (!first && gs_ui_key(ui, SDLK_ESCAPE, 0)) answer = -1;
+    gs_ui_modal_end(ui);
+    if (answer) ui->modal_now = false, wake_within(ui, 0);  // answered: the window is live again in the next frame
+    return answer;
+}
 
 void gs_ui_end(gs_ui *ui) {
     if (ui->tip_wanted) {
         uint64_t rest = ui->now - ui->tip_since;
         if (rest >= TOOLTIP_MS) {
-            float w = gs_ui_text_width(ui, ui->tip_text, ui->style.small_px) + 16;
-            gs_rect r = { fminf(ui->tip_rect.x, ui->area.w - w - 4), ui->tip_rect.y + ui->tip_rect.h + 4, w, 24 };
+            // One line, or wrapped at TOOLTIP_W; below what it describes, or above when there is no room.
+            float size = ui->style.small_px, lh = gs_ui_line_height(ui, size), one = gs_ui_text_width(ui, ui->tip_text, size);
+            const gs_wrap *wrap = one > TOOLTIP_W ? wrap_of(ui, ui->tip_text, size, TOOLTIP_W) : NULL;
+            int lines = wrap ? wrap->count : 1;
+            float w = (wrap ? TOOLTIP_W : one) + 16, h = lines * lh + 8;
+            gs_rect r = { fmaxf(4, fminf(ui->tip_rect.x, ui->area.w - w - 4)), ui->tip_rect.y + ui->tip_rect.h + 4, w, h };
+            if (r.y + r.h > ui->area.h - 4) r.y = ui->tip_rect.y - r.h - 4;
             fl_item *f = defer(ui, FL_ROUND, r, ui->style.raised, NULL, 0, 0);
             f->radius = ui->style.radius;
             f = defer(ui, FL_OUTLINE, r, ui->style.border, NULL, 0, 0);
             f->radius = ui->style.radius, f->width = 1;
-            defer(ui, FL_TEXT, gs_inset(r, 8), ui->style.text, ui->tip_text, ui->style.small_px, -1);
+            for (int i = 0; i < lines; i++) {
+                const char *line = wrap ? piece(ui, ui->tip_text, wrap->lines[i].start, wrap->lines[i].end) : ui->tip_text;
+                defer(ui, FL_TEXT, (gs_rect){ r.x + 8, r.y + 4 + i * lh, w - 16, lh }, ui->style.text, line, size, -1);
+            }
         } else if (ui->wait_ms < 0 || (int)(TOOLTIP_MS - rest) < ui->wait_ms) {
             ui->wait_ms = (int)(TOOLTIP_MS - rest);
         }
@@ -1101,6 +1383,13 @@ void gs_ui_end(gs_ui *ui) {
         else text_now(ui, f->r, f->text, f->px, f->c, f->align);
     }
     if (gs_glyphs_waiting(ui->glyphs)) ui->wait_ms = 0;  // a glyph is missing from this frame: the next one has it
+    if (ui->modal_last && !ui->modal_now) ui->wait_ms = 0;   // a modal has gone: the next frame takes input again
+    if (ui->cursor_want != ui->cursor_now) {  // the pointer's shape, for a link or a field under it
+        static const SDL_SystemCursor shapes[3] = { SDL_SYSTEM_CURSOR_DEFAULT, SDL_SYSTEM_CURSOR_POINTER, SDL_SYSTEM_CURSOR_TEXT };
+        int want = ui->cursor_now = ui->cursor_want;
+        if (want && !ui->cursors[want]) ui->cursors[want] = SDL_CreateSystemCursor(shapes[want]);
+        SDL_SetCursor(want ? ui->cursors[want] : SDL_GetDefaultCursor());
+    }
 }
 
 // ---- The window between runs ----

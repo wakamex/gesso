@@ -240,6 +240,124 @@ static void test_ui_keyboard(void) {
     gs_ui_focus(ui, NULL);
 }
 
+static char secret[32], kept[32];
+static double amount;
+static bool sw, radio_hit, link_hit, deep_hit, under_hit, asking;
+static int radio = 0, stop_value, answer;
+static float page_scroll;
+
+// A form: a masked field, a field that keeps its text, a number, a switch, two radio buttons, a
+// slider with stops and a link, then a page 100 points tall holding 600 points with a button near
+// its end, and a question over it all while `asking`.
+static void form_frame(void) {
+    gs_ui_begin(ui);
+    gs_ui_input(ui, (gs_rect){ 0, 0, 100, 30 }, "secret", secret, sizeof secret, "Key", GS_UI_MASKED);
+    gs_ui_input(ui, (gs_rect){ 110, 0, 100, 30 }, "kept", kept, sizeof kept, NULL, GS_UI_KEEP);
+    gs_ui_number(ui, (gs_rect){ 220, 0, 80, 30 }, "amount", &amount, 0, 100, 5, 0);
+    gs_ui_switch(ui, (gs_rect){ 0, 40, 40, 22 }, "switch", &sw);
+    radio_hit = false;
+    for (int i = 0; i < 2; i++)
+        if (gs_ui_radio(ui, (gs_rect){ 50 + 80.0f * i, 40, 70, 22 }, i ? "radio b" : "radio a", i ? "B" : "A", radio == i)) radio = i, radio_hit = true;
+    gs_ui_stops(ui, (gs_rect){ 220, 40, 118, 22 }, "stops", &stop_value, 5);
+    link_hit = gs_ui_link(ui, (gs_rect){ 0, 70, 200, 20 }, "Read more");
+    under_hit = gs_ui_button(ui, (gs_rect){ 300, 250, 90, 30 }, "Under");
+    gs_rect area = { 0, 100, 300, 100 };
+    gs_rect page = gs_ui_page_begin(ui, area, "page");
+    gs_cut_top(&page, 500);
+    deep_hit = gs_ui_button(ui, gs_cut_top(&page, 30), "Deep");
+    gs_cut_top(&page, 70);
+    gs_ui_page_end(ui, page.y);
+    page_scroll = gs_ui_page_scroll(ui, "page");
+    answer = asking ? gs_ui_confirm(ui, "Remove it?", "Remove", "Cancel", true) : 0;
+    if (answer) asking = false;
+    gs_ui_end(ui);
+}
+
+static void test_ui_form(void) {
+    gs_ui_focus(ui, NULL), form_frame();
+    // A masked field edits as any field does and does not copy out.
+    click(50, 15), form_frame();
+    text("abc"), form_frame();
+    CHECK(!strcmp(secret, "abc"));
+    key(SDLK_LEFT, 0), key(SDLK_BACKSPACE, 0), form_frame();
+    CHECK(!strcmp(secret, "ac"));
+    SDL_SetClipboardText("before");
+    char *clip = SDL_GetClipboardText();
+    if (clip && !strcmp(clip, "before")) {  // (a clipboard that holds text)
+        key(SDLK_A, SDL_KMOD_CTRL), key(SDLK_C, SDL_KMOD_CTRL), form_frame();
+        SDL_free(clip), clip = SDL_GetClipboardText();
+        CHECK(clip && !strcmp(clip, "before"));
+    }
+    SDL_free(clip);
+    // Esc in a field that keeps its text lets go of the keyboard.
+    click(150, 15), form_frame();
+    text("stay"), form_frame();
+    key(SDLK_ESCAPE, 0), form_frame();
+    CHECK(!strcmp(kept, "stay") && !gs_ui_focused(ui, "kept"));
+
+    // A number: typing replaces it, letters are left out, Up and Down step it, and it stays in range.
+    amount = 10;
+    click(250, 15), form_frame(), form_frame();
+    text("4x2"), form_frame();
+    CHECK(amount == 42);
+    key(SDLK_UP, 0), form_frame();
+    CHECK(amount == 47);
+    key(SDLK_DOWN, 0), key(SDLK_DOWN, 0), form_frame();
+    CHECK(amount == 37);
+    key(SDLK_A, SDL_KMOD_CTRL), text("250"), form_frame();
+    CHECK(amount == 100);
+    key(SDLK_A, SDL_KMOD_CTRL), text("-3"), form_frame();
+    CHECK(amount == 0);
+
+    click(20, 50), form_frame();
+    CHECK(sw);
+    click(140, 50), form_frame();
+    CHECK(radio == 1 && radio_hit);
+    click(140, 50), form_frame();
+    CHECK(!radio_hit);  // already chosen
+    click(220 + 9 + 75, 50), form_frame();  // three quarters along a slider of five positions
+    CHECK(stop_value == 3);
+    gs_ui_focus(ui, "stops"), key(SDLK_TAB, SDL_KMOD_SHIFT), key(SDLK_TAB, 0), form_frame();  // (marked by the keyboard)
+    key(SDLK_LEFT, 0), form_frame();
+    CHECK(stop_value == 2);
+    click(10, 80), form_frame();
+    CHECK(link_hit);
+
+    // The page: scrolled by the wheel, by its own call and by Tab reaching a control out of view; what
+    // it cuts off cannot be clicked.
+    CHECK(page_scroll == 0);
+    click(50, 210), form_frame();  // below the page, where its far button would be were it not cut off
+    CHECK(!deep_hit);
+    wheel(50, 150, -1), form_frame(), form_frame();
+    CHECK(page_scroll == 48);
+    gs_ui_page_scroll_to(ui, "page", 10000, false), form_frame(), form_frame();
+    CHECK(page_scroll == 500);  // 600 points of content in 100
+    gs_ui_page_scroll_to(ui, "page", 0, false), form_frame();
+    gs_ui_focus(ui, "page-before"), key(SDLK_TAB, SDL_KMOD_SHIFT), form_frame(), form_frame();  // back from the first stop to the last: the far button
+    CHECK(page_scroll > 400);
+    key(SDLK_SPACE, 0), form_frame();
+    CHECK(deep_hit);
+
+    // A question: what is under it takes nothing, Enter declines, and Tab then Enter accepts.
+    asking = true, form_frame();
+    click(340, 265), form_frame();
+    CHECK(!under_hit && asking);
+    key(SDLK_RETURN, 0), form_frame();
+    CHECK(answer == -1 && !asking);
+    form_frame();
+    click(340, 265), form_frame();
+    CHECK(under_hit);  // live again
+    asking = true, form_frame(), form_frame();
+    key(SDLK_TAB, 0), form_frame();
+    key(SDLK_RETURN, 0), form_frame();
+    CHECK(answer == 1);
+    asking = true, form_frame(), form_frame();
+    key(SDLK_ESCAPE, 0), form_frame();
+    CHECK(answer == -1);
+    form_frame();
+    gs_ui_focus(ui, NULL);
+}
+
 static SDL_Window *offscreen_window(int w, int h) {
     // (a window that brings its own graphics context: otherwise macOS's offscreen driver is asked for
     // OpenGL, which it cannot load, and no window is made)
@@ -396,6 +514,7 @@ void test_ui(void) {
     CHECK(activated);
 
     test_ui_keyboard();
+    test_ui_form();
     test_ui_draw(r);
     test_ui_windows(w, fs);
     gs_ui_free(ui);

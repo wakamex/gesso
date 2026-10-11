@@ -13,10 +13,11 @@
 // the rest (an event that names no window goes to all). Each gs_ui keeps a glyph atlas for its
 // renderer. Use them from one thread.
 //
-// It provides rows and columns, scrolling lists (of equal or differing row heights), wrapped text,
-// single-line and multi-line text fields with input-method composition, buttons, toggles, sliders,
-// dropdowns, menus and tooltips. It does not provide rich text editing, menu bars, drag and drop, or
-// themes beyond the colours in gs_ui_style.
+// It provides rows and columns, scrolling lists (of equal or differing row heights), a scrolling
+// page of controls, wrapped text, single-line and multi-line text fields with input-method
+// composition, masked and number fields, buttons, links, toggles, switches, radio buttons, sliders,
+// dropdowns, menus, tooltips and modal questions. It does not provide rich text editing, menu bars,
+// drag and drop, or themes beyond the colours in gs_ui_style.
 #pragma once
 #include <SDL3/SDL.h>
 #include <stdbool.h>
@@ -134,9 +135,29 @@ void gs_ui_disable(gs_ui *ui, bool disabled, bool dim);
 
 bool gs_ui_button(gs_ui *ui, gs_rect r, const char *label);
 bool gs_ui_toggle(gs_ui *ui, gs_rect r, const char *label, bool *on);  // true when changed
+// A switch, r being the switch itself (40 by 22 points, say), whose knob slides. True when changed.
+bool gs_ui_switch(gs_ui *ui, gs_rect r, const char *id, bool *on);
+// One choice of several: a ring, filled when `selected`, and its label. True when it is chosen, which
+// the app records by passing `selected` for it and not for the others from then on.
+bool gs_ui_radio(gs_ui *ui, gs_rect r, const char *id, const char *label, bool selected);
+// A slider of `count` positions, each a dot on its track; *value is 0 to count - 1. True when it changes.
+bool gs_ui_stops(gs_ui *ui, gs_rect r, const char *id, int *value, int count);
+// Text that is clicked, in the accent colour and underlined, with a hand for a pointer over it. True
+// when clicked; opening what it links to (SDL_OpenURL) is the app's.
+bool gs_ui_link(gs_ui *ui, gs_rect r, const char *label);
 bool gs_ui_slider(gs_ui *ui, gs_rect r, const char *id, float *value, float min, float max);  // true while it changes
 // A single-line text field editing buf (UTF-8). True when the text changed this frame.
 bool gs_ui_field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, const char *placeholder);
+// The same with flags. A masked field shows a dot for each character and does not copy or cut, for
+// a password or an API key; with GS_UI_REVEAL it shows its text while it has the keyboard. Esc empties
+// a field and a second Esc is the app's; with GS_UI_KEEP it gives up the keyboard and keeps the text,
+// as a field in a form should.
+enum { GS_UI_MASKED = 1, GS_UI_REVEAL = 2, GS_UI_KEEP = 4 };
+bool gs_ui_input(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, const char *placeholder, int flags);
+// A field for a number from min to max, written with `decimals` digits after the point. It takes
+// digits, a minus sign and a point (a comma is read as one); Up and Down change it by `step`; and
+// *value follows what is typed, held within the range. True when *value changed.
+bool gs_ui_number(gs_ui *ui, gs_rect r, const char *id, double *value, double min, double max, double step, int decimals);
 // A text field of several lines, editing buf (UTF-8) with the keys of gs_ui_field and more: the text
 // wraps to r; Shift+Enter inserts a newline and Enter is left to the app (query it after drawing the
 // field, which takes Shift+Enter first); Up and Down keep their column; Home and End go to the
@@ -150,7 +171,9 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
 float gs_ui_textarea_height(gs_ui *ui, const char *buf, float width, int max_lines);
 // A button showing items[*selected] that opens a list of the items. True when the choice changed.
 bool gs_ui_dropdown(gs_ui *ui, gs_rect r, const char *id, const char *const *items, int count, int *selected);
-void gs_ui_tooltip(gs_ui *ui, gs_rect r, const char *text);  // shown after the pointer rests on r
+// Shown after the pointer rests on r, below it or above where there is no room: on one line, or
+// wrapped when it is longer than 280 points, so a line cut short can show its whole text.
+void gs_ui_tooltip(gs_ui *ui, gs_rect r, const char *text);
 
 // A menu in the floating layer below `anchor`: gs_ui_menu_toggle opens or closes it; while open,
 // gs_ui_menu_begin returns true and gs_ui_menu_item adds rows (true when chosen, which closes it).
@@ -181,6 +204,34 @@ void gs_ui_list_end(gs_ui *ui);
 // `above` is small the reader has reached the top of the rows held: time to load older ones.
 gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const float *heights);
 void gs_ui_flow_prepended(gs_ui *ui, const char *id, int n);
+
+// A page taller than its area: controls and text scrolled by the wheel, by Page Up and Page Down
+// while the pointer is over it, and by a thumb at its right edge. gs_ui_page_begin returns the page,
+// as wide as the area with its top where the scroll puts it, and taller than anything: cut the
+// content from its top, draw it, then pass gs_ui_page_end the y where the content ended, which is
+// how the page learns its height. What the area cuts off is not drawn and cannot be clicked, and Tab
+// brings a control outside the area into it. A list or text area inside the page takes the wheel
+// while the pointer is over it. One page at a time: they do not nest.
+//
+// gs_ui_page_scroll is how far the page is scrolled, in points from its top, for an index beside it
+// that follows the reader; gs_ui_page_scroll_to sets it, at once or gliding there.
+gs_rect gs_ui_page_begin(gs_ui *ui, gs_rect area, const char *id);
+void gs_ui_page_end(gs_ui *ui, float bottom);
+float gs_ui_page_scroll(gs_ui *ui, const char *id);
+void gs_ui_page_scroll_to(gs_ui *ui, const char *id, float y, bool glide);
+
+// A modal: a panel in the middle of the window, which is darkened under it. While the app draws one
+// each frame, everything outside it takes no pointer and no keys and is out of the Tab order.
+// Draw it last, after the rest of the frame: gs_ui_modal_begin returns the panel to lay controls out
+// in, and gs_ui_modal_end ends it. The keyboard goes back to what had it when the modal is no longer
+// drawn; the frame after that is the first to take input again.
+gs_rect gs_ui_modal_begin(gs_ui *ui, float width, float height);
+void gs_ui_modal_end(gs_ui *ui);
+// A question with two answers, as a modal. Call it each frame while the question stands, after the
+// rest of the frame: 1 when `yes` is chosen, -1 for `no` or Esc, 0 until then. The keyboard starts on
+// `no`, so Enter on a question just asked declines it. With `danger` the `yes` button is in the
+// warning colour, for something that cannot be undone.
+int gs_ui_confirm(gs_ui *ui, const char *question, const char *yes, const char *no, bool danger);
 
 // ---- The window between runs ----
 
