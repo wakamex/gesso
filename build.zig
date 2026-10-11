@@ -4,22 +4,42 @@
 //   zig build                              native debug build of the library into zig-out/
 //   zig build -Dtarget=x86_64-windows-gnu  Windows build from any host
 //   zig build -Dvideo                      also the video modules, on a trimmed FFmpeg libavcodec
+//   zig build -Dtarget=aarch64-macos -Dmacos_sdk=PATH   macOS build from another system, with an Xcode SDK copied from a Mac
 //   zig build test                         run the tests
 const std = @import("std");
 
 pub const flags: []const []const u8 = &.{ "-std=c11", "-ffp-contract=off", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-missing-field-initializers" };
+
+// Points a module at a macOS SDK's headers, frameworks and libraries.
+fn useSdk(mod: *std.Build.Module, sdk: ?std.Build.LazyPath) void {
+    const dir = sdk orelse return;
+    mod.addSystemIncludePath(dir.path(mod.owner, "usr/include"));
+    mod.addSystemFrameworkPath(dir.path(mod.owner, "System/Library/Frameworks"));
+    mod.addLibraryPath(dir.path(mod.owner, "usr/lib"));
+}
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const video = b.option(bool, "video", "Build the video modules on FFmpeg's libavcodec (fetched only when set)") orelse false;
 
-    const sdl = b.dependency("sdl", .{
+    // A macOS SDK (the MacOSX.sdk folder from Xcode) lets a macOS build run on any host.
+    const macos_sdk = b.option(std.Build.LazyPath, "macos_sdk", "Path of a macOS SDK, for building for macOS on another system");
+
+    const sdl = (if (macos_sdk) |sdk| b.dependency("sdl", .{
         .target = target,
         .optimize = optimize,
         .preferred_linkage = .static,
         .strip = optimize != .debug,
-    }).artifact("SDL3");
+        .system_include_path = sdk.path(b, "usr/include"),
+        .system_framework_path = sdk.path(b, "System/Library/Frameworks"),
+        .library_path = sdk.path(b, "usr/lib"),
+    }) else b.dependency("sdl", .{
+        .target = target,
+        .optimize = optimize,
+        .preferred_linkage = .static,
+        .strip = optimize != .debug,
+    })).artifact("SDL3");
 
     // libopus (BSD), for Opus-compressed SoundFont samples. Only its decoder is used; the linker drops the rest.
     const opus_src = b.dependency("opus", .{});
@@ -184,13 +204,14 @@ pub fn build(b: *std.Build) void {
     // compilers gesso uses; they are built without it.
     mod.addCSourceFile(.{ .file = b.path("src/gs_kb.c"), .flags = &.{ "-std=c11", "-w", "-fno-sanitize=undefined" } });
     mod.addCSourceFile(.{ .file = b.path("src/gs_stb.c"), .flags = &.{ "-std=c11", "-w", "-fno-sanitize=undefined" } });
+    useSdk(mod, macos_sdk);
     mod.linkLibrary(sdl);
     mod.linkLibrary(opus);
     mod.addIncludePath(opus_src.path("include"));
     if (target.result.os.tag == .windows) for ([_][]const u8{ "winhttp", "crypt32" }) |l| mod.linkSystemLibrary(l, .{});
     if (target.result.isGnuLibC() and target.result.os.versionRange().gnuLibCVersion().?.order(.{ .major = 2, .minor = 29, .patch = 0 }) == .lt)
         mod.addCSourceFile(.{ .file = b.path("src/gs_glibc_compat.c"), .flags = flags });
-    const av = if (video) addFfmpeg(b, target) else null;
+    const av = if (video) addFfmpeg(b, target, macos_sdk) else null;
     if (av) |a| {
         mod.linkLibrary(a.lib);
         for (a.include) |dir| mod.addIncludePath(dir);
@@ -208,6 +229,7 @@ pub fn build(b: *std.Build) void {
     tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "hls.c", "http.c", "json.c", "live.c", "media.c", "oauth.c", "secret.c", "stream.c", "text.c", "ui.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
     tests.addIncludePath(b.path("src"));
     if (av) |a| for (a.include) |dir| tests.addIncludePath(dir);
+    useSdk(tests, macos_sdk);
     tests.linkLibrary(lib);
     const test_run = b.addRunArtifact(b.addExecutable(.{ .name = "gesso-tests", .root_module = tests }));
     test_run.addDirectoryArg(b.path("tests/streams"));
@@ -218,6 +240,7 @@ pub fn build(b: *std.Build) void {
     text_bench.addCSourceFile(.{ .file = b.path("bench/text.c"), .flags = flags });
     text_bench.addIncludePath(b.path("src"));
     text_bench.addIncludePath(b.path("vendor/stb"));
+    useSdk(text_bench, macos_sdk);
     text_bench.linkLibrary(lib);
     const text_exe = b.addExecutable(.{ .name = "bench-text", .root_module = text_bench });
     const text_run = b.addRunArtifact(text_exe);
@@ -231,6 +254,7 @@ pub fn build(b: *std.Build) void {
         bench.addCSourceFile(.{ .file = b.path("bench/video.c"), .flags = flags });
         bench.addIncludePath(b.path("src"));
         for (a.include) |dir| bench.addIncludePath(dir);
+        useSdk(bench, macos_sdk);
         bench.linkLibrary(lib);
         const exe = b.addExecutable(.{ .name = "bench-video", .root_module = bench });
         const install = b.addInstallArtifact(exe, .{});
@@ -246,7 +270,7 @@ pub fn build(b: *std.Build) void {
 // (ffmpeg/<target>/, made by ffmpeg/tools/import.sh). LGPL 2.1 or later, linked statically.
 const Ffmpeg = struct { lib: *std.Build.Step.Compile, include: []const std.Build.LazyPath };
 
-fn addFfmpeg(b: *std.Build, target: std.Build.ResolvedTarget) ?Ffmpeg {
+fn addFfmpeg(b: *std.Build, target: std.Build.ResolvedTarget, sdk: ?std.Build.LazyPath) ?Ffmpeg {
     const t = target.result;
     const name, const sources = switch (t.os.tag) {
         .linux => .{ "linux-x86_64", @embedFile("ffmpeg/linux-x86_64/sources.txt") },
@@ -262,6 +286,7 @@ fn addFfmpeg(b: *std.Build, target: std.Build.ResolvedTarget) ?Ffmpeg {
     // FFmpeg relies on dead-code elimination (it does not link at -O0) and on its own bounds
     // reasoning, so it is always optimized and never sanitized, whatever the app's build mode.
     const mod = b.createModule(.{ .target = target, .optimize = .fast, .link_libc = true, .sanitize_c = .off, .pic = true });
+    useSdk(mod, sdk);
     mod.addIncludePath(gen);
     mod.addIncludePath(src);
     var av_flags: std.ArrayList([]const u8) = .empty;

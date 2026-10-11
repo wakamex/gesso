@@ -59,12 +59,20 @@ const gesso = b.dependency("gesso", .{ .target = target, .optimize = optimize })
 app_mod.linkLibrary(gesso.artifact("gesso"));
 ```
 
-Then build for any target from any host (Mac builds need a Mac with Xcode):
+Then build for Windows from any host, and for macOS from any host that has a copy of a macOS SDK (below):
 
 ```sh
 zig build -Doptimize=ReleaseSmall
 zig build -Doptimize=ReleaseSmall -Dtarget=x86_64-windows-gnu
 ```
+
+A macOS build on another system takes `-Dmacos_sdk=PATH`, the `MacOSX.sdk` folder of an Xcode installation (copy it from a Mac, for example `/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk`; about 775 MB). Apple's license allows its SDK only on Apple-branded hardware, so keep the copy out of repositories and CI caches:
+
+```sh
+zig build -Dtarget=aarch64-macos -Dmacos_sdk=$HOME/.local/share/macos-sdk/MacOSX.sdk
+```
+
+Tests built this way run on a Mac, not on the host. An app that depends on gesso passes the same option to gesso and adds the SDK's framework, include and library paths to its own modules.
 
 `-Dvideo=true` adds the video modules (`gs_aac`, `gs_video`, `gs_live`) and builds [FFmpeg](https://ffmpeg.org/)'s libavcodec and libavutil into gesso, trimmed to H.264, AAC and each system's hardware decoding, from FFmpeg's release tarball and the configure output stored in `ffmpeg/` (made by `ffmpeg/tools/import.sh`). It is configured for x86-64 Linux and Windows and aarch64 macOS.
 
