@@ -1,8 +1,8 @@
 // Fonts and glyph drawing on an SDL renderer, at the screen's full resolution.
 // gs_font wraps one TrueType/OpenType file (stb_truetype); gs_glyphs caches rasterized glyphs in
 // one atlas texture per renderer and draws them with a position, angle, colour and optional
-// left-to-right reveal. Text layout above single lines (wrapping, per-glyph variation) is the
-// caller's: a game can vary every glyph, an app can use gs_text_draw as is.
+// left-to-right reveal. Text layout above lines (per-glyph variation, say) is the
+// caller's: a game can vary every glyph, an app can use gs_text_draw as is, and gs_fontset_wrap breaks text into lines.
 #pragma once
 #include <SDL3/SDL.h>
 #include <stdint.h>
@@ -26,6 +26,10 @@ void gs_glyphs_free(gs_glyphs *g);
 // uploads to the atlas between its draws: on NVIDIA's Vulkan driver, SDL 3.4's Vulkan renderer loses
 // what a frame drew before such an upload. Without it, glyphs are uploaded as they are first drawn.
 void gs_glyphs_begin_frame(gs_glyphs *g);
+
+// True when a glyph drawn since the last gs_glyphs_begin_frame was left out because its upload waits
+// for the next one; the frame is missing text until another is drawn.
+bool gs_glyphs_waiting(const gs_glyphs *g);
 
 // Draws one glyph with its origin (pen position on the baseline) at (x, y), rotated by `angle`
 // degrees about that origin. `reveal` in [0, 1] shows only the left part of the glyph.
@@ -83,3 +87,16 @@ int gs_line_hit(const gs_line *l, float x, const char *utf8);
 // emoji sequence or a letter with its marks moves and deletes as one.
 int gs_utf8_grapheme_next(const char *utf8, int offset);
 int gs_utf8_grapheme_prev(const char *utf8, int offset);
+
+// Text wrapped to a width, in the units of `px` (pixels, for a line to be drawn). A line ends where
+// Unicode allows one to break (after a space or hyphen, between CJK characters), at a newline, or
+// inside a word too wide for a line. Each line is the byte range [start, end) of the text it shows,
+// without the spaces that hang at a soft break or the newline that ends it, and the width of that
+// range from the shaped glyphs' advances (a line shaped alone is the same to within kerning). A
+// line's start is where the previous one's hanging spaces end, so every byte of the text is in a
+// line or in whitespace between two. There is always one line, an empty text's included, and one
+// after a final newline.
+typedef struct { int start, end; float width; } gs_wrap_line;
+typedef struct { gs_wrap_line *lines; int count; } gs_wrap;
+gs_wrap *gs_fontset_wrap(gs_fontset *fs, float px, const char *utf8, float width);  // free with gs_wrap_free
+void gs_wrap_free(gs_wrap *w);

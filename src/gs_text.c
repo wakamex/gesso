@@ -182,6 +182,7 @@ struct gs_glyphs {
     int size, shelf_x, shelf_y, shelf_h, used;
     slot slots[SLOTS];
     bool deferred;     // gs_glyphs_begin_frame is called: uploads wait for it
+    bool waiting;      // a glyph was left out of this frame for want of its upload
     upload *uploads;
     int nuploads, uploads_cap;
 };
@@ -210,12 +211,14 @@ void gs_glyphs_free(gs_glyphs *g) {
 }
 
 void gs_glyphs_begin_frame(gs_glyphs *g) {
-    g->deferred = true;
+    g->deferred = true, g->waiting = false;
     for (int i = 0; i < g->nuploads; i++) SDL_UpdateTexture(g->tex, &g->uploads[i].at, g->uploads[i].px, g->uploads[i].at.w * 4);
     if (g->nuploads)
         for (int i = 0; i < SLOTS; i++) g->slots[i].pending = false;
     drop_uploads(g);
 }
+
+bool gs_glyphs_waiting(const gs_glyphs *g) { return g->waiting; }
 
 static void clear(gs_glyphs *g) {
     memset(g->slots, 0, sizeof g->slots);
@@ -422,7 +425,8 @@ void gs_glyphs_draw(gs_glyphs *g, const gs_font *f, int glyph, float px, float x
                     SDL_FColor colour, float reveal) {
     if (reveal <= 0) return;
     slot *s = lookup(g, f, glyph, (int)lroundf(px * 4));
-    if (!s || s->w <= 2 || s->pending) return;
+    if (!s || s->w <= 2) return;
+    if (s->pending) { g->waiting = true; return; }
     float wr = reveal >= 1 ? (float)s->w : s->w * reveal;
     SDL_FRect src = { (float)s->x, (float)s->y, wr, (float)s->h };
     SDL_FRect dst = { x + s->ox, y + s->oy, wr, (float)s->h };
@@ -810,6 +814,100 @@ int gs_line_hit(const gs_line *l, float x, const char *utf8) {
     // A cluster's end, past the last glyph of a left-to-right line.
     if (fabsf(gs_line_caret(l, len) - x) < best_d) best = len;
     return best;
+}
+
+// ---- Line wrapping ----
+
+enum { BREAK_GRAPHEME = 1, BREAK_SOFT = 2, BREAK_HARD = 4 };
+
+// The break opportunities of a text by byte offset: grapheme boundaries, where a line may wrap
+// (Unicode's line breaking: after spaces and hyphens, between CJK characters), and where it must end.
+static uint8_t *break_flags(const char *utf8, int len) {
+    uint8_t *flags = calloc((size_t)len + 1, 1);
+    kbts_break_state state;
+    kbts_BreakBegin(&state, KBTS_DIRECTION_DONT_KNOW, KBTS_JAPANESE_LINE_BREAK_STYLE_NORMAL, 0);
+    for (const char *p = utf8; flags && p < utf8 + len;) {
+        const char *start = p;
+        uint32_t cp = gs_utf8_next(&p);
+        kbts_BreakAddCodepoint(&state, (int)cp, (int)(p - start), p >= utf8 + len);
+        kbts_break b;
+        while (kbts_Break(&state, &b)) {
+            if (b.Position <= 0 || b.Position > len) continue;
+            if (b.Flags & KBTS_BREAK_FLAG_GRAPHEME) flags[b.Position] |= BREAK_GRAPHEME;
+            if (b.Flags & KBTS_BREAK_FLAG_LINE_SOFT) flags[b.Position] |= BREAK_SOFT;
+            if (b.Flags & KBTS_BREAK_FLAG_LINE_HARD) flags[b.Position] |= BREAK_HARD;
+        }
+    }
+    if (flags) flags[len] |= BREAK_HARD | BREAK_GRAPHEME;
+    return flags;
+}
+
+// The end of the text from s to p without the spaces and line ends that hang off its last line.
+static int visible_end(const char *utf8, int s, int p) {
+    while (p > s && (utf8[p - 1] == ' ' || utf8[p - 1] == '\t' || utf8[p - 1] == '\n' || utf8[p - 1] == '\r')) p--;
+    return p;
+}
+
+static void wrap_add(gs_wrap *w, int *cap, int start, int end, float width) {
+    if (w->count == *cap) w->lines = realloc(w->lines, sizeof *w->lines * (size_t)(*cap = *cap ? *cap * 2 : 8));
+    w->lines[w->count++] = (gs_wrap_line){ start, end, width };
+}
+
+gs_wrap *gs_fontset_wrap(gs_fontset *fs, float px, const char *utf8, float width) {
+    int len = (int)strlen(utf8), cap = 0;
+    gs_wrap *w = calloc(1, sizeof *w);
+    uint8_t *flags = break_flags(utf8, len);
+    float *cum = NULL;
+    if (!w || !flags) return free(flags), free(w), NULL;
+    for (int ps = 0;;) {  // a paragraph: up to the next hard break
+        int pe = ps;
+        if (ps < len)
+            for (pe = ps + 1; pe < len && !(flags[pe] & BREAK_HARD);) pe++;
+        // Where each byte offset of the paragraph falls along it: the advances of the glyphs before it.
+        int plen = pe - ps, ve = visible_end(utf8, ps, pe) - ps;
+        cum = realloc(cum, sizeof *cum * (size_t)(plen + 2));
+        memset(cum, 0, sizeof *cum * (size_t)(plen + 2));
+        char *text = malloc((size_t)ve + 1);
+        memcpy(text, utf8 + ps, (size_t)ve), text[ve] = 0;
+        gs_line *shaped = ve ? gs_fontset_shape(fs, px, text) : NULL;
+        for (int i = 0; shaped && i < shaped->count; i++)
+            if (shaped->glyphs[i].cluster >= 0 && shaped->glyphs[i].cluster < plen) cum[shaped->glyphs[i].cluster + 1] += shaped->glyphs[i].advance;
+        for (int i = 1; i <= plen; i++) cum[i] += cum[i - 1];
+        gs_line_free(shaped), free(text);
+        #define SPAN(a, b) (cum[(b) - ps] - cum[(a) - ps])
+        int s = ps;
+        do {
+            int end = s, next = s, best = -1, fit = s, fit_end = s;
+            for (int p = s + 1; p <= pe; p++) {
+                if (!(flags[p] & BREAK_GRAPHEME) && p != pe) continue;
+                int v = visible_end(utf8, s, p);
+                if (SPAN(s, v) > width) {  // wrap at the last place a line may break, else inside the word
+                    if (best > s) end = visible_end(utf8, s, best), next = best;
+                    else if (fit > s) end = fit_end, next = fit;
+                    else end = v, next = p;  // (one character wider than the line)
+                    break;
+                }
+                fit = p, fit_end = v;
+                if (flags[p] & (BREAK_SOFT | BREAK_HARD)) best = p;
+                if (p == pe) { end = v, next = pe; break; }
+            }
+            if (next <= s && s < pe) end = visible_end(utf8, s, pe), next = pe;  // (always a step forward)
+            wrap_add(w, &cap, s, end, SPAN(s, end));
+            s = next;
+        } while (s < pe);
+        #undef SPAN
+        if (pe >= len) {
+            if (pe > ps && (utf8[len - 1] == '\n' || utf8[len - 1] == '\r')) wrap_add(w, &cap, len, len, 0);  // after a final newline
+            break;
+        }
+        ps = pe;
+    }
+    free(cum), free(flags);
+    return w;
+}
+
+void gs_wrap_free(gs_wrap *w) {
+    if (w) free(w->lines), free(w);
 }
 
 float gs_fontset_draw(gs_glyphs *g, gs_fontset *fs, float px, float x, float y, const char *utf8, SDL_FColor colour) {
