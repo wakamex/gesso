@@ -624,14 +624,18 @@ static bool covers(gs_font *f, const char *p, const char *end) {
     return true;
 }
 
-// The font for one grapheme: an emoji font for emoji, otherwise the first font that has all its
-// characters, then the first with its first character, then the first that loads (its missing glyph).
+// The font for one grapheme: an emoji font for emoji, otherwise the first text font that has all its
+// characters, then the first font of any kind that has them (an emoji font often has digits and a
+// space of its own, which are not to replace the text font's wherever it stands in the chain), then
+// the first with its first character, then the first that loads (its missing glyph).
 static int choose(gs_fontset *fs, const char *p, const char *end) {
     if (emoji_grapheme(p, end))
         for (int i = 0; i < fs->n; i++)
             if (fs->emoji[i] && font_at(fs, i) && shapeable(fs->font[i]) && covers(fs->font[i], p, end)) return i;
     for (int i = 0; i < fs->n; i++)
-        if (font_at(fs, i) && shapeable(fs->font[i]) && covers(fs->font[i], p, end)) return i;
+        if (!fs->emoji[i] && font_at(fs, i) && shapeable(fs->font[i]) && covers(fs->font[i], p, end)) return i;
+    for (int i = 0; i < fs->n; i++)
+        if (fs->emoji[i] && font_at(fs, i) && shapeable(fs->font[i]) && covers(fs->font[i], p, end)) return i;
     const char *q = p;
     uint32_t first = gs_utf8_next(&q);
     for (int i = 0; i < fs->n; i++)

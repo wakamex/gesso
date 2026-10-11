@@ -76,6 +76,24 @@ void test_text(void) {
         for (int i = 0; dir && i < dir->count; i++) CHECK(!dir->lines[i].rtl);
         gs_wrap_free(dir);
     }
+    // An emoji font put first takes the emoji and leaves digits and spaces, which it often has too,
+    // to the text font. Tried with the system's emoji font, or the one GS_TEST_EMOJI_FONT names.
+    static const char *const emoji_fonts[] = { "/usr/share/fonts/google-noto-color-emoji-fonts/NotoColorEmoji.ttf", "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+                                               "C:\\Windows\\Fonts\\seguiemj.ttf", "/System/Library/Fonts/Apple Color Emoji.ttc" };
+    const char *emoji_font = SDL_getenv("GS_TEST_EMOJI_FONT");
+    for (size_t i = 0; !emoji_font && i < SDL_arraysize(emoji_fonts); i++)
+        if (SDL_GetPathInfo(emoji_fonts[i], NULL)) emoji_font = emoji_fonts[i];
+    gs_line *plain = gs_fontset_shape(fs, 20, "12:34 56");
+    if (emoji_font && plain && plain->count) {
+        const gs_font *text_font = plain->glyphs[0].font;
+        float width = plain->width;
+        gs_fontset_prepend(fs, emoji_font);
+        gs_line *after = gs_fontset_shape(fs, 20, "12:34 56");
+        CHECK(after && after->count == plain->count && after->width == width);
+        for (int i = 0; after && i < after->count; i++) CHECK(after->glyphs[i].font == text_font);
+        gs_line_free(after);
+    }
+    gs_line_free(plain);
     gs_fontset_prepend(fs, "/no/such/font.ttf");  // (a missing file changes nothing)
     gs_wrap *empty = gs_fontset_wrap(fs, 20, "", 100);
     CHECK(empty && empty->count == 1 && empty->lines[0].start == 0 && empty->lines[0].end == 0);
