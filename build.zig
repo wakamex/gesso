@@ -209,6 +209,18 @@ pub fn build(b: *std.Build) void {
     mod.linkLibrary(opus);
     mod.addIncludePath(opus_src.path("include"));
     if (target.result.os.tag == .windows) for ([_][]const u8{ "winhttp", "crypt32" }) |l| mod.linkSystemLibrary(l, .{});
+    // gs_desk, one implementation per system.
+    mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{"gs_desk.c"}, .flags = flags });
+    switch (target.result.os.tag) {
+        .windows => mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{"gs_desk_windows.c"}, .flags = flags }),
+        .macos => {
+            mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_macos.c", "gs_desk_unix.c" }, .flags = flags });
+            mod.addCSourceFile(.{ .file = b.path("src/gs_desk_macos.m"), .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra", "-Wno-unused-parameter" } });
+            for ([_][]const u8{ "AppKit", "Carbon", "ApplicationServices" }) |f| mod.linkFramework(f, .{});
+        },
+        .linux => mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_linux.c", "gs_desk_unix.c" }, .flags = flags }),
+        else => {},
+    }
     if (target.result.isGnuLibC() and target.result.os.versionRange().gnuLibCVersion().?.order(.{ .major = 2, .minor = 29, .patch = 0 }) == .lt)
         mod.addCSourceFile(.{ .file = b.path("src/gs_glibc_compat.c"), .flags = flags });
     const av = if (video) addFfmpeg(b, target, macos_sdk) else null;
@@ -226,7 +238,7 @@ pub fn build(b: *std.Build) void {
 
     // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "hls.c", "http.c", "json.c", "live.c", "media.c", "oauth.c", "secret.c", "stream.c", "text.c", "ui.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "hls.c", "http.c", "json.c", "live.c", "desk.c", "media.c", "oauth.c", "secret.c", "stream.c", "text.c", "ui.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
     tests.addIncludePath(b.path("src"));
     if (av) |a| for (a.include) |dir| tests.addIncludePath(dir);
     useSdk(tests, macos_sdk);

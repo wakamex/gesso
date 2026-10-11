@@ -17,6 +17,7 @@ extern int test_failures;
 
 // The tests, one per module (tests/<module>.c).
 void test_abr(void);
+void test_desk(void);
 void test_hls(void);
 void test_http(void);
 void test_json(void);
