@@ -1,13 +1,17 @@
 # gesso
 
-Gesso is the chalk ground a painter lays on a panel before painting: the layer every picture is built on. This is a small C library on SDL3 for lean native apps and games that build for Windows, Linux, the Steam Deck and the web from one codebase, with installs measured in megabytes.
+Gesso is the chalk ground a painter lays on a panel before painting: the layer every picture is built on. This is a small C library on SDL3 for lean native apps and games that build for Windows, macOS, Linux (the Steam Deck included) and the web from one codebase, with installs measured in megabytes.
+
+## Principles
+
+Every module works on all three desktop systems: Windows, macOS and Linux. Code that differs by platform, such as system font paths, process memory and CPU figures, or file mapping, has a branch for each of the three, and a module is finished only when it builds and runs on all of them. A dependency that does not reach one of the three is not taken. Where a platform genuinely lacks a feature, this README says so and names what is missing. The web is a target as well, and a module that cannot run there says why.
 
 ## Modules
 
 | Module | What it does |
 |---|---|
 | `gs_pix` | Indexed-colour frames in the VGA manner: Floyd-Steinberg dithering onto a palette, palette expansion to RGBA, colour-cycling ramps, highlight lookup tables |
-| `gs_text` | Fonts through stb_truetype and a glyph atlas per SDL renderer, with text shaped by kb_text_shape: Arabic joins, Indic scripts reorder, right-to-left runs are placed in visual order, and lines drawn each frame are shaped once and kept. Font chains fall back across the system's fonts per grapheme, emoji draw in colour from COLRv0, CBDT and sbix fonts, and glyphs can be drawn with an angle and a left-to-right reveal |
+| `gs_text` | Fonts through stb_truetype and a glyph atlas per SDL renderer, with text shaped by kb_text_shape: Arabic joins, Indic scripts reorder, right-to-left runs are placed in visual order, and lines drawn each frame are shaped once and kept. Text wraps into lines at the breaks Unicode allows, at newlines and inside words too wide for a line, and an app can ask whether a glyph was left out of a frame for want of its upload. Font chains fall back across the system's fonts per grapheme, emoji draw in colour from COLRv0, CBDT and sbix fonts, and glyphs can be drawn with an angle and a left-to-right reveal |
 | `gs_stream` | A streaming source for `gs_mix`: a decoder thread writes, the mixer plays, with prebuffering, pause and back-pressure |
 | `gs_webm` | A streaming WebM (Matroska) reader for audio: bytes in as they arrive, codec setup and frames out |
 | `gs_opus` | Opus decoding (libopus) for streams |
@@ -30,7 +34,7 @@ Gesso is the chalk ground a painter lays on a panel before painting: the layer e
 | `gs_video` | H.264 decoding shown on an SDL texture by a clock, one new frame a refresh: VAAPI through EGL on Linux, Direct3D 11 on Windows, VideoToolbox on macOS, without a copy through the CPU, and libavcodec in software elsewhere; with `-Dvideo` |
 | `gs_live` | A live HLS player: segments fetched as they appear, demuxed, decoded and played through `gs_mix` with video following the heard audio, on one continuous timeline across discontinuities; it starts behind the live edge, skips ahead, asks the app for a fresh playlist URL and rebuffers on stalls; given a master playlist it moves between renditions by measured throughput (`gs_abr`); with `-Dvideo` |
 | `gs_abr` | Choosing a stream's rendition by measured throughput (adaptive bitrate): a fast and a slow average, steps down at once and up with hysteresis, and when to give up a download that will arrive too late; the policy alone, with no network |
-| `gs_ui` | An immediate-mode interface in points: rectangle cutting, buttons, toggles, sliders, text fields, dropdowns, menus, tooltips and scrolling lists with keyboard focus, one floating layer, and the window's position and size between runs |
+| `gs_ui` | An immediate-mode interface in points: rectangle cutting, buttons, toggles, sliders, single-line and multi-line text fields, wrapped text, dropdowns, menus, tooltips, scrolling lists with keyboard focus and scrolling lists of rows with differing heights that follow the end of a chat, one floating layer, and the window's position and size between runs |
 | `gs_image` | Thumbnails fetched over HTTPS on workers, cached compressed under a byte limit, and decoded to textures only while drawn |
 | `gs_rand.h` | Seeded generators (SplitMix64, and Mulberry32 bit for bit as in JavaScript, so ported generative code plays identically), a position hash and value noise |
 
@@ -70,7 +74,7 @@ For the web, compile the files in `src/` together with the app with Emscripten a
 
 Accessibility: gesso apps draw their own interface, so screen readers and other assistive technology see nothing in them. That is acceptable for games and personal tools but not for an app offered to the public. The likely route is [AccessKit](https://github.com/AccessKit/accesskit), which implements each platform's accessibility API and has C bindings: an app describes its interface as a tree of nodes, and AccessKit answers the screen reader. Revisit before a gesso app is offered as a general-purpose app, or as soon as someone who uses a screen reader wants to use one.
 
-Web sign-in: an app that signs in to a web service through the service's own page needs a small browser window that watches for the page to finish and hands over its cookies. [gtube](https://github.com/wakamex/gtube) has one in `src/signin.c`: WebView2 on Windows, and on Linux WebKitGTK for GTK 3 or GTK 4 in a process of its own, loaded at run time so nothing is needed to build, writing a Netscape cookie file. It becomes a gesso module when a second gesso app needs to sign in, with the start URL, the URLs that mean done, the cookie domains, the cookie that proves the sign-in and the window title as parameters, and the Google and YouTube specifics left in gtube. The web build has no use for it, since a page there signs in with the browser itself.
+Web sign-in: an app that signs in to a web service through the service's own page needs a small browser window that watches for the page to finish and hands over its cookies. [gtube](https://github.com/wakamex/gtube) has one in `src/signin.c`: WebView2 on Windows, WebKit on macOS (`src/signin_mac.m`), and on Linux WebKitGTK for GTK 3 or GTK 4 in a process of its own, loaded at run time so nothing is needed to build, writing a Netscape cookie file. It becomes a gesso module when a second gesso app needs to sign in, with the start URL, the URLs that mean done, the cookie domains, the cookie that proves the sign-in and the window title as parameters, and the Google and YouTube specifics left in gtube. The web build has no use for it, since a page there signs in with the browser itself.
 
 ## Licence
 
