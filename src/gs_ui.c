@@ -283,8 +283,8 @@ float gs_ui_text_height(gs_ui *ui, const char *text, float size, float width) {
 // side its direction reads from within [x, x + width). Returns the shaped line, for its width.
 static const gs_line *wrapped_line(gs_ui *ui, const char *text, const gs_wrap_line *ln, float size, float x, float width, float top, float lh, SDL_FColor c) {
     float s = ui->scale;
-    const gs_line *l = gs_fontset_line(ui->fonts, size * s, piece(ui, text, ln->start, ln->end));
-    if (l && l->count) gs_line_draw(ui->glyphs, l, roundf((x + (l->rtl ? width - l->width / s : 0)) * s), roundf((top + lh / 2 + size * 0.36f) * s), c);
+    const gs_line *l = gs_fontset_line_dir(ui->fonts, size * s, piece(ui, text, ln->start, ln->end), ln->rtl ? GS_DIR_RTL : GS_DIR_LTR);
+    if (l && l->count) gs_line_draw(ui->glyphs, l, roundf((x + (ln->rtl ? width - l->width / s : 0)) * s), roundf((top + lh / 2 + size * 0.36f) * s), c);
     return l;
 }
 
@@ -500,8 +500,8 @@ static int line_at(const gs_wrap *w, int offset) {  // the line a cursor at `off
 
 // A line shaped alone, and where it starts across: a right-to-left line reads from the right edge.
 static const gs_line *area_line(gs_ui *ui, const char *buf, const gs_wrap_line *ln, float inner_x, float inner_w, float *origin) {
-    const gs_line *l = gs_fontset_line(ui->fonts, ui->style.text_px * ui->scale, piece(ui, buf, ln->start, ln->end));
-    *origin = inner_x + (l && l->rtl ? inner_w - l->width / ui->scale : 0);
+    const gs_line *l = gs_fontset_line_dir(ui->fonts, ui->style.text_px * ui->scale, piece(ui, buf, ln->start, ln->end), ln->rtl ? GS_DIR_RTL : GS_DIR_LTR);
+    *origin = inner_x + (ln->rtl && l ? inner_w - l->width / ui->scale : 0);
     return l;
 }
 

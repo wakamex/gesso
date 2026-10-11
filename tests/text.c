@@ -66,6 +66,17 @@ void test_text(void) {
         CHECK(w && w->count == 2 && w->lines[0].end == 18 && w->lines[1].start == 18);
         gs_wrap_free(w);
     }
+    // A paragraph has one direction, from its first strong character, for all its lines.
+    gs_wrap *dir = gs_fontset_wrap(fs, 20, "abc \xD8\xB3\xD9\x84\xD8\xA7\xD9\x85\n\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85 abc\n123", 1e6f);
+    CHECK(dir && dir->count == 3 && !dir->lines[0].rtl && dir->lines[1].rtl && !dir->lines[2].rtl);
+    gs_wrap_free(dir);
+    if (unit > 0) {
+        dir = gs_fontset_wrap(fs, 20, "abc \xD8\xB3\xD9\x84\xD8\xA7\xD9\x85 \xD8\xB3\xD9\x84\xD8\xA7\xD9\x85 \xD8\xB3\xD9\x84\xD8\xA7\xD9\x85 \xD8\xB3\xD9\x84\xD8\xA7\xD9\x85", unit);
+        CHECK(dir && dir->count > 1);
+        for (int i = 0; dir && i < dir->count; i++) CHECK(!dir->lines[i].rtl);
+        gs_wrap_free(dir);
+    }
+    gs_fontset_prepend(fs, "/no/such/font.ttf");  // (a missing file changes nothing)
     gs_wrap *empty = gs_fontset_wrap(fs, 20, "", 100);
     CHECK(empty && empty->count == 1 && empty->lines[0].start == 0 && empty->lines[0].end == 0);
     gs_wrap_free(empty);

@@ -475,12 +475,13 @@ float gs_text_width(const gs_font *f, float px, const char *utf8) {
 
 // ---- Font chains and shaping ----
 
-#define MAX_FONTS 16
+#define MAX_FONTS 24
 #define LINE_CACHE 512  // shaped lines kept, so text drawn every frame is shaped once
 
 typedef struct {
     char *text;
     int size4;  // px in quarter pixels
+    int dir;
     gs_line *line;
 } cached_line;
 
@@ -502,6 +503,23 @@ void gs_fontset_add(gs_fontset *fs, const char *path) {
     // earlier font has a plain glyph for them.
     fs->emoji[fs->n] = SDL_strcasestr(path, "emoji") != NULL || SDL_strcasestr(path, "seguiemj") != NULL;
     fs->path[fs->n++] = SDL_strdup(path);
+}
+
+static void forget_lines(gs_fontset *fs);
+
+void gs_fontset_prepend(gs_fontset *fs, const char *path) {
+    int n = fs->n;
+    gs_fontset_add(fs, path);
+    if (fs->n == n) return;
+    char *p = fs->path[n];
+    bool emoji = fs->emoji[n];
+    memmove(fs->path + 1, fs->path, sizeof *fs->path * (size_t)n);
+    memmove(fs->font + 1, fs->font, sizeof *fs->font * (size_t)n);
+    memmove(fs->ctx + 1, fs->ctx, sizeof *fs->ctx * (size_t)n);
+    memmove(fs->tried + 1, fs->tried, sizeof *fs->tried * (size_t)n);
+    memmove(fs->emoji + 1, fs->emoji, sizeof *fs->emoji * (size_t)n);
+    fs->path[0] = p, fs->font[0] = NULL, fs->ctx[0] = NULL, fs->tried[0] = false, fs->emoji[0] = emoji;
+    forget_lines(fs);  // (their glyphs came from the old order)
 }
 
 gs_fontset *gs_fontset_system(void) {
@@ -532,10 +550,22 @@ gs_fontset *gs_fontset_system(void) {
         "/usr/share/fonts/google-noto-vf/NotoSansArabic[wght].ttf", "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
         "/usr/share/fonts/google-noto-vf/NotoSansDevanagari[wght].ttf", "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
         "/usr/share/fonts/google-droid-sans-fonts/DroidSansFallbackFull.ttf", "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        // Where the Noto fonts for a script are missing, Droid's (Fedora's google-droid-sans-fonts), and a Korean font.
+        "/usr/share/fonts/google-droid-sans-fonts/DroidKufi-Regular.ttf", "/usr/share/fonts/google-droid-sans-fonts/DroidSansDevanagari-Regular.ttf",
+        "/usr/share/fonts/google-droid-sans-fonts/DroidSansHebrew-Regular.ttf", "/usr/share/fonts/google-droid-sans-fonts/DroidSansThai.ttf",
+        "/usr/share/fonts/nanum-gothic/NanumGothic.ttf", "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
         // Monochrome emoji, where the colour font is one gesso cannot draw (COLRv1, as on Fedora 43 and later).
         "/usr/share/fonts/google-noto-emoji-fonts/NotoEmoji-Regular.ttf", "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
         "/usr/share/fonts/gdouros-symbola/Symbola.ttf" };
     for (size_t i = 0; i < sizeof paths / sizeof *paths; i++) gs_fontset_add(fs, paths[i]);
+    const char *home = SDL_getenv("HOME");  // (a font the user installed, for Korean where the system has none)
+    if (home) {
+        char path[512];
+        SDL_snprintf(path, sizeof path, "%s/.local/share/fonts/D2Coding.ttf", home);
+        gs_fontset_add(fs, path);
+        SDL_snprintf(path, sizeof path, "%s/.local/share/fonts/D2CodingLigature.ttf", home);
+        gs_fontset_add(fs, path);
+    }
 #endif
     return fs;
 }
@@ -707,13 +737,13 @@ static int graphemes(const char *utf8, int len, int **out) {
     return n;
 }
 
-gs_line *gs_fontset_shape(gs_fontset *fs, float px, const char *utf8) {
+gs_line *gs_fontset_shape_dir(gs_fontset *fs, float px, const char *utf8, int dir) {
     int len = (int)strlen(utf8);
     gs_line *l = calloc(1, sizeof *l);
     if (!l || !len) return l;
     l->px = px;
     int *bounds, cap = 0, nruns = 0, runs_cap = 0;
-    kbts_direction paragraph = paragraph_direction(utf8);
+    kbts_direction paragraph = dir == GS_DIR_LTR ? KBTS_DIRECTION_LTR : dir == GS_DIR_RTL ? KBTS_DIRECTION_RTL : paragraph_direction(utf8);
     int nb = graphemes(utf8, len, &bounds);
     l->rtl = paragraph == KBTS_DIRECTION_RTL;
     run_span *runs = NULL;
@@ -770,20 +800,24 @@ gs_line *gs_fontset_shape(gs_fontset *fs, float px, const char *utf8) {
     return l;
 }
 
+gs_line *gs_fontset_shape(gs_fontset *fs, float px, const char *utf8) { return gs_fontset_shape_dir(fs, px, utf8, GS_DIR_AUTO); }
+
 void gs_line_free(gs_line *l) {
     if (l) free(l->glyphs), free(l);
 }
 
-const gs_line *gs_fontset_line(gs_fontset *fs, float px, const char *utf8) {
+const gs_line *gs_fontset_line_dir(gs_fontset *fs, float px, const char *utf8, int dir) {
     int size4 = (int)lroundf(px * 4);
-    uint32_t h = 2166136261u ^ (uint32_t)size4;
+    uint32_t h = 2166136261u ^ (uint32_t)size4 ^ (uint32_t)dir * 40503u;
     for (const unsigned char *p = (const unsigned char *)utf8; *p; p++) h = (h ^ *p) * 16777619u;
     cached_line *c = &fs->cache[h % LINE_CACHE];
-    if (c->line && c->size4 == size4 && !strcmp(c->text, utf8)) return c->line;
+    if (c->line && c->size4 == size4 && c->dir == dir && !strcmp(c->text, utf8)) return c->line;
     free(c->text), gs_line_free(c->line);
-    c->text = SDL_strdup(utf8), c->size4 = size4, c->line = gs_fontset_shape(fs, px, utf8);
+    c->text = SDL_strdup(utf8), c->size4 = size4, c->dir = dir, c->line = gs_fontset_shape_dir(fs, px, utf8, dir);
     return c->line;
 }
+
+const gs_line *gs_fontset_line(gs_fontset *fs, float px, const char *utf8) { return gs_fontset_line_dir(fs, px, utf8, GS_DIR_AUTO); }
 
 float gs_line_draw(gs_glyphs *g, const gs_line *l, float x, float y, SDL_FColor colour) {
     if (!l) return 0;
@@ -848,9 +882,9 @@ static int visible_end(const char *utf8, int s, int p) {
     return p;
 }
 
-static void wrap_add(gs_wrap *w, int *cap, int start, int end, float width) {
+static void wrap_add(gs_wrap *w, int *cap, int start, int end, float width, bool rtl) {
     if (w->count == *cap) w->lines = realloc(w->lines, sizeof *w->lines * (size_t)(*cap = *cap ? *cap * 2 : 8));
-    w->lines[w->count++] = (gs_wrap_line){ start, end, width };
+    w->lines[w->count++] = (gs_wrap_line){ start, end, width, rtl };
 }
 
 gs_wrap *gs_fontset_wrap(gs_fontset *fs, float px, const char *utf8, float width) {
@@ -869,7 +903,8 @@ gs_wrap *gs_fontset_wrap(gs_fontset *fs, float px, const char *utf8, float width
         memset(cum, 0, sizeof *cum * (size_t)(plen + 2));
         char *text = malloc((size_t)ve + 1);
         memcpy(text, utf8 + ps, (size_t)ve), text[ve] = 0;
-        gs_line *shaped = ve ? gs_fontset_shape(fs, px, text) : NULL;
+        bool rtl = paragraph_direction(text) == KBTS_DIRECTION_RTL;
+        gs_line *shaped = ve ? gs_fontset_shape_dir(fs, px, text, rtl ? GS_DIR_RTL : GS_DIR_LTR) : NULL;
         for (int i = 0; shaped && i < shaped->count; i++)
             if (shaped->glyphs[i].cluster >= 0 && shaped->glyphs[i].cluster < plen) cum[shaped->glyphs[i].cluster + 1] += shaped->glyphs[i].advance;
         for (int i = 1; i <= plen; i++) cum[i] += cum[i - 1];
@@ -892,12 +927,12 @@ gs_wrap *gs_fontset_wrap(gs_fontset *fs, float px, const char *utf8, float width
                 if (p == pe) { end = v, next = pe; break; }
             }
             if (next <= s && s < pe) end = visible_end(utf8, s, pe), next = pe;  // (always a step forward)
-            wrap_add(w, &cap, s, end, SPAN(s, end));
+            wrap_add(w, &cap, s, end, SPAN(s, end), rtl);
             s = next;
         } while (s < pe);
         #undef SPAN
         if (pe >= len) {
-            if (pe > ps && (utf8[len - 1] == '\n' || utf8[len - 1] == '\r')) wrap_add(w, &cap, len, len, 0);  // after a final newline
+            if (pe > ps && (utf8[len - 1] == '\n' || utf8[len - 1] == '\r')) wrap_add(w, &cap, len, len, 0, rtl);  // after a final newline
             break;
         }
         ps = pe;
