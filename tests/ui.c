@@ -137,6 +137,51 @@ static void test_ui_multiline(void) {
     }
 }
 
+static SDL_Window *offscreen_window(int w, int h) {
+    // (a window that brings its own graphics context: otherwise macOS's offscreen driver is asked for
+    // OpenGL, which it cannot load, and no window is made)
+    SDL_PropertiesID p = SDL_CreateProperties();
+    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, w);
+    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, h);
+    SDL_SetBooleanProperty(p, SDL_PROP_WINDOW_CREATE_EXTERNAL_GRAPHICS_CONTEXT_BOOLEAN, true);
+    SDL_Window *win = SDL_CreateWindowWithProperties(p);
+    SDL_DestroyProperties(p);
+    return win;
+}
+
+// Two windows, each with a gs_ui: each takes its own window's events and leaves the other's.
+static void test_ui_windows(SDL_Window *first, gs_fontset *fs) {
+    SDL_Window *second = offscreen_window(200, 100);
+    SDL_Renderer *r2 = second ? SDL_CreateRenderer(second, NULL) : NULL;
+    CHECK(r2);
+    if (!r2) return SDL_DestroyWindow(second);
+    gs_ui *a = ui, *b = gs_ui_new(second, r2, fs);
+    bool hit_a = false, hit_b = false, over_b = false;
+    for (int pass = 0; pass < 3; pass++) {
+        SDL_WindowID to = pass == 0 ? SDL_GetWindowID(first) : SDL_GetWindowID(second);
+        SDL_Event m = { .motion = { .type = SDL_EVENT_MOUSE_MOTION, .windowID = to, .x = 20, .y = 10 } };
+        SDL_Event d = { .button = { .type = SDL_EVENT_MOUSE_BUTTON_DOWN, .windowID = to, .button = SDL_BUTTON_LEFT, .down = true, .x = 20, .y = 10 } };
+        SDL_Event u = { .button = { .type = SDL_EVENT_MOUSE_BUTTON_UP, .windowID = to, .button = SDL_BUTTON_LEFT, .x = 20, .y = 10 } };
+        SDL_Event leave = { .window = { .type = SDL_EVENT_WINDOW_MOUSE_LEAVE, .windowID = to } };
+        gs_ui_event(a, &m), gs_ui_event(b, &m);
+        if (pass < 2) gs_ui_event(a, &d), gs_ui_event(b, &d), gs_ui_event(a, &u), gs_ui_event(b, &u);
+        else gs_ui_event(a, &leave), gs_ui_event(b, &leave);
+        gs_ui_begin(a);
+        hit_a = gs_ui_button(a, (gs_rect){ 0, 0, 100, 30 }, "One");
+        gs_ui_end(a);
+        gs_ui_begin(b);
+        over_b = gs_ui_hovered(b, (gs_rect){ 0, 0, 100, 30 });
+        hit_b = gs_ui_button(b, (gs_rect){ 0, 0, 100, 30 }, "Two");
+        gs_ui_end(b);
+        if (pass == 0) CHECK(hit_a && !hit_b && !over_b);
+        if (pass == 1) CHECK(!hit_a && hit_b && over_b);
+        if (pass == 2) CHECK(!hit_a && !hit_b && !over_b);  // the pointer left the second window
+    }
+    gs_ui_free(b);
+    SDL_DestroyRenderer(r2);
+    SDL_DestroyWindow(second);
+}
+
 static float red_at(SDL_Surface *s, int x, int y) {
     Uint8 r, g, b, a;
     return SDL_ReadSurfacePixel(s, x, y, &r, &g, &b, &a) ? r / 255.0f : -1;
@@ -207,14 +252,7 @@ void test_ui(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
     if (!SDL_Init(SDL_INIT_VIDEO)) return;  // (no video at all: nothing to test here)
-    // (a window that brings its own graphics context: otherwise macOS's offscreen driver is asked for
-    // OpenGL, which it cannot load, and no window is made)
-    SDL_PropertiesID p = SDL_CreateProperties();
-    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, 400);
-    SDL_SetNumberProperty(p, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, 300);
-    SDL_SetBooleanProperty(p, SDL_PROP_WINDOW_CREATE_EXTERNAL_GRAPHICS_CONTEXT_BOOLEAN, true);
-    SDL_Window *w = SDL_CreateWindowWithProperties(p);
-    SDL_DestroyProperties(p);
+    SDL_Window *w = offscreen_window(400, 300);
     SDL_Renderer *r = w ? SDL_CreateRenderer(w, NULL) : NULL;
     CHECK(w && r);
     if (!r) return SDL_DestroyWindow(w), SDL_Quit();
@@ -255,6 +293,7 @@ void test_ui(void) {
     CHECK(activated);
 
     test_ui_draw(r);
+    test_ui_windows(w, fs);
     gs_ui_free(ui);
     gs_fontset_free(fs);
 

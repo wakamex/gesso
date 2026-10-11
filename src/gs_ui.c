@@ -11,6 +11,7 @@
 #define KEYS 32        // key presses kept per frame
 #define TOOLTIP_MS 500
 #define BLINK_MS 530
+#define OUTSIDE -1e6f  // where the pointer is once it has left the window
 
 // ---- Rectangles ----
 
@@ -124,6 +125,7 @@ gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
         .text_px = 14, .small_px = 12, .row = 30,
     };
     ui->opacity = 1;
+    ui->pending.x = ui->pending.y = OUTSIDE;  // until the pointer is seen in the window
     return ui;
 }
 
@@ -146,8 +148,23 @@ static void wake_within(gs_ui *ui, int ms) {
 
 void gs_ui_wake(gs_ui *ui, int ms) { wake_within(ui, SDL_max(0, ms)); }
 
+// The window an event is for; 0 for one that names none.
+static SDL_WindowID event_window(const SDL_Event *e) {
+    switch (e->type) {
+    case SDL_EVENT_MOUSE_MOTION: return e->motion.windowID;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP: return e->button.windowID;
+    case SDL_EVENT_MOUSE_WHEEL: return e->wheel.windowID;
+    case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP: return e->key.windowID;
+    case SDL_EVENT_TEXT_INPUT: return e->text.windowID;
+    case SDL_EVENT_TEXT_EDITING: return e->edit.windowID;
+    default: return e->type >= SDL_EVENT_WINDOW_FIRST && e->type <= SDL_EVENT_WINDOW_LAST ? e->window.windowID : 0;
+    }
+}
+
 bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
     input *p = &ui->pending;
+    SDL_WindowID to = event_window(e);
+    if (to && to != SDL_GetWindowID(ui->win)) return false;  // another window's
     switch (e->type) {
     case SDL_EVENT_MOUSE_MOTION: p->x = e->motion.x, p->y = e->motion.y; return false;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -157,6 +174,8 @@ bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
         if (e->button.button == SDL_BUTTON_LEFT) p->down = false, p->released = true, p->x = e->button.x, p->y = e->button.y;
         return false;
     case SDL_EVENT_MOUSE_WHEEL: p->wheel += e->wheel.y; return false;
+    case SDL_EVENT_WINDOW_MOUSE_LEAVE: p->x = p->y = OUTSIDE; return false;  // nothing is under a pointer that has left
+    case SDL_EVENT_WINDOW_FOCUS_LOST: ui->composition[0] = 0; return false;
     case SDL_EVENT_KEY_DOWN:  // (whether a key is taken is settled while drawing: see gs_ui_key)
         if (p->nkeys < KEYS) p->keys[p->nkeys] = e->key.key, p->mods[p->nkeys++] = e->key.mod;
         return false;

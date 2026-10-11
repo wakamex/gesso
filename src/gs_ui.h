@@ -7,6 +7,11 @@
 // functions below, and gs_ui_end. Widgets that keep state between frames (a text field's cursor, a
 // list's scroll, an open dropdown) take an id string, unique among those drawn in a frame.
 //
+// A process can have several windows, each with a gs_ui of its own on that window's renderer, sharing
+// one gs_fontset: pass every event to every gs_ui, and each takes those of its own window and leaves
+// the rest (an event that names no window goes to all). Each gs_ui keeps a glyph atlas for its
+// renderer. Use them from one thread.
+//
 // It provides rows and columns, scrolling lists (of equal or differing row heights), wrapped text,
 // single-line and multi-line text fields with input-method composition, buttons, toggles, sliders,
 // dropdowns, menus and tooltips. It does not provide rich text editing, menu bars, drag and drop, or
@@ -41,7 +46,9 @@ void gs_ui_free(gs_ui *ui);
 gs_ui_style *gs_ui_style_of(gs_ui *ui);  // change its colours and sizes as wanted
 gs_glyphs *gs_ui_glyphs(gs_ui *ui);
 
-bool gs_ui_event(gs_ui *ui, const SDL_Event *e);  // true when the interface took the event (a key for a focused field, say)
+// True when the interface took the event (text typed into a focused field, say). Events of another
+// window are left alone, and a pointer that leaves the window is over nothing in it.
+bool gs_ui_event(gs_ui *ui, const SDL_Event *e);
 gs_rect gs_ui_begin(gs_ui *ui);  // the window, in points
 void gs_ui_end(gs_ui *ui);
 // Milliseconds until the interface wants to be drawn again on its own (a blinking cursor, a tooltip
