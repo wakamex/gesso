@@ -27,6 +27,7 @@ void test_media(void);
 void test_notify(void);
 void test_oauth(void);
 void test_secret(void);
+void test_sound(void);
 void test_stream(void);
 void test_stream_clock(void);
 void test_text(void);

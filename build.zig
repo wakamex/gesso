@@ -199,11 +199,13 @@ pub fn build(b: *std.Build) void {
     mod.addIncludePath(b.path("src"));
     mod.addIncludePath(b.path("vendor/stb"));
     mod.addIncludePath(b.path("vendor/kb"));
+    mod.addIncludePath(b.path("vendor/minimp3"));
     // The vendored libraries do arithmetic the undefined-behaviour sanitizer of debug builds stops on
     // (unaligned reads in kb_text_shape, shifts of negative values in stb_image_write), harmless on the
     // compilers gesso uses; they are built without it.
     mod.addCSourceFile(.{ .file = b.path("src/gs_kb.c"), .flags = &.{ "-std=c11", "-w", "-fno-sanitize=undefined" } });
     mod.addCSourceFile(.{ .file = b.path("src/gs_stb.c"), .flags = &.{ "-std=c11", "-w", "-fno-sanitize=undefined" } });
+    mod.addCSourceFile(.{ .file = b.path("src/gs_mp3.c"), .flags = &.{ "-std=c11", "-w", "-fno-sanitize=undefined" } });
     useSdk(mod, macos_sdk);
     mod.linkLibrary(sdl);
     mod.linkLibrary(opus);
@@ -229,6 +231,8 @@ pub fn build(b: *std.Build) void {
         for (a.include) |dir| mod.addIncludePath(dir);
         mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_video.c", "gs_aac.c", "gs_live.c" }, .flags = flags });
     }
+    // gs_sound plays AAC through gs_aac, where gesso has it.
+    mod.addCSourceFile(.{ .file = b.path("src/gs_sound.c"), .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_HAVE_AAC"} else flags });
 
     const lib = b.addLibrary(.{ .name = "gesso", .linkage = .static, .root_module = mod });
     lib.installHeadersDirectory(b.path("src"), "", .{ .include_extensions = &.{".h"} });
@@ -238,7 +242,7 @@ pub fn build(b: *std.Build) void {
 
     // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "notify.c", "oauth.c", "secret.c", "stream.c", "text.c", "ui.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "notify.c", "oauth.c", "secret.c", "sound.c", "stream.c", "text.c", "ui.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
     tests.addIncludePath(b.path("src"));
     if (av) |a| for (a.include) |dir| tests.addIncludePath(dir);
     useSdk(tests, macos_sdk);
@@ -314,6 +318,20 @@ pub fn build(b: *std.Build) void {
     const benches = b.step("benches", "Build the benches without running them");
     benches.dependOn(&notify_install.step);
     benches.dependOn(&overlay_install.step);
+
+    // zig build bench-sound -- FILE: a sound file opened and played through by gs_sound, without a device.
+    const sound_bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    sound_bench.addCSourceFile(.{ .file = b.path("bench/sound.c"), .flags = flags });
+    sound_bench.addIncludePath(b.path("src"));
+    useSdk(sound_bench, macos_sdk);
+    sound_bench.linkLibrary(lib);
+    const sound_exe = b.addExecutable(.{ .name = "bench-sound", .root_module = sound_bench });
+    const sound_install = b.addInstallArtifact(sound_exe, .{});
+    const sound_run = b.addRunArtifact(sound_exe);
+    sound_run.step.dependOn(&sound_install.step);
+    sound_run.addPassthruArgs();
+    b.step("bench-sound", "Open a sound file and play it through without a device").dependOn(&sound_run.step);
+    benches.dependOn(&sound_install.step);
 
     // zig build bench-video -Dvideo -- FILE.h264: decoding paths compared on this machine (bench/video.c).
     if (av) |a| {
