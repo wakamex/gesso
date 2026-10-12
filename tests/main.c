@@ -22,6 +22,7 @@ static const struct { const char *name; void (*run)(void); } tests[] = {
     { "gs_stream clock", test_stream_clock },
     { "gs_text", test_text },
     { "gs_ui", test_ui },
+    { "gs_voice", test_voice },
 };
 
 // The streams folder as an absolute path, since tests build file:// URLs from it (zig build passes it

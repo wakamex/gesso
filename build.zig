@@ -193,13 +193,14 @@ pub fn build(b: *std.Build) void {
     const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
     mod.addCSourceFiles(.{
         .root = b.path("src"),
-        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_draw.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c" },
+        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_draw.c", "gs_voice.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c" },
         .flags = flags,
     });
     mod.addIncludePath(b.path("src"));
     mod.addIncludePath(b.path("vendor/stb"));
     mod.addIncludePath(b.path("vendor/kb"));
     mod.addIncludePath(b.path("vendor/minimp3"));
+    mod.addIncludePath(b.path("vendor/rnnoise"));
     // The vendored libraries do arithmetic the undefined-behaviour sanitizer of debug builds stops on
     // (unaligned reads in kb_text_shape, shifts of negative values in stb_image_write), harmless on the
     // compilers gesso uses; they are built without it.
@@ -242,7 +243,7 @@ pub fn build(b: *std.Build) void {
 
     // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "notify.c", "oauth.c", "secret.c", "sound.c", "stream.c", "text.c", "ui.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "notify.c", "oauth.c", "secret.c", "sound.c", "stream.c", "text.c", "ui.c", "voice.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
     tests.addIncludePath(b.path("src"));
     if (av) |a| for (a.include) |dir| tests.addIncludePath(dir);
     useSdk(tests, macos_sdk);
@@ -332,6 +333,20 @@ pub fn build(b: *std.Build) void {
     sound_run.addPassthruArgs();
     b.step("bench-sound", "Open a sound file and play it through without a device").dependOn(&sound_run.step);
     benches.dependOn(&sound_install.step);
+
+    // zig build bench-voice -- IN.wav OUT.wav [STAGES]: gs_voice over a WAV file.
+    const voice_bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    voice_bench.addCSourceFile(.{ .file = b.path("bench/voice.c"), .flags = flags });
+    voice_bench.addIncludePath(b.path("src"));
+    useSdk(voice_bench, macos_sdk);
+    voice_bench.linkLibrary(lib);
+    const voice_exe = b.addExecutable(.{ .name = "bench-voice", .root_module = voice_bench });
+    const voice_install = b.addInstallArtifact(voice_exe, .{});
+    const voice_run = b.addRunArtifact(voice_exe);
+    voice_run.step.dependOn(&voice_install.step);
+    voice_run.addPassthruArgs();
+    b.step("bench-voice", "Run gs_voice over a WAV file").dependOn(&voice_run.step);
+    benches.dependOn(&voice_install.step);
 
     // zig build bench-video -Dvideo -- FILE.h264: decoding paths compared on this machine (bench/video.c).
     if (av) |a| {
