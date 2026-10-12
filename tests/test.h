@@ -20,6 +20,7 @@ void test_abr(void);
 void test_desk(void);
 void test_hls(void);
 void test_http(void);
+void test_image(void);
 void test_json(void);
 void test_live(void);
 void test_media(void);

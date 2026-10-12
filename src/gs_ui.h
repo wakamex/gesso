@@ -16,7 +16,8 @@
 // It provides rows and columns, scrolling lists (of equal or differing row heights), a scrolling
 // page of controls, wrapped text, single-line and multi-line text fields with input-method
 // composition, masked and number fields, buttons, links, toggles, switches, radio buttons, sliders,
-// dropdowns, menus, tooltips, modal questions and a field that captures a hotkey. It does not provide rich text editing, menu bars,
+// dropdowns, menus, tooltips, modal questions, a field that captures a hotkey and a view of a
+// picture that zooms and moves. It does not provide rich text editing, menu bars,
 // drag and drop, or themes beyond the colours in gs_ui_style.
 #pragma once
 #include <SDL3/SDL.h>
@@ -105,6 +106,15 @@ float gs_ui_text_height(gs_ui *ui, const char *text, float px, float width);
 float gs_ui_text_lines(gs_ui *ui, gs_rect r, const char *text, float px, SDL_FColor c, int max_lines, bool *cut);
 float gs_ui_line_height(const gs_ui *ui, float px);  // the height of one line of wrapped text at size px
 void gs_ui_texture(gs_ui *ui, gs_rect r, SDL_Texture *t, const SDL_FRect *src);  // fills r, cropping the source to keep its aspect
+// A picture to look at closely: the texture shown whole in r, then zoomed with the wheel about the
+// pointer (to 8 times its own size at most), moved by dragging, and switched between fitted and its
+// own size by a double click. With the keyboard, + and - zoom, 0 fits, 1 is its own size and the
+// arrows move it. It starts fitted, never enlarged past its own size, and stays fitted as r changes
+// until the user zooms. Give each picture an id of its own so each keeps its own place; a texture of
+// the whole image comes from gs_images_full. gs_ui_image_zoom is screen pixels to an image pixel (1
+// at its own size; 0 before the view has been drawn), for showing a percentage.
+void gs_ui_image_view(gs_ui *ui, gs_rect r, const char *id, SDL_Texture *t);
+float gs_ui_image_zoom(gs_ui *ui, const char *id);
 // Clips drawing to r, and the pointer with it: a control cut off by the clip cannot be clicked where
 // it does not show. NULL ends clipping. A list ends its own clip with gs_ui_list_end and puts back
 // the one that was in force before it.

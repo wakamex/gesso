@@ -44,6 +44,8 @@ typedef struct {
     float from, to, value;  // an eased value: where it set out from, where it is going, where it is
     uint64_t since;         // when it set out
     bool eased;
+    float zoom, cx, cy;     // an image view: screen pixels to an image pixel, and the image's point at the view's centre
+    bool fitted;            // ...which stays fitted to its area until the user zooms
     gs_rect view;           // a page's area
     float extent, grab;     // the height of its content; where on its scroll thumb the pointer holds it
 } widget;
@@ -80,6 +82,8 @@ struct gs_ui {
     input pending, in;
     bool taken[KEYS];
     float press_x, press_y;  // where the left button went down
+    uint64_t press_at, press_before;  // when it went down, and the time before that, for a double click
+    float before_x, before_y;
     char composition[128];   // the input method's text being composed
     uint32_t focus, drag;    // the widget with the keyboard; the slider being dragged
     bool marked;             // the keyboard moved the focus last, so the control that has it is marked
@@ -98,8 +102,8 @@ struct gs_ui {
     uint32_t capture;        // the hotkey field waiting for a key combination
     char captured[64];       // the combination pressed for it
     bool capture_drawn;
-    int cursor_want, cursor_now;  // the pointer's shape: 0 the default, 1 a hand, 2 a text beam
-    SDL_Cursor *cursors[3];
+    int cursor_want, cursor_now;  // the pointer's shape: 0 the default, 1 a hand, 2 a text beam, 3 the four arrows of something moved
+    SDL_Cursor *cursors[4];
     uint64_t caret_since;
     widget states[STATES];
     // The floating layer: what it covered last frame takes the pointer from the widgets under it.
@@ -162,7 +166,7 @@ gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
 void gs_ui_free(gs_ui *ui) {
     if (!ui) return;
     gs_glyphs_free(ui->glyphs);
-    for (int i = 1; i < 3; i++) SDL_DestroyCursor(ui->cursors[i]);
+    for (int i = 1; i < 4; i++) SDL_DestroyCursor(ui->cursors[i]);
     for (int i = 0; i < WRAPS; i++) SDL_free(ui->wraps[i].text), gs_wrap_free(ui->wraps[i].wrap);
     free(ui->piece);
     free(ui);
@@ -257,7 +261,7 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     bool down = ui->pending.down;
     ui->in = ui->pending;
     ui->pending = (input){ .x = ui->in.x, .y = ui->in.y, .down = down };
-    if (ui->in.pressed) ui->press_x = ui->in.x, ui->press_y = ui->in.y;
+    if (ui->in.pressed) ui->before_x = ui->press_x, ui->before_y = ui->press_y, ui->press_before = ui->press_at, ui->press_x = ui->in.x, ui->press_y = ui->in.y, ui->press_at = ui->now;
     memset(ui->taken, 0, sizeof ui->taken);
     ui->float_last = ui->float_now, ui->float_last_on = ui->float_now_on;
     ui->float_now_on = false, ui->nfl = 0, ui->tip_wanted = false, ui->wait_ms = -1, ui->opacity = 1;
@@ -1292,6 +1296,69 @@ void gs_ui_flow_prepended(gs_ui *ui, const char *id, int n) { state(ui, hash(id)
 
 
 
+// ---- An image view ----
+
+void gs_ui_image_view(gs_ui *ui, gs_rect r, const char *id, SDL_Texture *t) {
+    uint32_t h = hash(id);
+    widget *w = state(ui, h);
+    bool focused = stop_at(ui, h, r);
+    float tw, th, s = ui->scale;
+    if (!t || !SDL_GetTextureSize(t, &tw, &th) || tw <= 0 || th <= 0 || r.w <= 0 || r.h <= 0) return;
+    // Zoom is screen pixels to an image pixel: 1 shows the image at its own size. Fitted, it is as
+    // large as the area lets it be, and no larger than its own size.
+    float fit = fminf(1, fminf(r.w * s / tw, r.h * s / th)), most = fmaxf(8, fit);
+    if (!w->zoom) w->zoom = fit, w->fitted = true, w->cx = tw / 2, w->cy = th / 2;
+    float before = w->zoom, px = (ui->in.x - (r.x + r.w / 2)) * s, py = (ui->in.y - (r.y + r.h / 2)) * s;  // the pointer, in screen pixels from the centre
+    bool over = gs_ui_hovered(ui, r);
+    if (over && ui->in.wheel) w->zoom *= powf(1.2f, ui->in.wheel), ui->in.wheel = 0;
+    if (pressed(ui, r)) {
+        ui->drag = h;
+        // A second press soon after the first, in the same place: between fitted and the image's own size.
+        if (ui->press_before && ui->press_at - ui->press_before < 400 && fabsf(ui->press_x - ui->before_x) < 4 && fabsf(ui->press_y - ui->before_y) < 4)
+            w->zoom = w->zoom > fit * 1.01f ? fit : 1, ui->press_at = 0;
+        w->want_x = ui->in.x, w->grab = ui->in.y;  // (where the drag last was)
+    }
+    if (focused) {  // + and - zoom about the centre, 0 fits, 1 is its own size, and the arrows move it
+        bool keyed = false;
+        while (gs_ui_key(ui, SDLK_EQUALS, 0) || gs_ui_key(ui, SDLK_PLUS, 0) || gs_ui_key(ui, SDLK_KP_PLUS, 0)) w->zoom *= 1.2f, keyed = true;
+        while (gs_ui_key(ui, SDLK_MINUS, 0) || gs_ui_key(ui, SDLK_KP_MINUS, 0)) w->zoom /= 1.2f, keyed = true;
+        if (gs_ui_key(ui, SDLK_0, 0)) w->zoom = fit, keyed = true;
+        if (gs_ui_key(ui, SDLK_1, 0)) w->zoom = 1, keyed = true;
+        float step = 60 * s / w->zoom;
+        while (gs_ui_key(ui, SDLK_LEFT, 0)) w->cx -= step;
+        while (gs_ui_key(ui, SDLK_RIGHT, 0)) w->cx += step;
+        while (gs_ui_key(ui, SDLK_UP, 0)) w->cy -= step;
+        while (gs_ui_key(ui, SDLK_DOWN, 0)) w->cy += step;
+        if (keyed) px = py = 0;
+    }
+    if (w->fitted && w->zoom == before) w->zoom = fit;  // (the area changed size)
+    w->zoom = SDL_clamp(w->zoom, fit, most);
+    if (w->zoom != before) {  // the image's point under the pointer stays under it
+        w->cx += px / before - px / w->zoom, w->cy += py / before - py / w->zoom;
+        w->fitted = w->zoom <= fit * 1.001f;
+    }
+    if (ui->drag == h && ui->in.down) {
+        w->cx -= (ui->in.x - w->want_x) * s / w->zoom, w->cy -= (ui->in.y - w->grab) * s / w->zoom;
+        w->want_x = ui->in.x, w->grab = ui->in.y;
+    }
+    // Held so that the image fills the area where it is larger than it, and is centred where it is smaller.
+    float half_w = r.w * s / w->zoom / 2, half_h = r.h * s / w->zoom / 2;
+    w->cx = half_w >= tw / 2 ? tw / 2 : SDL_clamp(w->cx, half_w, tw - half_w);
+    w->cy = half_h >= th / 2 ? th / 2 : SDL_clamp(w->cy, half_h, th - half_h);
+    if (over && w->zoom > fit * 1.001f) ui->cursor_want = 3;
+    clip_state outer = clip_push(ui, r);
+    SDL_FRect dst = { (r.x + r.w / 2) * s - w->cx * w->zoom, (r.y + r.h / 2) * s - w->cy * w->zoom, tw * w->zoom, th * w->zoom };
+    float alpha = 1, fade = ui->opacity * (ui->dim ? DIM : 1);
+    SDL_GetTextureAlphaModFloat(t, &alpha);
+    if (fade < 1) SDL_SetTextureAlphaModFloat(t, alpha * fade);
+    SDL_RenderTexture(ui->r, t, NULL, &dst);
+    if (fade < 1) SDL_SetTextureAlphaModFloat(t, alpha);
+    clip_pop(ui, outer);
+    if (focused && ui->marked) gs_ui_outline(ui, r, ui->style.radius, 2, ui->style.focus);
+}
+
+float gs_ui_image_zoom(gs_ui *ui, const char *id) { return state(ui, hash(id))->zoom; }
+
 // ---- A hotkey field ----
 
 // Electron's name for a key, or NULL for one that cannot be part of a hotkey.
@@ -1515,7 +1582,7 @@ void gs_ui_end(gs_ui *ui) {
     if (ui->modal_last && !ui->modal_now) ui->wait_ms = 0;   // a modal has gone: the next frame takes input again
     if (!ui->capture_drawn) ui->capture = 0;  // (a hotkey field no longer drawn waits for nothing)
     if (ui->cursor_want != ui->cursor_now) {  // the pointer's shape, for a link or a field under it
-        static const SDL_SystemCursor shapes[3] = { SDL_SYSTEM_CURSOR_DEFAULT, SDL_SYSTEM_CURSOR_POINTER, SDL_SYSTEM_CURSOR_TEXT };
+        static const SDL_SystemCursor shapes[4] = { SDL_SYSTEM_CURSOR_DEFAULT, SDL_SYSTEM_CURSOR_POINTER, SDL_SYSTEM_CURSOR_TEXT, SDL_SYSTEM_CURSOR_MOVE };
         int want = ui->cursor_now = ui->cursor_want;
         if (want && !ui->cursors[want]) ui->cursors[want] = SDL_CreateSystemCursor(shapes[want]);
         SDL_SetCursor(want ? ui->cursors[want] : SDL_GetDefaultCursor());

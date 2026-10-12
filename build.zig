@@ -238,7 +238,7 @@ pub fn build(b: *std.Build) void {
 
     // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "hls.c", "http.c", "json.c", "live.c", "desk.c", "media.c", "notify.c", "oauth.c", "secret.c", "stream.c", "text.c", "ui.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "notify.c", "oauth.c", "secret.c", "stream.c", "text.c", "ui.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
     tests.addIncludePath(b.path("src"));
     if (av) |a| for (a.include) |dir| tests.addIncludePath(dir);
     useSdk(tests, macos_sdk);
