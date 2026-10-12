@@ -286,6 +286,18 @@ pub fn build(b: *std.Build) void {
     weight_run.addPassthruArgs();
     b.step("bench-weight", "Compare a variable font at a weight with a static instance of it").dependOn(&weight_run.step);
 
+    // zig build bench-overlay -- [SECONDS]: gs_desk's overlay window, shown on the desktop.
+    const overlay_bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    overlay_bench.addCSourceFile(.{ .file = b.path("bench/overlay.c"), .flags = flags });
+    overlay_bench.addIncludePath(b.path("src"));
+    useSdk(overlay_bench, macos_sdk);
+    overlay_bench.linkLibrary(lib);
+    const overlay_exe = b.addExecutable(.{ .name = "bench-overlay", .root_module = overlay_bench });
+    const overlay_run = b.addRunArtifact(overlay_exe);
+    overlay_run.step.dependOn(&b.addInstallArtifact(overlay_exe, .{}).step);
+    overlay_run.addPassthruArgs();
+    b.step("bench-overlay", "Show the overlay window on the desktop for a few seconds").dependOn(&overlay_run.step);
+
     // zig build bench-video -Dvideo -- FILE.h264: decoding paths compared on this machine (bench/video.c).
     if (av) |a| {
         const bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });

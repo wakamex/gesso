@@ -246,3 +246,7 @@ bool gs_clipboard_restore(gs_clip *s) {
     gs_clipboard_free(s);
     return ok;
 }
+
+// ---- An overlay window ----
+
+void gs_desk_overlay_native(SDL_Window *win) {}  // (SDL's flags are all Windows offers: no call puts a window on every virtual desktop)

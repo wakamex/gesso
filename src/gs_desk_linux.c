@@ -51,6 +51,8 @@ static struct {
     int (*connection)(void *);
     void *(*set_error_handler)(int (*)(void *, x_error_event *));
     int (*query_keymap)(void *, char *);
+    unsigned long (*intern_atom)(void *, const char *, int);
+    int (*change_property)(void *, unsigned long, unsigned long, unsigned long, int, int, const unsigned char *, int);
     SDL_SharedObject *test_lib;
     int (*fake_key)(void *, unsigned, int, unsigned long);  // XTestFakeKeyEvent
     bool test_tried;
@@ -81,24 +83,32 @@ static int hotkey_thread(void *user) {
     return 0;
 }
 
-// Opens the X connection, once. False where there is no X server to ask: a Wayland desktop without
-// XWayland, or no desktop at all.
-static bool x_connect(void) {
-    static bool tried;
-    if (tried) return X.display != NULL;
+// Xlib's functions, once. False without the library.
+static bool x_load(void) {
+    static bool tried, ok;
+    if (tried) return ok;
     tried = true;
     X.lib = SDL_LoadObject("libX11.so.6");
     struct { void *fn; const char *name; } syms[] = {
         { &X.open, "XOpenDisplay" }, { &X.default_root, "XDefaultRootWindow" }, { &X.keysym_to_keycode, "XKeysymToKeycode" },
         { &X.grab, "XGrabKey" }, { &X.ungrab, "XUngrabKey" }, { &X.sync, "XSync" }, { &X.pending, "XPending" },
         { &X.next_event, "XNextEvent" }, { &X.connection, "XConnectionNumber" }, { &X.set_error_handler, "XSetErrorHandler" },
-        { &X.query_keymap, "XQueryKeymap" },
+        { &X.query_keymap, "XQueryKeymap" }, { &X.intern_atom, "XInternAtom" }, { &X.change_property, "XChangeProperty" },
     };
-    bool ok = X.lib != NULL;
+    ok = X.lib != NULL;
     for (size_t i = 0; ok && i < SDL_arraysize(syms); i++) ok = (*(SDL_FunctionPointer *)syms[i].fn = SDL_LoadFunction(X.lib, syms[i].name)) != NULL;
     int (*init_threads)(void) = ok ? (int (*)(void))SDL_LoadFunction(X.lib, "XInitThreads") : NULL;
     if (init_threads) init_threads();
-    X.display = ok ? X.open(NULL) : NULL;
+    return ok;
+}
+
+// Opens the X connection, once. False where there is no X server to ask: a Wayland desktop without
+// XWayland, or no desktop at all.
+static bool x_connect(void) {
+    static bool tried;
+    if (tried) return X.display != NULL;
+    tried = true;
+    X.display = x_load() ? X.open(NULL) : NULL;
     if (!X.display) return false;
     X.root = X.default_root(X.display);
     X.lock = SDL_CreateMutex();
@@ -302,4 +312,17 @@ bool gs_clipboard_restore(gs_clip *s) {
     if (SDL_SetClipboardData(offer, offer_done, s, (const char **)s->types, (size_t)s->count)) return true;
     gs_clipboard_free(s);
     return false;
+}
+
+// ---- An overlay window ----
+
+// On X11 a window says which desktop it is on with _NET_WM_DESKTOP, and all of them with 0xFFFFFFFF,
+// which the window manager reads as the window appears (and forgets when it is hidden).
+void gs_desk_overlay_native(SDL_Window *win) {
+    SDL_PropertiesID props = SDL_GetWindowProperties(win);
+    void *display = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
+    unsigned long window = (unsigned long)SDL_GetNumberProperty(props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+    if (!display || !window || !x_load()) return;
+    unsigned long all = 0xFFFFFFFFul, desktop = X.intern_atom(display, "_NET_WM_DESKTOP", 0);
+    X.change_property(display, window, desktop, 6 /* CARDINAL */, 32, 0 /* replace */, (const unsigned char *)&all, 1);
 }

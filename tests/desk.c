@@ -63,6 +63,22 @@ void test_desk(void) {
         SDL_free(pref);
     }
 
+    // An overlay window is made hidden, on top and unable to take the keyboard.
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
+    if (SDL_Init(SDL_INIT_VIDEO)) {
+        SDL_Window *overlay = gs_overlay_window("overlay", 320, 80);
+        if (overlay) {  // (macOS's offscreen driver makes no window without a graphics context of its own)
+            SDL_WindowFlags f = SDL_GetWindowFlags(overlay);
+            CHECK((f & SDL_WINDOW_HIDDEN) && (f & SDL_WINDOW_NOT_FOCUSABLE) && (f & SDL_WINDOW_ALWAYS_ON_TOP) && (f & SDL_WINDOW_BORDERLESS) && (f & SDL_WINDOW_UTILITY));
+            gs_overlay_show(overlay, true);
+            CHECK(!(SDL_GetWindowFlags(overlay) & SDL_WINDOW_HIDDEN));
+            gs_overlay_show(overlay, false);
+            CHECK(SDL_GetWindowFlags(overlay) & SDL_WINDOW_HIDDEN);
+            SDL_DestroyWindow(overlay);
+        }
+        SDL_Quit();
+    }
+
     // Hotkeys, where there is a desktop to grab keys on (not in a headless run, nor under Wayland alone).
     if (!gs_hotkeys_init(on_fired, error, sizeof error)) { CHECK(error[0] && !SDL_getenv("GS_TEST_DESKTOP")); return; }
     gs_accelerator paste, other;

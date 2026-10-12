@@ -1,5 +1,6 @@
 // macOS: the pasteboard's items copied whole, every type of each, and written back as they were.
 #import <AppKit/AppKit.h>
+#include <SDL3/SDL.h>
 #include "gs_desk.h"
 
 struct gs_clip { void *items; };  // an NSArray of NSDictionary, type to data, retained
@@ -43,4 +44,16 @@ bool gs_clipboard_restore(gs_clip *s) {
     }
     gs_clipboard_free(s);
     return ok;
+}
+
+// On every Space, over full-screen apps, at the level of the menu bar's own items, and still there
+// when another app is in front.
+void gs_desk_overlay_native(SDL_Window *win) {
+    @autoreleasepool {
+        NSWindow *w = (__bridge NSWindow *)SDL_GetPointerProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+        if (!w) return;
+        w.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorIgnoresCycle;
+        w.level = NSStatusWindowLevel;
+        w.hidesOnDeactivate = NO;
+    }
 }

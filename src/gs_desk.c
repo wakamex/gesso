@@ -106,3 +106,18 @@ void gs_accelerator_label(const char *text, char *out, size_t size) {
         part = plus ? plus + 1 : NULL;
     }
 }
+
+// ---- An overlay window ----
+
+void gs_desk_overlay_native(SDL_Window *win);  // each system's part: every workspace, over full-screen apps
+
+SDL_Window *gs_overlay_window(const char *title, int w, int h) {
+    return SDL_CreateWindow(title, w, h, SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS | SDL_WINDOW_TRANSPARENT | SDL_WINDOW_ALWAYS_ON_TOP | SDL_WINDOW_UTILITY |
+                                             SDL_WINDOW_NOT_FOCUSABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+}
+
+void gs_overlay_show(SDL_Window *win, bool shown) {
+    if (!shown) { SDL_HideWindow(win); return; }
+    gs_desk_overlay_native(win);  // (before it shows: a window manager reads where a window belongs as it appears)
+    SDL_ShowWindow(win);
+}
