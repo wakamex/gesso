@@ -289,6 +289,7 @@ gs_rect gs_ui_begin(gs_ui *ui) {
         else if (!ui->captured[0]) gs_ui_accelerator(ui->in.scans[i], ui->in.mods[i], ui->captured, sizeof ui->captured);
     }
     gs_glyphs_begin_frame(ui->glyphs);
+    gs_glyphs_behind(ui->glyphs, &ui->style.background);  // (what most of its text stands on)
     return ui->area;
 }
 

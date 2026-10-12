@@ -31,6 +31,16 @@ void gs_glyphs_begin_frame(gs_glyphs *g);
 // for the next one; the frame is missing text until another is drawn.
 bool gs_glyphs_waiting(const gs_glyphs *g);
 
+// How glyphs' edges are blended. The renderer blends in the display's encoding rather than in light,
+// which thins light text on dark: text lighter than what is behind it has its coverage corrected for
+// that, by its lightness, so that it has the weight of its outline, as it has in a browser. `gamma`
+// is the display's, 2.2 by default; 1 blends coverage as it is. Changing it empties the atlas.
+void gs_glyphs_correction(gs_glyphs *g, float gamma);
+// What the text is mostly drawn over (an app's background colour), which the correction depends on.
+// NULL, the default, for unknown: the text is then taken to stand on its opposite, light text on dark.
+// gs_ui gives its style's background each frame. Changing it empties the atlas.
+void gs_glyphs_behind(gs_glyphs *g, const SDL_FColor *background);
+
 // Draws one glyph with its origin (pen position on the baseline) at (x, y), rotated by `angle`
 // degrees about that origin. `reveal` in [0, 1] shows only the left part of the glyph.
 void gs_glyphs_draw(gs_glyphs *g, const gs_font *f, int glyph, float px, float x, float y, float angle,

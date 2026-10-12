@@ -564,6 +564,39 @@ static float red_at(SDL_Surface *s, int x, int y) {
 }
 
 // gs_draw's shapes by their pixels, and gs_ui's opacity and eased values.
+// How much of a line of text shows: the sum, over the picture, of how far each pixel is from the
+// background toward the text's colour.
+static double ink(SDL_Renderer *r, gs_fontset *fs, float gamma, bool light_text) {
+    const SDL_FColor dark = { 0.1f, 0.1f, 0.1f, 1 }, white = { 1, 1, 1, 1 };
+    gs_glyphs *g = gs_glyphs_new(r, 512);
+    gs_glyphs_correction(g, gamma);
+    gs_glyphs_behind(g, light_text ? &dark : &white);
+    SDL_SetRenderDrawColorFloat(r, light_text ? 0.1f : 1, light_text ? 0.1f : 1, light_text ? 0.1f : 1, 1);
+    SDL_RenderClear(r);
+    gs_fontset_draw(g, fs, 14, 10.3f, 40, "The quick brown fox", light_text ? white : dark);
+    double sum = 0;
+    SDL_Surface *s = SDL_RenderReadPixels(r, NULL), *c = s ? SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA32) : NULL;
+    for (int y = 0; c && y < c->h; y++)
+        for (int x = 0; x < c->w; x++) {
+            const double v = ((const Uint8 *)c->pixels)[y * c->pitch + x * 4] / 255.0;
+            sum += light_text ? (v - 0.1) / 0.9 : (1 - v) / 0.9;
+        }
+    SDL_DestroySurface(c), SDL_DestroySurface(s);
+    gs_glyphs_free(g);
+    return sum;
+}
+
+// Light text on dark is given the weight blending in the display's encoding takes from it: at the
+// default it shows a tenth to a half more than its bare coverage, by how thin the font is. Dark text on light is left alone.
+static void test_ui_text_weight(SDL_Renderer *r, gs_fontset *fs) {
+    if (gs_fontset_width(fs, 14, "The") <= 0) return;  // (no font to draw with)
+    double bare = ink(r, fs, 1, true), corrected = ink(r, fs, 2.2f, true);
+    CHECK(bare > 50);
+    CHECK(corrected > bare * 1.08 && corrected < bare * 1.5);
+    CHECK_NEAR(ink(r, fs, 2.2f, false), ink(r, fs, 1, false), 0.01);
+    if (!(corrected > bare * 1.08 && corrected < bare * 1.5)) fprintf(stderr, "  ink %.1f bare, %.1f corrected\n", bare, corrected);
+}
+
 static void test_ui_draw(SDL_Renderer *r) {
     SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
     SDL_RenderClear(r);
@@ -721,6 +754,7 @@ void test_ui(void) {
     ui = gs_ui_new(w, r, fs), fonts = fs;
     test_ui_multiline();
     test_ui_cut();
+    test_ui_text_weight(r, fs);
     gs_ui_free(ui);
     gs_fontset_free(fs);
     SDL_DestroyRenderer(r);

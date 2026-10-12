@@ -446,8 +446,9 @@ static void varied_glyph(const gs_font *f, int glyph, const float m[6], outline 
 }
 
 // A glyph's coverage at `scale` (pixels per font unit), with a clear pixel on each side, and where
-// its top left sits from the pen position. A font off its default axes has its outline built above.
-static unsigned char *glyph_cover(const gs_font *f, int glyph, float scale, int *w, int *h, int *ox, int *oy) {
+// its top left sits from the pen position, drawn `shift` of a pixel to the right of it. A font off
+// its default axes has its outline built above.
+static unsigned char *glyph_cover(const gs_font *f, int glyph, float scale, float shift, int *w, int *h, int *ox, int *oy) {
     outline o = { 0 };
     int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
     if (f->coords) {
@@ -458,14 +459,14 @@ static unsigned char *glyph_cover(const gs_font *f, int glyph, float scale, int 
             minx = fminf(minx, o.v[i].x), maxx = fmaxf(maxx, o.v[i].x), miny = fminf(miny, o.v[i].y), maxy = fmaxf(maxy, o.v[i].y);
             if (o.v[i].type == STBTT_vcurve) minx = fminf(minx, o.v[i].cx), maxx = fmaxf(maxx, o.v[i].cx), miny = fminf(miny, o.v[i].cy), maxy = fmaxf(maxy, o.v[i].cy);
         }
-        if (o.n) x0 = (int)floorf(minx * scale), y0 = (int)floorf(-maxy * scale), x1 = (int)ceilf(maxx * scale), y1 = (int)ceilf(-miny * scale);
-    } else stbtt_GetGlyphBitmapBox(&f->info, glyph, scale, scale, &x0, &y0, &x1, &y1);
+        if (o.n) x0 = (int)floorf(minx * scale + shift), y0 = (int)floorf(-maxy * scale), x1 = (int)ceilf(maxx * scale + shift), y1 = (int)ceilf(-miny * scale);
+    } else stbtt_GetGlyphBitmapBoxSubpixel(&f->info, glyph, scale, scale, shift, 0, &x0, &y0, &x1, &y1);
     *w = x1 - x0 + 2, *h = y1 - y0 + 2, *ox = x0 - 1, *oy = y0 - 1;
     unsigned char *cov = calloc((size_t)*w * (size_t)*h, 1);
     if (cov && f->coords && o.n) {
         stbtt__bitmap bitmap = { *w - 2, *h - 2, *w, cov + *w + 1 };
-        stbtt_Rasterize(&bitmap, 0.35f, o.v, o.n, scale, scale, 0, 0, x0, y0, 1, NULL);
-    } else if (cov && !f->coords) stbtt_MakeGlyphBitmap(&f->info, cov + *w + 1, *w - 2, *h - 2, *w, scale, scale, glyph);
+        stbtt_Rasterize(&bitmap, 0.35f, o.v, o.n, scale, scale, shift, 0, x0, y0, 1, NULL);
+    } else if (cov && !f->coords) stbtt_MakeGlyphBitmapSubpixel(&f->info, cov + *w + 1, *w - 2, *h - 2, *w, scale, scale, shift, 0, glyph);
     free(o.v);
     return cov;
 }
@@ -476,6 +477,7 @@ static unsigned char *glyph_cover(const gs_font *f, int glyph, float scale, int 
 typedef struct {
     const gs_font *font;
     int glyph, size4;  // size in quarter pixels
+    uint8_t tone, phase;  // which of the text's lightnesses its coverage was corrected for, and how many quarter pixels right of the pen it was drawn
     int x, y, w, h, ox, oy;
     bool pending;      // rasterized, waiting for gs_glyphs_begin_frame to upload it
     bool colour;       // its own colours, drawn untinted
@@ -484,6 +486,8 @@ typedef struct {
 typedef struct { SDL_Rect at; uint32_t *px; } upload;
 
 #define SLOTS 4096  // open addressing; the atlas is cleared well before this fills
+#define TONES 16    // lightnesses of text told apart
+#define PHASES 4    // positions between two pixels a glyph is drawn at
 
 struct gs_glyphs {
     SDL_Renderer *r;
@@ -494,12 +498,16 @@ struct gs_glyphs {
     bool waiting;      // a glyph was left out of this frame for want of its upload
     upload *uploads;
     int nuploads, uploads_cap;
+    float gamma, behind;
+    uint8_t correct[TONES][256];  // coverage to alpha, for each lightness of text
+    bool made[TONES];
 };
 
 gs_glyphs *gs_glyphs_new(SDL_Renderer *r, int atlas_size) {
     gs_glyphs *g = calloc(1, sizeof *g);
     g->r = r;
     g->size = atlas_size;
+    g->gamma = 2.2f, g->behind = -1;
     g->tex = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, atlas_size, atlas_size);
     SDL_SetTextureBlendMode(g->tex, SDL_BLENDMODE_BLEND);
     SDL_SetTextureScaleMode(g->tex, SDL_SCALEMODE_LINEAR);
@@ -681,19 +689,64 @@ static bool colour_glyph(const gs_font *f, int glyph, float scale, image *out) {
     return (f->colr && colr_glyph(f, glyph, scale, out)) || (f->cblc && cbdt_glyph(f, glyph, px, out)) || (f->sbix && sbix_glyph(f, glyph, px, out));
 }
 
+// What a glyph's coverage becomes as the alpha it is blended with, for text of one lightness.
+//
+// The renderer blends in the display's encoding, not in light: a pixel half covered by white text
+// on black comes out at half the encoded value, which is a fifth of the light, so light text looks
+// thinner than its outline. The alpha that gives the right light depends on what is behind the
+// text: the lightness the app gave, or, not knowing, as far from the text as the text is from mid
+// grey. Text darker than what is behind it is left as it is: blending in the encoding makes it a
+// little heavy, which is what DirectWrite's contrast does to it on purpose, and what Chromium on
+// Windows shows.
+static const uint8_t *correction(gs_glyphs *g, int tone) {
+    uint8_t *t = g->correct[tone];
+    if (g->made[tone]) return t;
+    g->made[tone] = true;
+    const float text = (float)tone / (TONES - 1), behind = g->behind >= 0 ? g->behind : 1 - text;
+    const float text_light = powf(text, g->gamma), behind_light = powf(behind, g->gamma);
+    for (int i = 0; i < 256; i++) {
+        const float a = (float)i / 255;
+        if (text < behind + 0.1f || g->gamma == 1) { t[i] = (uint8_t)i; continue; }
+        const float out = powf(text_light * a + behind_light * (1 - a), 1 / g->gamma);
+        t[i] = (uint8_t)lroundf(255 * SDL_clamp((out - behind) / (text - behind), 0, 1));
+    }
+    return t;
+}
+
+static float lightness(const gs_glyphs *g, SDL_FColor c) {
+    const float light = 0.2126f * powf(c.r, g->gamma) + 0.7152f * powf(c.g, g->gamma) + 0.0722f * powf(c.b, g->gamma);
+    return powf(SDL_clamp(light, 0, 1), 1 / g->gamma);
+}
+
+void gs_glyphs_correction(gs_glyphs *g, float gamma) {
+    gamma = gamma > 0 ? gamma : 1;
+    if (gamma == g->gamma) return;
+    g->gamma = gamma;
+    memset(g->made, 0, sizeof g->made);
+    clear(g);
+}
+
+void gs_glyphs_behind(gs_glyphs *g, const SDL_FColor *background) {
+    const float behind = background ? roundf(lightness(g, *background) * 32) / 32 : -1;  // (in steps, so that a colour easing to another empties the atlas a few times, not every frame)
+    if (behind == g->behind) return;
+    g->behind = behind;
+    memset(g->made, 0, sizeof g->made);
+    clear(g);
+}
+
 // Finds a glyph in the cache, rasterizing it into the atlas on first use. NULL if it cannot fit.
-static slot *lookup(gs_glyphs *g, const gs_font *f, int glyph, int size4) {
-    uint32_t h = ((uint32_t)(uintptr_t)f * 31u + (uint32_t)glyph) * 2654435761u ^ (uint32_t)size4 * 40503u;
+static slot *lookup(gs_glyphs *g, const gs_font *f, int glyph, int size4, int tone, int phase) {
+    uint32_t h = ((uint32_t)(uintptr_t)f * 31u + (uint32_t)glyph) * 2654435761u ^ (uint32_t)size4 * 40503u ^ (uint32_t)(tone * PHASES + phase) * 0x9E3779B1u;
     for (int tries = 0; tries < 2; tries++) {
         for (uint32_t i = h;; i++) {
             slot *s = &g->slots[i % SLOTS];
-            if (s->font == f && s->glyph == glyph && s->size4 == size4) return s;
+            if (s->font == f && s->glyph == glyph && s->size4 == size4 && s->tone == tone && s->phase == phase) return s;
             if (s->font) continue;
             if (g->used > SLOTS * 3 / 4) break;  // too full: clear and start over
             float scale = em_scale(f, size4 / 4.0f);
             image img = { 0 };
             bool colour = colour_glyph(f, glyph, scale, &img);
-            unsigned char *cov = colour ? NULL : glyph_cover(f, glyph, scale, &img.w, &img.h, &img.ox, &img.oy);  // (one clear pixel each side for linear filtering)
+            unsigned char *cov = colour ? NULL : glyph_cover(f, glyph, scale, (float)phase / PHASES, &img.w, &img.h, &img.ox, &img.oy);  // (one clear pixel each side for linear filtering)
             int w = img.w, hh = img.h;
             if (w > g->size || hh > g->size) return free(img.px), free(cov), NULL;
             if (g->shelf_x + w > g->size) g->shelf_x = 0, g->shelf_y += g->shelf_h, g->shelf_h = 0;
@@ -701,7 +754,8 @@ static slot *lookup(gs_glyphs *g, const gs_font *f, int glyph, int size4) {
             uint32_t *px = img.px;
             if (!colour) {
                 px = malloc((size_t)w * hh * 4);
-                for (int k = 0; cov && k < w * hh; k++) px[k] = SDL_Swap32LE(0x00FFFFFFu | (uint32_t)cov[k] << 24);
+                const uint8_t *alpha = correction(g, tone);
+                for (int k = 0; cov && k < w * hh; k++) px[k] = SDL_Swap32LE(0x00FFFFFFu | (uint32_t)alpha[cov[k]] << 24);
                 free(cov);
             }
             SDL_Rect dst = { g->shelf_x, g->shelf_y, w, hh };
@@ -713,7 +767,7 @@ static slot *lookup(gs_glyphs *g, const gs_font *f, int glyph, int size4) {
                 SDL_UpdateTexture(g->tex, &dst, px, w * 4);
                 free(px);
             }
-            *s = (slot){ f, glyph, size4, g->shelf_x, g->shelf_y, w, hh, img.ox, img.oy, g->deferred, colour };
+            *s = (slot){ f, glyph, size4, (uint8_t)tone, (uint8_t)phase, g->shelf_x, g->shelf_y, w, hh, img.ox, img.oy, g->deferred, colour };
             g->shelf_x += w;
             if (hh > g->shelf_h) g->shelf_h = hh;
             g->used++;
@@ -727,7 +781,19 @@ static slot *lookup(gs_glyphs *g, const gs_font *f, int glyph, int size4) {
 void gs_glyphs_draw(gs_glyphs *g, const gs_font *f, int glyph, float px, float x, float y, float angle,
                     SDL_FColor colour, float reveal) {
     if (reveal <= 0) return;
-    slot *s = lookup(g, f, glyph, (int)lroundf(px * 4));
+    // Upright text is drawn on whole pixels, from the glyph rasterized at the nearest quarter pixel to
+    // where it falls between them: sharper than one image of it resampled to every position. A font
+    // with colour glyphs is drawn as before, and text at an angle is resampled as it must be.
+    int tone = 0, phase = 0;
+    if (!f->colr && !f->cblc && !f->sbix) {
+        tone = (int)lroundf(lightness(g, colour) * (TONES - 1));
+        if (angle == 0) {
+            const float whole = floorf(x * PHASES + 0.5f) / PHASES;
+            phase = (int)lroundf((whole - floorf(whole)) * PHASES) % PHASES;
+            x = floorf(whole), y = roundf(y);
+        }
+    }
+    slot *s = lookup(g, f, glyph, (int)lroundf(px * 4), tone, phase);
     if (!s || s->w <= 2) return;
     if (s->pending) { g->waiting = true; return; }
     float wr = reveal >= 1 ? (float)s->w : s->w * reveal;
