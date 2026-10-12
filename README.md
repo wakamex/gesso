@@ -6,6 +6,14 @@ Gesso is the chalk ground a painter lays on a panel before painting: the layer e
 
 Every module works on all three desktop systems: Windows, macOS and Linux. Code that differs by platform, such as system font paths, process memory and CPU figures, or file mapping, has a branch for each of the three, and a module is finished only when it builds and runs on all of them. A dependency that does not reach one of the three is not taken. Where a platform genuinely lacks a feature, this README says so and names what is missing. The web is a target as well, and a module that cannot run there says why.
 
+gesso is not a toolkit. Its apps draw their own interfaces, and gesso supplies what they cannot build for themselves. An addition has to pass three tests:
+
+1. The app cannot do it on top. Something that needs gesso's internals or a platform call belongs here: the Tab order, hit testing, text editing, a system's keychain or notifications. Something an app can write with gesso's public calls goes to the second test.
+2. A second app has written the same lines. One app's need stays in that app, built on the primitives (`gs_ui_activated`, `gs_ui_focus_mark`, `gs_draw`). When a second app writes the same thing, it is lifted into gesso.
+3. It is a value, not a system. A control may take a few plain values: a colour, a radius, one kind out of two or three. It does not take a style object, a theme, a table of styles per state, or anything that inherits or cascades.
+
+Two things gesso never becomes, whatever passes those tests. It does not keep widgets: there are no widget objects, no widget tree and no callbacks for clicks, and the app's own code is the interface, drawn anew each frame. And it does not lay interfaces out: rectangles are cut by hand, with no flex, grid, constraints or containers that size themselves.
+
 ## Modules
 
 | Module | What it does |
