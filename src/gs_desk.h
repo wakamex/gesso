@@ -80,8 +80,20 @@ void gs_clipboard_free(gs_clip *snap);
 // has no call for all virtual desktops, so there it stays on the one it was shown on; above a
 // full-screen game that owns the display, no window shows on any system. Under Wayland alone a
 // window cannot be placed, so SDL_SetWindowPosition does nothing and the compositor chooses.
+//
+// On an X display with no window manager at all (a bare Xvfb), SDL gives the keyboard to every
+// window it shows, this one included; under any window manager it does not. A test that checks the
+// keyboard stays where it was needs a window manager running (Openbox will do).
 SDL_Window *gs_overlay_window(const char *title, int w, int h);
 void gs_overlay_show(SDL_Window *win, bool shown);
+
+// ---- The tray ----
+//
+// SDL has the tray (SDL_CreateTray and its menus), and gesso adds nothing to it. Two things to
+// know when using it: on Linux it needs libayatana-appindicator and fails without it, so check what
+// SDL_CreateTray returns and offer another way in (a window, a command); and SDL_GetTrayEntries
+// returns SDL's own array, which shifts as entries are removed, so remove entries from the last to
+// the first or fetch the array again after each removal.
 
 // ---- One instance ----
 

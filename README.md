@@ -76,6 +76,13 @@ zig build -Dtarget=aarch64-macos -Dmacos_sdk=$HOME/.local/share/macos-sdk/MacOSX
 
 Tests built this way run on a Mac, not on the host. An app that depends on gesso passes the same option to gesso and adds the SDK's framework, include and library paths to its own modules.
 
+On macOS a program must be an app bundle to ask for the microphone or to stay out of the Dock. `tools/bundle-macos.sh`, run on a Mac, makes one from a built executable: an `Info.plist` with the usage strings given, an icon from a PNG, the files that go beside the program, and a signature, ad hoc or with a named certificate so that the permissions a user grants survive the next build. Its options are listed at the top of the script:
+
+```sh
+tools/bundle-macos.sh -n Example -e zig-out/bin/example -i com.example.app -v 1.0.0 -c icon.png -b \
+    -u "NSMicrophoneUsageDescription=Example records while you dictate."
+```
+
 `-Dvideo=true` adds the video modules (`gs_aac`, `gs_video`, `gs_live`) and builds [FFmpeg](https://ffmpeg.org/)'s libavcodec and libavutil into gesso, trimmed to H.264, AAC and each system's hardware decoding, from FFmpeg's release tarball and the configure output stored in `ffmpeg/` (made by `ffmpeg/tools/import.sh`). It is configured for x86-64 Linux and Windows and aarch64 macOS.
 
 For the web, compile the files in `src/` together with the app with Emscripten and `-sUSE_SDL=3`, and use SDL's main callbacks (`SDL_MAIN_USE_CALLBACKS`) so the browser can run the loop.
@@ -85,6 +92,8 @@ For the web, compile the files in `src/` together with the app with Emscripten a
 Accessibility: gesso apps draw their own interface, so screen readers and other assistive technology see nothing in them. That is acceptable for games and personal tools but not for an app offered to the public. The likely route is [AccessKit](https://github.com/AccessKit/accesskit), which implements each platform's accessibility API and has C bindings: an app describes its interface as a tree of nodes, and AccessKit answers the screen reader. Revisit before a gesso app is offered as a general-purpose app, or as soon as someone who uses a screen reader wants to use one.
 
 Web sign-in: an app that signs in to a web service through the service's own page needs a small browser window that watches for the page to finish and hands over its cookies. [gtube](https://github.com/wakamex/gtube) has one in `src/signin.c`: WebView2 on Windows, WebKit on macOS (`src/signin_mac.m`), and on Linux WebKitGTK for GTK 3 or GTK 4 in a process of its own, loaded at run time so nothing is needed to build, writing a Netscape cookie file. It becomes a gesso module when a second gesso app needs to sign in, with the start URL, the URLs that mean done, the cookie domains, the cookie that proves the sign-in and the window title as parameters, and the Google and YouTube specifics left in gtube. The web build has no use for it, since a page there signs in with the browser itself.
+
+A tray on every Linux desktop: SDL's tray (`SDL_CreateTray`) needs libayatana-appindicator on Linux and fails without it, and GNOME shows no tray at all without an extension. A tray that speaks the StatusNotifierItem protocol over D-Bus itself, as Electron's does, would work wherever a desktop has a tray. No gesso app has needed it enough yet; the first that ships to Linux desktops without that library is the trigger.
 
 ## Licence
 
