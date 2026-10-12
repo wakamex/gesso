@@ -124,6 +124,7 @@ struct gs_ui {
     char tip_text[400];
     bool tip_wanted;
     int wait_ms;
+    bool focus_moved;        // the keyboard went to another control since the last frame ended
     bool had_input;          // this frame was handed a press, a release, the wheel, a key or text
     wrap_entry wraps[WRAPS];  // wrapped text kept, so text drawn every frame is broken into lines once
     char *piece;              // a line's text, copied out to be shaped
@@ -229,7 +230,7 @@ bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
 
 static void set_focus(gs_ui *ui, uint32_t h) {
     if (h == ui->focus) return;
-    ui->focus = h, ui->caret_since = ui->now;
+    ui->focus = h, ui->caret_since = ui->now, ui->focus_moved = true;
     if (SDL_TextInputActive(ui->win)) SDL_StopTextInput(ui->win);
     ui->composition[0] = 0;
 }
@@ -1592,6 +1593,7 @@ void gs_ui_end(gs_ui *ui) {
     }
     if (gs_glyphs_waiting(ui->glyphs)) ui->wait_ms = 0;  // a glyph is missing from this frame: the next one has it
     if (ui->modal_last && !ui->modal_now) ui->wait_ms = 0;   // a modal has gone: the next frame takes input again
+    if (ui->focus_moved) ui->wait_ms = 0, ui->focus_moved = false;  // a control given the keyboard takes it when it is next drawn: text input starts then, before the first key
     if (ui->had_input) ui->wait_ms = 0;  // what a click or a key changed shows from the next frame, in the controls drawn before the one that took it
     if (!ui->capture_drawn) ui->capture = 0;  // (a hotkey field no longer drawn waits for nothing)
     if (ui->cursor_want != ui->cursor_now) {  // the pointer's shape, for a link or a field under it

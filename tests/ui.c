@@ -525,6 +525,7 @@ static void test_ui_draw(SDL_Renderer *r) {
     SDL_DestroySurface(s);
     CHECK(gs_ease(0) == 0 && gs_ease(1) == 1 && gs_ease(0.5f) > 0.5f && gs_ease(2) == 1);
 
+    gs_ui_begin(ui), gs_ui_end(ui);  // (the tests before this one moved the keyboard, which asks for a frame)
     gs_ui_begin(ui);
     CHECK(gs_ui_ease(ui, "ease", 10, 1000) == 10);  // at its target when first asked
     gs_ui_end(ui);
@@ -545,6 +546,15 @@ static void test_ui_draw(SDL_Renderer *r) {
     CHECK(gs_ui_wait_ms(ui) == 0);
     gs_ui_begin(ui), gs_ui_end(ui);
     CHECK(gs_ui_wait_ms(ui) == -1);
+
+    // Giving a control the keyboard asks for a frame too, in which a field starts taking text.
+    gs_ui_focus(ui, "somewhere");
+    gs_ui_begin(ui), gs_ui_end(ui);
+    CHECK(gs_ui_wait_ms(ui) == 0);
+    gs_ui_begin(ui), gs_ui_end(ui);
+    CHECK(gs_ui_wait_ms(ui) == -1);
+    gs_ui_focus(ui, NULL);
+    gs_ui_begin(ui), gs_ui_end(ui);
 
     // Opacity fades what is drawn, controls included, and a frame starts opaque.
     gs_ui_begin(ui);
