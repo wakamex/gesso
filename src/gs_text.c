@@ -499,6 +499,7 @@ struct gs_glyphs {
     upload *uploads;
     int nuploads, uploads_cap;
     float gamma, behind;
+    float untinted;    // the colour glyphs are drawn in when they are to be left as they are
     uint8_t correct[TONES][256];  // coverage to alpha, for each lightness of text
     bool made[TONES];
 };
@@ -508,6 +509,11 @@ gs_glyphs *gs_glyphs_new(SDL_Renderer *r, int atlas_size) {
     g->r = r;
     g->size = atlas_size;
     g->gamma = 2.2f, g->behind = -1;
+    // SDL's software renderer draws an untinted texture by another path than a tinted one, and prepares
+    // the whole atlas again each time a frame goes from one to the other (tens of milliseconds a frame
+    // with white text among coloured): there, nothing is drawn quite untinted.
+    const char *name = SDL_GetRendererName(r);
+    g->untinted = name && !strcmp(name, SDL_SOFTWARE_RENDERER) ? 254.f / 255 : 1;
     g->tex = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, atlas_size, atlas_size);
     SDL_SetTextureBlendMode(g->tex, SDL_BLENDMODE_BLEND);
     SDL_SetTextureScaleMode(g->tex, SDL_SCALEMODE_LINEAR);
@@ -800,7 +806,7 @@ void gs_glyphs_draw(gs_glyphs *g, const gs_font *f, int glyph, float px, float x
     SDL_FRect src = { (float)s->x, (float)s->y, wr, (float)s->h };
     SDL_FRect dst = { x + s->ox, y + s->oy, wr, (float)s->h };
     SDL_FPoint centre = { (float)-s->ox, (float)-s->oy };
-    if (s->colour) SDL_SetTextureColorModFloat(g->tex, 1, 1, 1);  // (its own colours)
+    if (s->colour || (colour.r >= g->untinted && colour.g >= g->untinted && colour.b >= g->untinted)) SDL_SetTextureColorModFloat(g->tex, g->untinted, g->untinted, g->untinted);  // (its own colours, or white)
     else SDL_SetTextureColorModFloat(g->tex, colour.r, colour.g, colour.b);
     SDL_SetTextureAlphaModFloat(g->tex, colour.a);
     SDL_RenderTextureRotated(g->r, g->tex, &src, &dst, angle, &centre, SDL_FLIP_NONE);
