@@ -177,6 +177,35 @@ static bool gate;
 
 // A second small interface: two buttons with one label, a control of the app's own, a slider, and a
 // button that is disabled while `gate` is set.
+// A one-line text too long for its rectangle is cut and ends with an ellipsis. Thousands of different
+// texts, so that some share the ellipsis's place in the fontset's cache of shaped lines, where taking
+// the ellipsis's measure puts the text's own line out: each must still fill most of the room. Freed
+// memory is overwritten for the test where the C library can do that (glibc), so that a line read
+// after it was put out is read wrong.
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
+static void test_ui_cut(void) {
+    if (gs_ui_text_width(ui, "Hello", 14) <= 0) return;  // (no font to shape with)
+    int narrow = 0;
+#ifdef __GLIBC__
+    mallopt(M_PERTURB, 0x5a);
+#endif
+    gs_ui_begin(ui);
+    for (int i = 0; i < 3000; i++) {
+        char text[96];
+        SDL_snprintf(text, sizeof text, "Conversation %d with a title much too long for the room it has", i);
+        float w = gs_ui_text(ui, (gs_rect){ 0, 200, 200, 20 }, text, 14, gs_ui_style_of(ui)->text, -1);
+        if (w < 150 || w > 200) narrow++;
+    }
+    gs_ui_end(ui);
+#ifdef __GLIBC__
+    mallopt(M_PERTURB, 0);
+#endif
+    CHECK(narrow == 0);
+    if (narrow) fprintf(stderr, "  %d of 3000 cut texts did not fill their room\n", narrow);
+}
+
 static void keyboard_frame(void) {
     gs_ui_begin(ui);
     first = gs_ui_button(ui, (gs_rect){ 0, 0, 80, 30 }, "Remove");
@@ -678,6 +707,7 @@ void test_ui(void) {
     fs = gs_fontset_system();
     ui = gs_ui_new(w, r, fs);
     test_ui_multiline();
+    test_ui_cut();
     gs_ui_free(ui);
     gs_fontset_free(fs);
     SDL_DestroyRenderer(r);

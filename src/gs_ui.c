@@ -322,7 +322,11 @@ static float text_now(gs_ui *ui, gs_rect r, const char *text, float size, SDL_FC
     bool rtl = l->rtl;
     char cut[512];
     if (width > avail) {  // the longest start that fits beside an ellipsis
+        // (The fontset keeps a line only until its next call, and measuring the ellipsis is one: the
+        // text's line is asked for again after it.)
         float ell = gs_fontset_width(ui->fonts, size * s, "\xE2\x80\xA6");
+        l = gs_fontset_line(ui->fonts, size * s, text);
+        if (!l) return 0;
         int keep = 0;
         for (int i = 0; i < l->count; i++) {
             const gs_glyph_pos *g = &l->glyphs[i];
