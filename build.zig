@@ -216,7 +216,7 @@ pub fn build(b: *std.Build) void {
         .macos => {
             mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_macos.c", "gs_desk_unix.c" }, .flags = flags });
             for ([_][]const u8{ "gs_desk_macos.m", "gs_notify_macos.m" }) |f| mod.addCSourceFile(.{ .file = b.path(b.fmt("src/{s}", .{f})), .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra", "-Wno-unused-parameter" } });
-            for ([_][]const u8{ "AppKit", "Carbon", "ApplicationServices", "UserNotifications" }) |f| mod.linkFramework(f, .{});
+            for ([_][]const u8{ "AppKit", "Carbon", "ApplicationServices", "UserNotifications", "Security" }) |f| mod.linkFramework(f, .{});
         },
         .linux => mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_linux.c", "gs_desk_unix.c", "gs_notify_linux.c" }, .flags = flags }),
         else => {},

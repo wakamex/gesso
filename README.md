@@ -34,7 +34,7 @@ Two things gesso never becomes, whatever passes those tests. It does not keep wi
 | `gs_sha256` | SHA-256, for checking downloads against published checksums |
 | `gs_json` | JSON read and written: a read-only tree with NULL-safe lookups and dotted paths for reading, and values that are built, changed, merged over defaults, and written compact or indented, to text or to a file replaced whole |
 | `gs_http` | HTTPS requests from worker threads: WinHTTP on Windows, the system's libcurl (loaded at run time) on Linux and macOS, and the curl program where neither is usable; whole bodies, files or streamed ranges, with a progress hook that can give a request up |
-| `gs_secret` | A small secret such as a sign-in token kept for the current user: encrypted with the Data Protection API on Windows, an owner-only file on Linux and macOS |
+| `gs_secret` | A small secret such as a sign-in token or a database key, kept for the user in the system's own place: a file encrypted with the Data Protection API on Windows, the login Keychain on macOS, and the desktop's Secret Service on Linux, with a file only its owner can read where there is none |
 | `gs_oauth` | Signing in with OAuth 2.0's device authorization grant: a short code the user enters in their own browser, then polling for tokens; no embedded browser |
 | `gs_hls` | HTTP Live Streaming playlists: a master playlist's renditions and a media playlist's segments, with unknown tags passed to the app |
 | `gs_ts`, `gs_mp4` | Demuxers for HLS segments, MPEG transport stream and fragmented MP4: H.264 access units in Annex B form and AAC frames out, with presentation times (`gs_media.h`) |
