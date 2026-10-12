@@ -60,6 +60,14 @@ void test_desk(void) {
         SDL_SetAtomicInt(&got_args, 0);
         char *again[] = { "--again" };  // and a second forward straight after the first
         CHECK(gs_instance_forward(dir, 1, again) && wait_for(&got_args, 2000) && !strcmp(first_arg, "--again"));
+#ifndef _WIN32
+        // A folder whose path is too long for a socket's address is guarded all the same.
+        char deep[1400];
+        SDL_snprintf(deep, sizeof deep, "%s%0150d/%0150d", pref, 1, 2);  // (the same folder each run, so one socket is left behind, not one a run)
+        SDL_SetAtomicInt(&got_args, 0);
+        CHECK(!gs_instance_forward(deep, 1, args) && gs_instance_acquire(deep, on_args) && !gs_instance_acquire(deep, on_args));
+        CHECK(gs_instance_forward(deep, 1, args) && wait_for(&got_args, 2000) && !strcmp(first_arg, "--toggle"));
+#endif
         SDL_free(pref);
     }
 

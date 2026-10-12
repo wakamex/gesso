@@ -9,16 +9,23 @@
 #include "gs_desk.h"
 
 static void (*on_args)(int argc, char **argv);
-static int server = -1;
 
+// The socket's place: in the data folder, or, for a folder whose path is too long for a socket's
+// address (about 100 bytes), in the user's runtime folder or /tmp under a name made from the path.
 static bool address(const char *data_dir, struct sockaddr_un *addr) {
     SDL_zerop(addr);
     addr->sun_family = AF_UNIX;
-    return SDL_snprintf(addr->sun_path, sizeof addr->sun_path, "%s/instance.sock", data_dir) < (int)sizeof addr->sun_path;
+    if (SDL_snprintf(addr->sun_path, sizeof addr->sun_path, "%s/instance.sock", data_dir) < (int)sizeof addr->sun_path) return true;
+    unsigned hash = 2166136261u;
+    for (const char *p = data_dir; *p; p++) hash = (hash ^ (unsigned char)*p) * 16777619u;
+    const char *runtime = SDL_getenv("XDG_RUNTIME_DIR");
+    if (runtime && SDL_snprintf(addr->sun_path, sizeof addr->sun_path, "%s/gesso-instance-%08x.sock", runtime, hash) < (int)sizeof addr->sun_path) return true;
+    return SDL_snprintf(addr->sun_path, sizeof addr->sun_path, "/tmp/gesso-instance-%u-%08x.sock", (unsigned)getuid(), hash) < (int)sizeof addr->sun_path;
 }
 
 // Arguments travel as their count, then each one ended by a zero byte.
 static int listener(void *user) {
+    int server = (int)(intptr_t)user;
     for (;;) {
         int fd = accept(server, NULL, NULL);
         if (fd < 0) { if (errno == EINTR) continue; return 0; }
@@ -47,16 +54,16 @@ bool gs_instance_forward(const char *data_dir, int argc, char **argv) {
 
 bool gs_instance_acquire(const char *data_dir, void (*args)(int argc, char **argv)) {
     struct sockaddr_un addr;
-    if (!address(data_dir, &addr)) return true;  // a folder too deep for a socket: run without the guard
+    if (!address(data_dir, &addr)) return true;  // nowhere for a socket: run without the guard
     // A socket that answers is a running instance. One that does not was left by a crash.
     int probe = socket(AF_UNIX, SOCK_STREAM, 0);
     bool running = probe >= 0 && !connect(probe, (struct sockaddr *)&addr, sizeof addr);
     if (probe >= 0) close(probe);
     if (running) return false;
     unlink(addr.sun_path);
-    server = socket(AF_UNIX, SOCK_STREAM, 0);
+    int server = socket(AF_UNIX, SOCK_STREAM, 0);
     if (server < 0 || bind(server, (struct sockaddr *)&addr, sizeof addr) || listen(server, 8)) return true;
     on_args = args;
-    SDL_DetachThread(SDL_CreateThread(listener, "instance", NULL));
+    SDL_DetachThread(SDL_CreateThread(listener, "instance", (void *)(intptr_t)server));
     return true;
 }
