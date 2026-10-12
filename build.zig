@@ -212,13 +212,13 @@ pub fn build(b: *std.Build) void {
     // gs_desk, one implementation per system.
     mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{"gs_desk.c"}, .flags = flags });
     switch (target.result.os.tag) {
-        .windows => mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{"gs_desk_windows.c"}, .flags = flags }),
+        .windows => mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_windows.c", "gs_notify_windows.c" }, .flags = flags }),
         .macos => {
             mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_macos.c", "gs_desk_unix.c" }, .flags = flags });
-            mod.addCSourceFile(.{ .file = b.path("src/gs_desk_macos.m"), .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra", "-Wno-unused-parameter" } });
-            for ([_][]const u8{ "AppKit", "Carbon", "ApplicationServices" }) |f| mod.linkFramework(f, .{});
+            for ([_][]const u8{ "gs_desk_macos.m", "gs_notify_macos.m" }) |f| mod.addCSourceFile(.{ .file = b.path(b.fmt("src/{s}", .{f})), .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra", "-Wno-unused-parameter" } });
+            for ([_][]const u8{ "AppKit", "Carbon", "ApplicationServices", "UserNotifications" }) |f| mod.linkFramework(f, .{});
         },
-        .linux => mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_linux.c", "gs_desk_unix.c" }, .flags = flags }),
+        .linux => mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_linux.c", "gs_desk_unix.c", "gs_notify_linux.c" }, .flags = flags }),
         else => {},
     }
     if (target.result.isGnuLibC() and target.result.os.versionRange().gnuLibCVersion().?.order(.{ .major = 2, .minor = 29, .patch = 0 }) == .lt)
@@ -238,7 +238,7 @@ pub fn build(b: *std.Build) void {
 
     // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "hls.c", "http.c", "json.c", "live.c", "desk.c", "media.c", "oauth.c", "secret.c", "stream.c", "text.c", "ui.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "hls.c", "http.c", "json.c", "live.c", "desk.c", "media.c", "notify.c", "oauth.c", "secret.c", "stream.c", "text.c", "ui.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
     tests.addIncludePath(b.path("src"));
     if (av) |a| for (a.include) |dir| tests.addIncludePath(dir);
     useSdk(tests, macos_sdk);
@@ -297,6 +297,20 @@ pub fn build(b: *std.Build) void {
     overlay_run.step.dependOn(&b.addInstallArtifact(overlay_exe, .{}).step);
     overlay_run.addPassthruArgs();
     b.step("bench-overlay", "Show the overlay window on the desktop for a few seconds").dependOn(&overlay_run.step);
+
+    // zig build bench-notify -- [TITLE] [BODY] [SECONDS]: a desktop notification, waiting for its click.
+    const notify_bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    notify_bench.addCSourceFile(.{ .file = b.path("bench/notify.c"), .flags = flags });
+    notify_bench.addIncludePath(b.path("src"));
+    useSdk(notify_bench, macos_sdk);
+    notify_bench.linkLibrary(lib);
+    const notify_exe = b.addExecutable(.{ .name = "bench-notify", .root_module = notify_bench });
+    const notify_install = b.addInstallArtifact(notify_exe, .{});
+    const notify_run = b.addRunArtifact(notify_exe);
+    notify_run.step.dependOn(&notify_install.step);
+    notify_run.addPassthruArgs();
+    b.step("bench-notify", "Show a desktop notification and wait for its click").dependOn(&notify_run.step);
+    b.step("benches", "Build the benches without running them").dependOn(&notify_install.step);
 
     // zig build bench-video -Dvideo -- FILE.h264: decoding paths compared on this machine (bench/video.c).
     if (av) |a| {
