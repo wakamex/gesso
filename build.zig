@@ -294,7 +294,8 @@ pub fn build(b: *std.Build) void {
     overlay_bench.linkLibrary(lib);
     const overlay_exe = b.addExecutable(.{ .name = "bench-overlay", .root_module = overlay_bench });
     const overlay_run = b.addRunArtifact(overlay_exe);
-    overlay_run.step.dependOn(&b.addInstallArtifact(overlay_exe, .{}).step);
+    const overlay_install = b.addInstallArtifact(overlay_exe, .{});
+    overlay_run.step.dependOn(&overlay_install.step);
     overlay_run.addPassthruArgs();
     b.step("bench-overlay", "Show the overlay window on the desktop for a few seconds").dependOn(&overlay_run.step);
 
@@ -310,7 +311,9 @@ pub fn build(b: *std.Build) void {
     notify_run.step.dependOn(&notify_install.step);
     notify_run.addPassthruArgs();
     b.step("bench-notify", "Show a desktop notification and wait for its click").dependOn(&notify_run.step);
-    b.step("benches", "Build the benches without running them").dependOn(&notify_install.step);
+    const benches = b.step("benches", "Build the benches without running them");
+    benches.dependOn(&notify_install.step);
+    benches.dependOn(&overlay_install.step);
 
     // zig build bench-video -Dvideo -- FILE.h264: decoding paths compared on this machine (bench/video.c).
     if (av) |a| {
