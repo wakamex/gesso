@@ -219,6 +219,29 @@ static void test_ui_cut(void) {
     if (narrow) fprintf(stderr, "  %d of 3000 cut texts did not fill their room\n", narrow);
 }
 
+// A menu hung from something near the bottom of the window opens upward, and is chosen from there.
+static int menu_chosen;
+static void menu_frame(gs_rect anchor) {
+    gs_ui_begin(ui);
+    if (gs_ui_menu_begin(ui, "menu", anchor, 120)) {
+        for (int i = 1; i <= 3; i++)
+            if (gs_ui_menu_item(ui, i == 1 ? "One" : i == 2 ? "Two" : "Three", true)) menu_chosen = i;
+        gs_ui_menu_end(ui);
+    }
+    gs_ui_end(ui);
+}
+
+static void test_ui_menu(void) {
+    const float row = gs_ui_style_of(ui)->row;
+    const gs_rect low = { 10, 270, 80, 20 }, high = { 10, 20, 80, 20 };  // (in a window 300 high)
+    gs_ui_menu_toggle(ui, "menu"), menu_frame(low), menu_frame(low);
+    menu_chosen = 0, click(20, 270 - 2 - 3 * row + row * 1.5f), menu_frame(low);  // the second of three rows ending just above the anchor
+    CHECK(menu_chosen == 2);
+    gs_ui_menu_toggle(ui, "menu"), menu_frame(high), menu_frame(high);
+    menu_chosen = 0, click(20, 20 + 20 + 2 + row * 2.5f), menu_frame(high);        // with room below, the third row below it
+    CHECK(menu_chosen == 3);
+}
+
 static void keyboard_frame(void) {
     gs_ui_begin(ui);
     first = gs_ui_button(ui, (gs_rect){ 0, 0, 80, 30 }, "Remove");
@@ -740,6 +763,7 @@ void test_ui(void) {
     key(SDLK_RETURN, 0), frame();
     CHECK(activated);
 
+    test_ui_menu();
     test_ui_keyboard();
     test_ui_form();
     test_ui_hotkey();

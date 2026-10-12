@@ -114,7 +114,7 @@ struct gs_ui {
     int nfl;
     uint32_t menu;           // the menu being built
     gs_rect menu_rect;
-    float menu_y;
+    float menu_y, menu_above;  // menu_above: where its bottom goes when it opens upward
     int menu_background;     // its background in the floating layer, sized when the menu ends
     int menu_at, menu_count; // the row the keyboard highlights (from 1), and the rows so far
     bool menu_choose;
@@ -1213,6 +1213,11 @@ bool gs_ui_menu_begin(gs_ui *ui, const char *id, gs_rect anchor, float width) {
     ui->menu_choose = w->cursor && w->opened != ui->frame && (gs_ui_key(ui, SDLK_SPACE, 0) || gs_ui_key(ui, SDLK_RETURN, 0) || gs_ui_key(ui, SDLK_KP_ENTER, 0));
     ui->menu_at = w->cursor, ui->menu_count = 0;
     ui->menu_rect = (gs_rect){ fminf(anchor.x, ui->area.w - width - 4), anchor.y + anchor.h + 2, width, 0 };
+    // Below what it hangs from, or above when it would not fit below and does above (its height is
+    // its rows', as counted last frame; in its first frame gs_ui_menu_end moves it instead).
+    ui->menu_above = anchor.y - 2;
+    const float h = (float)n * ui->style.row;
+    if (n && ui->menu_rect.y + h > ui->area.h - 4 && ui->menu_above - h >= 4) ui->menu_rect.y = ui->menu_above - h;
     ui->menu_y = ui->menu_rect.y;
     ui->in_float = true;
     // Its background goes first; its height is known once the items are in.
@@ -1235,6 +1240,13 @@ bool gs_ui_menu_item(gs_ui *ui, const char *label, bool enabled) {
 void gs_ui_menu_end(gs_ui *ui) {
     ui->menu_rect.h = ui->menu_y - ui->menu_rect.y;
     if (ui->menu_background < ui->nfl) ui->fl[ui->menu_background].r.h = ui->menu_rect.h;
+    widget *counted = state(ui, ui->menu);
+    if (!counted->anchor && ui->menu_rect.y + ui->menu_rect.h > ui->area.h - 4 && ui->menu_above - ui->menu_rect.h >= 4) {
+        // (its first frame, with its rows not yet counted: what it drew is moved above)
+        const float up = ui->menu_rect.y - (ui->menu_above - ui->menu_rect.h);
+        for (int i = ui->menu_background; i < ui->nfl; i++) ui->fl[i].r.y -= up;
+        ui->menu_rect.y -= up;
+    }
     gs_ui_outline(ui, ui->menu_rect, ui->style.radius, 1, ui->style.border);
     ui->in_float = false;
     ui->float_now = ui->menu_rect, ui->float_now_on = true;

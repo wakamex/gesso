@@ -217,7 +217,8 @@ bool gs_ui_dropdown(gs_ui *ui, gs_rect r, const char *id, const char *const *ite
 // wrapped when it is longer than 280 points, so a line cut short can show its whole text.
 void gs_ui_tooltip(gs_ui *ui, gs_rect r, const char *text);
 
-// A menu in the floating layer below `anchor`: gs_ui_menu_toggle opens or closes it; while open,
+// A menu in the floating layer below `anchor`, or above it when there is no room below and there is
+// above: gs_ui_menu_toggle opens or closes it; while open,
 // gs_ui_menu_begin returns true and gs_ui_menu_item adds rows (true when chosen, which closes it).
 void gs_ui_menu_toggle(gs_ui *ui, const char *id);
 bool gs_ui_menu_begin(gs_ui *ui, const char *id, gs_rect anchor, float width);
