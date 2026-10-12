@@ -972,6 +972,12 @@ static bool covers(gs_font *f, const char *p, const char *end) {
     return true;
 }
 
+bool gs_fontset_vmetrics(gs_fontset *fs, float px, float *ascent, float *descent, float *line_gap) {
+    for (int i = 0; i < fs->n; i++)
+        if (!fs->emoji[i] && font_at(fs, i)) return gs_font_vmetrics(fs->font[i], px, ascent, descent, line_gap), true;
+    return false;
+}
+
 // The font for one grapheme: an emoji font for emoji, otherwise the first text font that has all its
 // characters, then the first font of any kind that has them (an emoji font often has digits and a
 // space of its own, which are not to replace the text font's wherever it stands in the chain), then

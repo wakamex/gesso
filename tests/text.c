@@ -28,6 +28,14 @@ void test_text(void) {
     gs_fontset *fs = gs_fontset_system();
     gs_line *l = gs_fontset_shape(fs, 20, "Office");
     if (l && l->count) {
+        // The set's text font's metrics: the letters stand on the baseline and reach below it, within about an em and a half.
+        float ascent = 0, descent = 0, gap = -1;
+        CHECK(gs_fontset_vmetrics(fs, 20, &ascent, &descent, &gap));
+        CHECK(ascent > 10 && ascent < 30 && descent < 0 && descent > -15 && gap >= 0);
+        CHECK(gs_fontset_vmetrics(fs, 40, &gap, NULL, NULL) && fabsf(gap - 2 * ascent) < 1e-3f);
+        gs_fontset *none = gs_fontset_new();
+        CHECK(!gs_fontset_vmetrics(none, 20, &ascent, &descent, &gap));
+        gs_fontset_free(none);
         CHECK(l->width > 0 && !l->rtl);
         for (int i = 1; i < l->count; i++) CHECK(l->glyphs[i].x >= l->glyphs[i - 1].x && l->glyphs[i].cluster > l->glyphs[i - 1].cluster);
         CHECK(gs_line_caret(l, 0) == 0 && gs_line_caret(l, 6) == l->width);

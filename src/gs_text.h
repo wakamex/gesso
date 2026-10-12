@@ -73,6 +73,10 @@ void gs_fontset_add(gs_fontset *fs, const char *path);  // missing files are ski
 // a family as separate people, which a font with those sequences as glyphs does not).
 void gs_fontset_prepend(gs_fontset *fs, const char *path);
 void gs_fontset_free(gs_fontset *fs);
+// The vertical metrics, as gs_font_vmetrics gives them (the descent is below zero), of the set's
+// first text font: the one Latin text is drawn with, which for a system set the app does not know
+// the file of. False when the set has no text font that loads.
+bool gs_fontset_vmetrics(gs_fontset *fs, float px, float *ascent, float *descent, float *line_gap);
 float gs_fontset_draw(gs_glyphs *g, gs_fontset *fs, float px, float x, float y, const char *utf8, SDL_FColor colour);
 float gs_fontset_width(gs_fontset *fs, float px, const char *utf8);
 

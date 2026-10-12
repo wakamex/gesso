@@ -160,7 +160,7 @@ gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
         .accent_text = { 0.04f, 0.07f, 0.06f, 1 }, .border = { 0.22f, 0.24f, 0.235f, 1 }, .warning = { 0.95f, 0.60f, 0.29f, 1 },
         .text_px = 14, .small_px = 12, .row = 30,
     };
-    ui->style.focus = ui->style.accent, ui->style.button_radius = -1;
+    ui->style.focus = ui->style.accent, ui->style.button_radius = -1, ui->style.line_height = 1.4f;
     ui->opacity = 1;
     ui->pending.x = ui->pending.y = OUTSIDE;  // until the pointer is seen in the window
     return ui;
@@ -427,7 +427,7 @@ static const char *piece(gs_ui *ui, const char *text, int from, int to) {
     return ui->piece;
 }
 
-float gs_ui_line_height(const gs_ui *ui, float size) { (void)ui; return size * 1.4f; }
+float gs_ui_line_height(const gs_ui *ui, float size) { return size * (ui->style.line_height > 0 ? ui->style.line_height : 1.4f); }
 
 float gs_ui_text_height(gs_ui *ui, const char *text, float size, float width) {
     const gs_wrap *w = wrap_of(ui, text, size, width);
