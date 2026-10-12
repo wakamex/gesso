@@ -22,6 +22,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const video = b.option(bool, "video", "Build the video modules on FFmpeg's libavcodec (fetched only when set)") orelse false;
+    const echo = b.option(bool, "echo", "Give gs_voice WebRTC's echo canceller (its sources are fetched only when set)") orelse false;
 
     // A macOS SDK (the MacOSX.sdk folder from Xcode) lets a macOS build run on any host.
     const macos_sdk = b.option(std.Build.LazyPath, "macos_sdk", "Path of a macOS SDK, for building for macOS on another system");
@@ -193,7 +194,7 @@ pub fn build(b: *std.Build) void {
     const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
     mod.addCSourceFiles(.{
         .root = b.path("src"),
-        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_draw.c", "gs_voice.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c" },
+        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_draw.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c" },
         .flags = flags,
     });
     mod.addIncludePath(b.path("src"));
@@ -234,6 +235,19 @@ pub fn build(b: *std.Build) void {
     }
     // gs_sound plays AAC through gs_aac, where gesso has it.
     mod.addCSourceFile(.{ .file = b.path("src/gs_sound.c"), .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_HAVE_AAC"} else flags });
+
+    // gs_voice cancels echo through WebRTC's canceller, where gesso has it.
+    const aec = if (echo) addEchoCanceller(b, target, macos_sdk) else null;
+    if (aec) |a| {
+        mod.linkLibrary(a.lib);
+        mod.link_libcpp = true;
+        const shim = b.createModule(.{ .target = target, .optimize = optimize, .link_libcpp = true, .sanitize_c = .off });
+        useSdk(shim, macos_sdk);
+        for (a.include) |dir| shim.addIncludePath(dir);
+        shim.addCSourceFile(.{ .file = b.path("src/gs_echo.cc"), .flags = a.flags });
+        mod.addObject(b.addObject(.{ .name = "gs_echo", .root_module = shim }));
+    }
+    mod.addCSourceFile(.{ .file = b.path("src/gs_voice.c"), .flags = if (aec != null) flags ++ &[_][]const u8{"-DGS_HAVE_ECHO"} else flags });
 
     const lib = b.addLibrary(.{ .name = "gesso", .linkage = .static, .root_module = mod });
     lib.installHeadersDirectory(b.path("src"), "", .{ .include_extensions = &.{".h"} });
@@ -367,6 +381,67 @@ pub fn build(b: *std.Build) void {
 
 // FFmpeg's libavcodec and libavutil, trimmed to the H.264 and AAC decoders and each system's hardware
 // decoding, built from the release tarball with the files configure generated for each target
+// WebRTC's echo canceller (AEC3) and the parts of its audio processing module it stands on, from
+// the webrtc-audio-processing release, with Abseil's headers: the files of vendor/webrtc/aec3-sources.txt.
+// BSD, linked statically. It is C++, so gesso and what links it take the C++ runtime with it.
+const EchoCanceller = struct { lib: *std.Build.Step.Compile, include: []const std.Build.LazyPath, flags: []const []const u8 };
+
+fn addEchoCanceller(b: *std.Build, target: std.Build.ResolvedTarget, sdk: ?std.Build.LazyPath) ?EchoCanceller {
+    const t = target.result;
+    const webrtc = b.lazyDependency("webrtc_audio_processing", .{});
+    const abseil = b.lazyDependency("abseil", .{});
+    const src = (webrtc orelse return null).path("webrtc-audio-processing-2.1/webrtc");
+    const absl = (abseil orelse return null).path("abseil-cpp-20240722.0");
+    // Its checks and logging are compiled out, and it is always optimized and never sanitized.
+    var list: std.ArrayList([]const u8) = .empty;
+    list.appendSlice(b.allocator, &.{ "-std=c++17", "-w", "-DNDEBUG", "-DWEBRTC_APM_DEBUG_DUMP=0", "-DRTC_DISABLE_LOGGING", "-DRTC_DISABLE_CHECK_MSG", "-DRTC_DISABLE_METRICS" }) catch @panic("OOM");
+    list.appendSlice(b.allocator, switch (t.os.tag) {
+        .linux => &.{ "-DWEBRTC_POSIX", "-DWEBRTC_LINUX" },
+        .macos => &.{ "-DWEBRTC_POSIX", "-DWEBRTC_MAC" },
+        .windows => &.{ "-DWEBRTC_WIN", "-DNOMINMAX", "-DWIN32_LEAN_AND_MEAN", "-D_USE_MATH_DEFINES" },
+        else => @panic("-Decho: WebRTC's echo canceller is set up for Linux, Windows and macOS only"),
+    }) catch @panic("OOM");
+    const x86 = t.cpu.arch == .x86_64;
+    if (!x86 and t.cpu.arch != .aarch64) @panic("-Decho: WebRTC's echo canceller is set up for x86-64 and aarch64 only");
+    if (!x86) list.append(b.allocator, "-DWEBRTC_HAS_NEON") catch @panic("OOM");
+    const cxx = list.items;
+    const mod = b.createModule(.{ .target = target, .optimize = .fast, .link_libcpp = true, .sanitize_c = .off, .pic = true });
+    useSdk(mod, sdk);
+    mod.addIncludePath(src);
+    mod.addIncludePath(absl);
+    // The files written with AVX2 are built for a processor that has it, whatever the build's own, and
+    // run only where the processor is found to.
+    var avx2_mod: ?*std.Build.Module = null;
+    if (x86) {
+        var query = target.query;
+        query.cpu_features_add.addFeature(@intFromEnum(std.Target.x86.Feature.avx2));
+        query.cpu_features_add.addFeature(@intFromEnum(std.Target.x86.Feature.fma));
+        avx2_mod = b.createModule(.{ .target = b.resolveTargetQuery(query), .optimize = .fast, .link_libcpp = true, .sanitize_c = .off, .pic = true });
+        useSdk(avx2_mod.?, sdk);
+        avx2_mod.?.addIncludePath(src);
+        avx2_mod.?.addIncludePath(absl);
+    }
+    var plain: std.ArrayList([]const u8) = .empty;
+    var lines = std.mem.tokenizeAny(u8, @embedFile("vendor/webrtc/aec3-sources.txt"), "\r\n");
+    while (lines.next()) |file| {
+        if (file[0] == '#') continue;
+        const avx2 = std.mem.indexOf(u8, file, "avx2") != null;
+        const sse = std.mem.indexOf(u8, file, "sse") != null;
+        const neon = std.mem.indexOf(u8, file, "neon") != null;
+        if ((avx2 or sse) and !x86) continue;
+        if (neon and x86) continue;
+        if (std.mem.endsWith(u8, file, ".c")) {
+            mod.addCSourceFile(.{ .file = src.path(b, file), .flags = cxx[1..] });
+        } else if (avx2) {
+            avx2_mod.?.addCSourceFile(.{ .file = src.path(b, file), .flags = cxx });
+        } else plain.append(b.allocator, file) catch @panic("OOM");
+    }
+    mod.addCSourceFiles(.{ .root = src, .files = plain.items, .flags = cxx });
+    if (avx2_mod) |m| mod.linkLibrary(b.addLibrary(.{ .name = "webrtc-aec3-avx2", .linkage = .static, .root_module = m }));
+    const include = b.allocator.dupe(std.Build.LazyPath, &.{ src, absl }) catch @panic("OOM");
+    return .{ .lib = b.addLibrary(.{ .name = "webrtc-aec3", .linkage = .static, .root_module = mod }), .include = include, .flags = cxx };
+}
+
 // (ffmpeg/<target>/, made by ffmpeg/tools/import.sh). LGPL 2.1 or later, linked statically.
 const Ffmpeg = struct { lib: *std.Build.Step.Compile, include: []const std.Build.LazyPath };
 

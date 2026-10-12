@@ -12,6 +12,18 @@
             .url = "https://github.com/xiph/opus/releases/download/v1.5.2/opus-1.5.2.tar.gz",
             .hash = "N-V-__8AAADWXwF69u4_iufnV_gwfb3M2ATbbZF-yGFRrEFH",
         },
+        // Fetched only for -Decho: WebRTC's audio processing module, for its echo canceller, and the
+        // Abseil release it is written against, for its headers.
+        .webrtc_audio_processing = .{
+            .url = "https://freedesktop.org/software/pulseaudio/webrtc-audio-processing/webrtc-audio-processing-2.1.tar.xz",
+            .hash = "N-V-__8AAMgQPABHXldy6pRhshtWba1U-yQoFdiHZrnTWuQV",
+            .lazy = true,
+        },
+        .abseil = .{
+            .url = "https://github.com/abseil/abseil-cpp/releases/download/20240722.0/abseil-cpp-20240722.0.tar.gz",
+            .hash = "N-V-__8AACJgoQDBT3tveZBhLCI2BsWS0i_iL59CqRlOYjt1",
+            .lazy = true,
+        },
         // Fetched only for -Dvideo: FFmpeg's sources, and NASM to assemble its x86 code.
         .ffmpeg = .{
             .url = "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",

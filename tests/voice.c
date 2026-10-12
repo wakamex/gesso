@@ -31,6 +31,67 @@ static void check_levels(const Sint16 *pcm, int stages, const double *expected) 
     gs_voice_free(v);
 }
 
+static double energy(const float *x, int n) {
+    double sum = 0;
+    for (int i = 0; i < n; i++) sum += (double)x[i] * x[i];
+    return sum;
+}
+
+// The voice detector: sure of speech in the middle of the sentence, and of none in the noise before it.
+static void check_speech(const Sint16 *pcm) {
+    gs_voice *v = gs_voice_new(16000, GS_VOICE_SPEECH);
+    CHECK(v != NULL);
+    if (!v) return;
+    double before = 0, during = 0;
+    for (int at = 0; at < 3 * QUARTER + 2000; at += 160) {
+        float frame[160];
+        for (int i = 0; i < 160; i++) frame[i] = (float)pcm[at + i] / 32768.f;
+        gs_voice_frame(v, frame);
+        if (at >= 3200 && at < 8000) before = SDL_max(before, gs_voice_speech(v));
+        if (at >= 2 * QUARTER + 2000) during = SDL_max(during, gs_voice_speech(v));
+        CHECK(frame[0] == (float)pcm[at] / 32768.f);  // (the detector alone changes nothing)
+    }
+    CHECK(before < 0.3);
+    CHECK(during > 0.95);
+    gs_voice_free(v);
+}
+
+// The echo canceller: the app plays the sentence, and the microphone hears it 30 ms later at half
+// its level with a little noise of the room's. From one second in, while the sentence is being
+// said, the echo is taken out of what comes out; then someone talks over silence from the app, and
+// is let through.
+static void check_echo(const Sint16 *pcm, int samples) {
+    CHECK(gs_voice_new(16000, GS_VOICE_ECHO) != NULL || !gs_voice_has_echo());
+    if (!gs_voice_has_echo()) return;
+    gs_voice *v = gs_voice_new(16000, GS_VOICE_ECHO);
+    enum { DELAY = 480, SECOND = 16000 };
+    unsigned seed = 1;
+    double heard = 0, left = 0, said = 0, passed = 0;
+    for (int at = 0; at + 160 <= 6 * SECOND; at += 160) {
+        const bool talking = at >= 4 * SECOND;
+        float played[160], frame[160], clean[160];
+        for (int i = 0; i < 160; i++) {
+            const int t = at + i;
+            seed = seed * 1664525u + 1013904223u;
+            const float noise = ((float)(seed >> 8) / 8388608.f - 1.f) * 0.0003f;
+            played[i] = talking ? 0 : 3.f * (float)pcm[t % samples] / 32768.f;
+            const float echo = talking || t < DELAY ? 0 : 0.5f * 3.f * (float)pcm[(t - DELAY) % samples] / 32768.f;
+            clean[i] = talking ? 3.f * (float)pcm[samples - 1 - t % samples] / 32768.f : 0;  // (the sentence backwards: speech-like, and not what was played)
+            frame[i] = echo + clean[i] + noise;
+        }
+        const double in = energy(frame, 160);
+        gs_voice_played(v, played);
+        gs_voice_frame(v, frame);
+        if (at >= SECOND && at < 3 * SECOND) heard += in, left += energy(frame, 160);
+        if (at >= 4 * SECOND + SECOND / 2) said += in, passed += energy(frame, 160);
+    }
+    const double echo_down = 10 * log10(heard / left), talker_change = 10 * log10(passed / said);
+    CHECK(echo_down > 20);              // (the echo, down by more than 20 dB)
+    CHECK(fabs(talker_change) < 3);     // (the talker, within 3 dB)
+    if (echo_down <= 20 || fabs(talker_change) >= 3) fprintf(stderr, "  echo down %.1f dB, talker changed %.1f dB\n", echo_down, talker_change);
+    gs_voice_free(v);
+}
+
 void test_voice(void) {
     CHECK(gs_voice_new(48000, GS_VOICE_ALL) == NULL);  // (16 kHz only)
     char path[1200];
@@ -49,5 +110,7 @@ void test_voice(void) {
     check_levels(pcm, GS_VOICE_HIGH_PASS, high_pass);
     check_levels(pcm, GS_VOICE_HIGH_PASS | GS_VOICE_NOISE, suppressed);
     check_levels(pcm, GS_VOICE_ALL, all);
+    check_speech(pcm);
+    check_echo(pcm, (int)(len - 44) / 2);
     SDL_free(pcm), SDL_free(data);
 }

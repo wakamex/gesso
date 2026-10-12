@@ -1003,8 +1003,19 @@ static void gain_process(gain_controller *g, float *frame, float speech_probabil
 
 // ---- The whole ----
 
+// The echo canceller is WebRTC's own code (gs_echo.cc), in builds that have it.
+typedef struct gs_echo gs_echo;
+#ifdef GS_HAVE_ECHO
+gs_echo *gs_echo_new(void);
+void gs_echo_free(gs_echo *e);
+void gs_echo_played(gs_echo *e, const float *frame);
+void gs_echo_captured(gs_echo *e, float *frame);
+#endif
+
 struct gs_voice {
     int stages;
+    gs_echo *echo;
+    float speech;  // the detector's answer for the last frame
     float hp_x[2], hp_y[2];  // the high-pass filter's memory
     suppressor ns;
     detector vad;
@@ -1019,10 +1030,40 @@ gs_voice *gs_voice_new(int rate, int stages) {
     suppressor_init(&v->ns);
     detector_init(&v->vad);
     gain_init(&v->gain);
+    if (stages & GS_VOICE_ECHO) {
+#ifdef GS_HAVE_ECHO
+        v->echo = gs_echo_new();
+#endif
+        if (!v->echo) return free(v), NULL;
+    }
     return v;
 }
 
-void gs_voice_free(gs_voice *v) { free(v); }
+void gs_voice_free(gs_voice *v) {
+    if (!v) return;
+#ifdef GS_HAVE_ECHO
+    if (v->echo) gs_echo_free(v->echo);
+#endif
+    free(v);
+}
+
+bool gs_voice_has_echo(void) {
+#ifdef GS_HAVE_ECHO
+    return true;
+#else
+    return false;
+#endif
+}
+
+void gs_voice_played(gs_voice *v, const float *frame) {
+#ifdef GS_HAVE_ECHO
+    if (v->echo) gs_echo_played(v->echo, frame);
+#else
+    (void)v, (void)frame;
+#endif
+}
+
+float gs_voice_speech(const gs_voice *v) { return v->speech; }
 
 void gs_voice_frame(gs_voice *v, float *frame) {
     for (int i = 0; i < FRAME; i++) frame[i] *= 32768.f;  // (the original's scale, which its constants assume)
@@ -1034,7 +1075,15 @@ void gs_voice_frame(gs_voice *v, float *frame) {
             v->hp_x[1] = v->hp_x[0], v->hp_x[0] = x, v->hp_y[1] = v->hp_y[0], v->hp_y[0] = frame[k];
         }
     }
+#ifdef GS_HAVE_ECHO
+    if (v->echo) {  // (after the filter, as the original orders them; it takes samples from -1 to 1)
+        for (int i = 0; i < FRAME; i++) frame[i] *= 1.f / 32768.f;
+        gs_echo_captured(v->echo, frame);
+        for (int i = 0; i < FRAME; i++) frame[i] *= 32768.f;
+    }
+#endif
     if (v->stages & GS_VOICE_NOISE) suppressor_analyze(&v->ns, frame), suppressor_process(&v->ns, frame);
-    if (v->stages & GS_VOICE_GAIN) gain_process(&v->gain, frame, detector_analyze(&v->vad, frame));
+    if (v->stages & (GS_VOICE_GAIN | GS_VOICE_SPEECH)) v->speech = detector_analyze(&v->vad, frame);
+    if (v->stages & GS_VOICE_GAIN) gain_process(&v->gain, frame, v->speech);
     for (int i = 0; i < FRAME; i++) frame[i] *= 1.f / 32768.f;
 }
