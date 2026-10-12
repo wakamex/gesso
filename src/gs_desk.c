@@ -121,3 +121,14 @@ void gs_overlay_show(SDL_Window *win, bool shown) {
     gs_desk_overlay_native(win);  // (before it shows: a window manager reads where a window belongs as it appears)
     SDL_ShowWindow(win);
 }
+
+// ---- Coming forward ----
+
+void gs_desk_activate_native(void);  // macOS: the app made active
+
+void gs_window_activate(SDL_Window *win) {
+#ifdef __APPLE__
+    gs_desk_activate_native();
+#endif
+    SDL_RaiseWindow(win);
+}

@@ -87,6 +87,14 @@ void gs_clipboard_free(gs_clip *snap);
 SDL_Window *gs_overlay_window(const char *title, int w, int h);
 void gs_overlay_show(SDL_Window *win, bool shown);
 
+// ---- Coming forward ----
+
+// Brings a window to the front with the keyboard, as a tray app does when its menu opens a window.
+// On macOS an app without a Dock icon is not made the active app by showing a window, so the window
+// would open behind the app the user is in and without the keyboard: this makes the app active
+// first. Elsewhere it raises the window.
+void gs_window_activate(SDL_Window *win);
+
 // ---- The tray ----
 //
 // SDL has the tray (SDL_CreateTray and its menus), and gesso adds nothing to it. Two things to

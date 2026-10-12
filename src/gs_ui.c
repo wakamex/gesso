@@ -525,6 +525,13 @@ static bool pointer_over(gs_ui *ui, gs_rect r, float x, float y) {
 
 bool gs_ui_hovered(gs_ui *ui, gs_rect r) { return pointer_over(ui, r, ui->in.x, ui->in.y); }
 bool gs_ui_clicked(gs_ui *ui, gs_rect r) { return ui->in.released && pointer_over(ui, r, ui->in.x, ui->in.y) && pointer_over(ui, r, ui->press_x, ui->press_y); }
+// Scrolls by the wheel as far as the ends allow and takes the wheel only when that moved something,
+// so a list or text area at its end, or too short to scroll, leaves the wheel to the page it is in.
+static void wheel_scroll(gs_ui *ui, float *scroll, float max_scroll, float step) {
+    float to = SDL_clamp(*scroll - ui->in.wheel * step, 0, max_scroll);
+    if (to != SDL_clamp(*scroll, 0, max_scroll)) *scroll = to, ui->in.wheel = 0;
+}
+
 static gs_rect outset(gs_rect r, float d) { return (gs_rect){ r.x - d, r.y - d, r.w + 2 * d, r.h + 2 * d }; }
 static bool pressed(gs_ui *ui, gs_rect r) { return ui->in.pressed && pointer_over(ui, r, ui->in.x, ui->in.y); }
 
@@ -538,6 +545,13 @@ bool gs_ui_key(gs_ui *ui, SDL_Keycode key, SDL_Keymod mods) {
 
 void gs_ui_focus(gs_ui *ui, const char *id) { set_focus(ui, id ? hash(id) : 0); }
 bool gs_ui_focused(gs_ui *ui, const char *id) { return ui->focus == hash(id); }
+
+bool gs_ui_where(gs_ui *ui, const char *id, gs_rect *r) {
+    uint32_t h = hash(id);
+    for (int i = 0; i < ui->nstops; i++)
+        if (ui->stops[i].id == h) return *r = ui->stops[i].r, true;
+    return false;
+}
 
 void gs_ui_disable(gs_ui *ui, bool disabled, bool dim) { ui->disabled = disabled, ui->dim = dim; }
 
@@ -1058,7 +1072,7 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
     const gs_wrap *wr = wrap_of(ui, buf, px, inner.w);
     int lines = wr ? wr->count : 1;
     float max_scroll = fmaxf(0, lines * lh - inner.h);
-    if (gs_ui_hovered(ui, r) && ui->in.wheel && max_scroll > 0) w->scroll -= ui->in.wheel * lh * 3, ui->in.wheel = 0;  // (taken from a page it is in)
+    if (gs_ui_hovered(ui, r) && ui->in.wheel) wheel_scroll(ui, &w->scroll, max_scroll, lh * 3);
     int cline = wr ? line_at(wr, w->cursor) : 0;
     if (moved && focused) {  // keep the cursor's line in view
         if (cline * lh < w->scroll) w->scroll = cline * lh;
@@ -1229,7 +1243,7 @@ gs_ui_rows gs_ui_list(gs_ui *ui, gs_rect area, const char *id, int count, float 
     gs_ui_rows rows = { 0 };
     float max_scroll = fmaxf(0, count * row_h - area.h);
     bool moved = false, focused = stop_at(ui, h, area);
-    if (gs_ui_hovered(ui, area) && ui->in.wheel && max_scroll > 0) w->scroll -= ui->in.wheel * row_h * 1.5f, ui->in.wheel = 0;  // (taken from a page it is in)
+    if (gs_ui_hovered(ui, area) && ui->in.wheel) wheel_scroll(ui, &w->scroll, max_scroll, row_h * 1.5f);
     if (focused && count) {
         int page = (int)fmaxf(1, area.h / row_h - 1), sel = *selected;
         while (gs_ui_key(ui, SDLK_DOWN, 0)) sel++, moved = true;  // (every press since the last frame)
@@ -1283,7 +1297,7 @@ gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const 
         w->show = 0;
     }
     bool over = gs_ui_hovered(ui, area);
-    if (over && ui->in.wheel && max_scroll > 0) w->scroll -= ui->in.wheel * ui->style.row * 1.5f, ui->in.wheel = 0;
+    if (over && ui->in.wheel) wheel_scroll(ui, &w->scroll, max_scroll, ui->style.row * 1.5f);
     if (over || focused) {
         while (gs_ui_key(ui, SDLK_PAGEUP, 0)) w->scroll -= page;
         while (gs_ui_key(ui, SDLK_PAGEDOWN, 0)) w->scroll += page;
@@ -1538,7 +1552,7 @@ void gs_ui_modal_end(gs_ui *ui) { ui->in_modal = ui->disabled = false; }
 int gs_ui_confirm(gs_ui *ui, const char *question, const char *yes, const char *no, bool danger) {
     float size = ui->style.text_px, pad = 20, row_h = ui->style.row;
     float width = fminf(420, ui->area.w - 32), text_h = gs_ui_text_height(ui, question, size, width - 2 * pad);
-    uint32_t yes_id = hash("gs_ui confirm yes"), no_id = hash("gs_ui confirm no");
+    uint32_t yes_id = hash(GS_UI_CONFIRM_YES), no_id = hash(GS_UI_CONFIRM_NO);
     bool first = !ui->modal_last;
     gs_rect box = gs_ui_modal_begin(ui, width, text_h + row_h + 3 * pad);
     if (first) set_focus(ui, no_id), ui->marked = true;  // Enter on a question just asked declines it

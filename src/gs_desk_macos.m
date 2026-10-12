@@ -57,3 +57,9 @@ void gs_desk_overlay_native(SDL_Window *win) {
         w.hidesOnDeactivate = NO;
     }
 }
+
+void gs_desk_activate_native(void) {
+    @autoreleasepool {
+        [NSApp activateIgnoringOtherApps:YES];
+    }
+}

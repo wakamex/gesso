@@ -275,6 +275,8 @@ static void test_ui_keyboard(void) {
 }
 
 static char secret[32], kept[32];
+static char note[200];
+static bool wheel_note;
 static double amount;
 static bool sw, radio_hit, link_hit, deep_hit, under_hit, asking;
 static int radio = 0, stop_value, answer;
@@ -297,6 +299,7 @@ static void form_frame(void) {
     under_hit = gs_ui_button(ui, (gs_rect){ 300, 250, 90, 30 }, "Under");
     gs_rect area = { 0, 100, 300, 100 };
     gs_rect page = gs_ui_page_begin(ui, area, "page");
+    if (wheel_note) gs_ui_textarea(ui, (gs_rect){ page.x, page.y + 10, 200, 60 }, "note", note, sizeof note, NULL);  // (fixed under the pointer at 50, 130 while the page is at its top)
     gs_cut_top(&page, 500);
     deep_hit = gs_ui_button(ui, gs_cut_top(&page, 30), "Deep");
     gs_cut_top(&page, 70);
@@ -372,10 +375,27 @@ static void test_ui_form(void) {
     key(SDLK_SPACE, 0), form_frame();
     CHECK(deep_hit);
 
+    // A text area in the page takes the wheel while it has further to scroll, and then the page does.
+    gs_rect where;
+    CHECK(gs_ui_where(ui, "Deep", &where) && where.w == 300 && where.h == 30);  // a button, by its label
+    CHECK(!gs_ui_where(ui, "No such control", &where));
+    gs_ui_page_scroll_to(ui, "page", 0, false), wheel_note = true, form_frame();
+    SDL_strlcpy(note, "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight", sizeof note);
+    form_frame();
+    for (int i = 0; i < 12; i++) wheel(50, 130, -1), form_frame();
+    form_frame();
+    CHECK(page_scroll > 0);  // the note reached its end and the page went on
+    float reached = page_scroll;
+    SDL_strlcpy(note, "short", sizeof note), form_frame();
+    wheel(50, 130, -1), form_frame(), form_frame();
+    CHECK(page_scroll == reached + 48 || page_scroll == 500);  // a note with nothing to scroll leaves the wheel alone
+    wheel_note = false, gs_ui_page_scroll_to(ui, "page", 0, false), form_frame();
+
     // A question: what is under it takes nothing, Enter declines, and Tab then Enter accepts.
     asking = true, form_frame();
     click(340, 265), form_frame();
     CHECK(!under_hit && asking);
+    CHECK(gs_ui_where(ui, GS_UI_CONFIRM_YES, &where) && gs_ui_where(ui, GS_UI_CONFIRM_NO, &where) && !gs_ui_where(ui, "Under", &where));  // its buttons can be found; what is under it cannot
     key(SDLK_RETURN, 0), form_frame();
     CHECK(answer == -1 && !asking);
     form_frame();

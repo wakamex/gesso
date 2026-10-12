@@ -150,6 +150,10 @@ bool gs_ui_focused(gs_ui *ui, const char *id);
 // control, then its focus mark with gs_ui_focus_mark, a ring `radius` round at its corners.
 bool gs_ui_activated(gs_ui *ui, gs_rect r, const char *id);
 void gs_ui_focus_mark(gs_ui *ui, gs_rect r, const char *id, float radius);
+// Where a control was drawn in the last frame, by its id (a button's or toggle's id is its label):
+// false for one that was not drawn, or was disabled or under a modal. For a test that drives an app
+// by clicking its controls by name, and for an app that points at one (a coach mark, a scroll to it).
+bool gs_ui_where(gs_ui *ui, const char *id, gs_rect *r);
 // Controls drawn while disabled are shown and take no pointer or keys, and Tab passes them by; with
 // `dim` they are faded too. It lasts until it is set again or the frame ends.
 void gs_ui_disable(gs_ui *ui, bool disabled, bool dim);
@@ -262,7 +266,8 @@ bool gs_ui_accelerator(SDL_Scancode key, SDL_Keymod mods, char *out, size_t size
 // content from its top, draw it, then pass gs_ui_page_end the y where the content ended, which is
 // how the page learns its height. What the area cuts off is not drawn and cannot be clicked, and Tab
 // brings a control outside the area into it. A list or text area inside the page takes the wheel
-// while the pointer is over it. One page at a time: they do not nest.
+// while the pointer is over it and it has further to scroll that way, and leaves it to the page once
+// it is at its end. One page at a time: they do not nest.
 //
 // gs_ui_page_scroll is how far the page is scrolled, in points from its top, for an index beside it
 // that follows the reader; gs_ui_page_scroll_to sets it, at once or gliding there.
@@ -283,6 +288,8 @@ void gs_ui_modal_end(gs_ui *ui);
 // `no`, so Enter on a question just asked declines it. With `danger` the `yes` button is in the
 // warning colour, for something that cannot be undone.
 int gs_ui_confirm(gs_ui *ui, const char *question, const char *yes, const char *no, bool danger);
+#define GS_UI_CONFIRM_YES "gs_ui confirm yes"  // the ids of its two buttons, for gs_ui_where
+#define GS_UI_CONFIRM_NO "gs_ui confirm no"
 
 // ---- The window between runs ----
 
