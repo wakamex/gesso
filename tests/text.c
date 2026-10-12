@@ -113,6 +113,13 @@ void test_text(void) {
         CHECK(after && after->count == plain->count && after->width == width);
         for (int i = 0; after && i < after->count; i++) CHECK(after->glyphs[i].font == text_font);
         gs_line_free(after);
+        // The marks keycaps are built on stay text too, and a keycap sequence is still the emoji font's.
+        after = gs_fontset_shape(fs, 20, "#*");
+        for (int i = 0; after && i < after->count; i++) CHECK(after->glyphs[i].font == text_font);
+        gs_line_free(after);
+        after = gs_fontset_shape(fs, 20, "1\xEF\xB8\x8F\xE2\x83\xA3");
+        if (after && after->count && SDL_getenv("GS_TEST_EMOJI_FONT")) CHECK(after->glyphs[0].font != text_font);  // (a font known to have keycaps)
+        gs_line_free(after);
     }
     gs_line_free(plain);
     gs_fontset_prepend(fs, "/no/such/font.ttf");  // (a missing file changes nothing)
