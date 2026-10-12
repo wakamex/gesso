@@ -785,6 +785,7 @@ typedef struct {
     char *text;
     int size4;  // px in quarter pixels
     int dir;
+    uint32_t around;  // for a line of a longer paragraph: a hash of the paragraph and of the line's place in it; 0 for a text shaped alone
     gs_line *line;
 } cached_line;
 
@@ -1001,41 +1002,138 @@ static kbts_shape_context *context(gs_fontset *fs, int i) {
     return fs->ctx[i];
 }
 
-// A character's strong direction: 1 for the right-to-left scripts' blocks, 0 for letters elsewhere, -1
-// for the rest (spaces, punctuation, digits, symbols and emoji, which take their direction from context).
-static int strong(uint32_t cp) {
-    if ((cp >= 0x0590 && cp <= 0x08FF) || (cp >= 0xFB1D && cp <= 0xFDFF) || (cp >= 0xFE70 && cp <= 0xFEFF) ||
-        (cp >= 0x10800 && cp <= 0x10FFF) || (cp >= 0x1E800 && cp <= 0x1EFFF))
-        return 1;
-    bool letter = (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') || (cp >= 0xC0 && cp <= 0x1FFF && cp != 0xD7 && cp != 0xF7) ||
-                  (cp >= 0x2C00 && cp <= 0xFB1C) || (cp >= 0x10000 && cp < 0x1F000) || cp >= 0x20000;
-    return letter ? 0 : -1;
-}
+// ---- Bidirectional text ----
+//
+// Text that mixes directions is ordered by the Unicode Bidirectional Algorithm (UAX 9): each
+// character gets an embedding level, even for left-to-right and odd for right-to-left, from its own
+// class and from the text around it, and the line is then put in visual order by reversing each
+// stretch of a level and above, from the highest level down. So a number after Latin letters stays
+// with them inside a right-to-left paragraph, a number after Arabic sits to its left, a bracket pair
+// takes one direction for both its halves, and punctuation at the end of a line takes the
+// paragraph's. Explicit embedding and isolate controls are passed over as invisible characters:
+// the text of a chat or a label does not carry them.
 
-// The direction of a paragraph: that of its first strongly directional character (Unicode's rule P2).
+int gs_kb_bidi_class(unsigned cp);  // (gs_kb.c: kb_text_shape's tables)
+unsigned gs_kb_mirror(unsigned cp);
+
+// A character's class, in kb_text_shape's numbering: NI covers spaces, punctuation and symbols.
+enum { B_NI, B_BN, B_L, B_R, B_NSM, B_AL, B_AN, B_EN, B_ES, B_ET, B_CS };
+
+// The direction of a paragraph: that of its first strongly directional character (rule P2).
 static kbts_direction paragraph_direction(const char *utf8) {
     for (const char *p = utf8; *p;) {
-        int d = strong(gs_utf8_next(&p));
-        if (d >= 0) return d ? KBTS_DIRECTION_RTL : KBTS_DIRECTION_LTR;
+        int c = gs_kb_bidi_class(gs_utf8_next(&p));
+        if (c == B_L) return KBTS_DIRECTION_LTR;
+        if (c == B_R || c == B_AL) return KBTS_DIRECTION_RTL;
     }
     return KBTS_DIRECTION_LTR;
 }
 
-typedef struct { int first, count; bool rtl; int strong; } run_span;  // strong: 1 right-to-left, 0 left-to-right, -1 neither
+// The closing bracket that pairs with an opening one, or 0 for any other character.
+static uint32_t closing_bracket(uint32_t cp) {
+    static const uint32_t opening[] = { '(', '[', '{', 0x2045, 0x2329, 0x27E6, 0x27E8, 0x27EA, 0x3008, 0x300A, 0x300C, 0x300E, 0x3010, 0x3014, 0x3016, 0xFF08, 0xFF3B, 0xFF5B };
+    for (size_t i = 0; i < sizeof opening / sizeof *opening; i++)
+        if (opening[i] == cp) return gs_kb_mirror(cp);
+    return 0;
+}
 
-// Shapes one stretch of text that uses one font, appending its runs and glyphs to the line.
-static void shape_stretch(gs_fontset *fs, int font, kbts_direction paragraph, const char *text, int start, int len, gs_line *l,
-                          int *cap, run_span **runs, int *nruns, int *runs_cap) {
+// The embedding level of each of n code points in a paragraph whose own level is `base` (0 left to
+// right, 1 right to left).
+static void bidi_levels(const uint32_t *cp, int n, int base, uint8_t *level) {
+    uint8_t *t = malloc((size_t)n + 1);
+    if (!t) { memset(level, base, (size_t)n); return; }
+    int e = base ? B_R : B_L;  // the paragraph's direction, which the text's start and end also count as
+    // W1 to W3: marks take the class of what they sit on; a European number after Arabic letters is an
+    // Arabic number; Arabic letters are then plain right-to-left.
+    for (int i = 0, prev = e, strong = e; i < n; i++) {
+        int c = gs_kb_bidi_class(cp[i]);
+        if (c == B_NSM || c == B_BN) c = prev;
+        if (c == B_L || c == B_R || c == B_AL) strong = c;
+        if (c == B_EN && strong == B_AL) c = B_AN;
+        t[i] = (uint8_t)c, prev = c;
+    }
+    for (int i = 0; i < n; i++)
+        if (t[i] == B_AL) t[i] = B_R;
+    // W4: one separator between two numbers of a kind is part of the number.
+    for (int i = 1; i + 1 < n; i++) {
+        if (t[i] == B_ES && t[i - 1] == B_EN && t[i + 1] == B_EN) t[i] = B_EN;
+        if (t[i] == B_CS && t[i - 1] == t[i + 1] && (t[i - 1] == B_EN || t[i - 1] == B_AN)) t[i] = t[i - 1];
+    }
+    // W5: signs written against a European number (a percent sign, a currency sign) are part of it.
+    for (int i = 0; i < n; i++) {
+        if (t[i] != B_ET) continue;
+        int j = i;
+        while (j < n && t[j] == B_ET) j++;
+        if ((i > 0 && t[i - 1] == B_EN) || (j < n && t[j] == B_EN))
+            for (int k = i; k < j; k++) t[k] = B_EN;
+        i = j - 1;
+    }
+    // W6 and W7: separators and signs left over are neutral; a European number after left-to-right
+    // letters is left-to-right text.
+    for (int i = 0, strong = e; i < n; i++) {
+        if (t[i] == B_ES || t[i] == B_ET || t[i] == B_CS) t[i] = B_NI;
+        if (t[i] == B_L || t[i] == B_R) strong = t[i];
+        if (t[i] == B_EN && strong == B_L) t[i] = B_L;
+    }
+    #define STRONG(c) ((c) == B_L ? B_L : (c) == B_R || (c) == B_EN || (c) == B_AN ? B_R : 0)  // (numbers count as right-to-left for what is around them)
+    // N0: a pair of brackets takes one direction: the paragraph's when it holds text of that
+    // direction; otherwise that of the text it holds, if the text before it runs the same way, and
+    // the paragraph's if not.
+    struct { int at; uint32_t close; } open[64];
+    for (int i = 0, depth = 0; i < n; i++) {
+        if (t[i] != B_NI) continue;
+        uint32_t close = closing_bracket(cp[i]);
+        if (close && depth < 64) { open[depth].at = i, open[depth++].close = close; continue; }
+        int match = -1;
+        for (int k = depth - 1; k >= 0 && match < 0; k--)
+            if (open[k].close == cp[i]) match = k;
+        if (match < 0) continue;
+        int from = open[match].at, inside_e = 0, inside_o = 0, before = e;
+        depth = match;
+        for (int k = from + 1; k < i; k++) {
+            int s = STRONG(t[k]);
+            if (s == e) inside_e = 1; else if (s) inside_o = 1;
+        }
+        for (int k = from - 1; k >= 0; k--)
+            if (STRONG(t[k])) { before = STRONG(t[k]); break; }
+        if (inside_e) t[from] = t[i] = (uint8_t)e;
+        else if (inside_o) t[from] = t[i] = (uint8_t)(before != e ? before : e);
+    }
+    // N1 and N2: neutrals between text of one direction take it; any others take the paragraph's.
+    for (int i = 0; i < n; i++) {
+        if (t[i] != B_NI) continue;
+        int j = i, before = e, after = e;
+        while (j < n && t[j] == B_NI) j++;
+        if (i > 0) before = STRONG(t[i - 1]);
+        if (j < n) after = STRONG(t[j]);
+        for (int k = i; k < j; k++) t[k] = (uint8_t)(before == after ? before : e);
+        i = j - 1;
+    }
+    #undef STRONG
+    // I1 and I2: text against the paragraph's direction goes one level up, and numbers in
+    // right-to-left text one further, so their digits still read left to right.
+    for (int i = 0; i < n; i++) level[i] = (uint8_t)(base ? (t[i] == B_R ? 1 : 2) : (t[i] == B_L ? 0 : t[i] == B_R ? 1 : 2));
+    // L1: spaces at the end of the line belong to the paragraph, whatever came before them.
+    for (int i = n - 1; i >= 0 && (cp[i] == ' ' || cp[i] == '\t'); i--) level[i] = (uint8_t)base;
+    free(t);
+}
+
+// A stretch of the line shaped as one: its glyphs (in visual order) and its level.
+typedef struct { int first, count, level; } piece;
+
+// Shapes text[start, start + len), which uses one font and has one level, appending its glyphs to the
+// line and a piece for each run the shaper makes of it, in the order the pieces are read.
+static void shape_stretch(gs_fontset *fs, int font, int level, const char *text, int start, int len, gs_line *l, int *cap, piece **pieces, int *npieces, int *pieces_cap) {
     kbts_shape_context *ctx = context(fs, font);
     if (!ctx) return;
     gs_font *f = fs->font[font];
     float scale = em_scale(f, l->px);
-    kbts_ShapeBegin(ctx, paragraph, KBTS_LANGUAGE_DONT_KNOW);
+    bool rtl = level & 1;
+    kbts_ShapeBegin(ctx, rtl ? KBTS_DIRECTION_RTL : KBTS_DIRECTION_LTR, KBTS_LANGUAGE_DONT_KNOW);
     kbts_ShapeUtf8WithUserId(ctx, text + start, len, start, KBTS_USER_ID_GENERATION_MODE_SOURCE_INDEX);
     kbts_ShapeEnd(ctx);
     kbts_run run;
     while (kbts_ShapeRun(ctx, &run)) {
-        bool rtl = run.Direction == KBTS_DIRECTION_RTL;
         int first = l->count;
         kbts_glyph *g;
         while (kbts_GlyphIteratorNext(&run.Glyphs, &g)) {
@@ -1044,27 +1142,12 @@ static void shape_stretch(gs_fontset *fs, int font, kbts_direction paragraph, co
             int cluster = kbts_ShapeGetShapeCodepoint(ctx, g->UserIdOrCodepointIndex, &cp) ? cp.UserId : start;
             l->glyphs[l->count++] = (gs_glyph_pos){ f, g->Id, g->OffsetX * scale, -g->OffsetY * scale, g->AdvanceX * scale, cluster, rtl };
         }
-        // The run's neutral ends (spaces and punctuation before its first or after its last strong
-        // character) become runs of their own, so they are placed by the text around them rather than
-        // carried with the run. Glyphs are in visual order: a right-to-left run's logical start is on its right.
-        int end = l->count, lo = first, hi = end, dir = -1;
-        for (; lo < hi; lo++) {
-            const char *c = text + l->glyphs[lo].cluster;
-            if ((dir = strong(gs_utf8_next(&c))) >= 0) break;
-        }
-        for (; hi > lo; hi--) {
-            const char *c = text + l->glyphs[hi - 1].cluster;
-            if (strong(gs_utf8_next(&c)) >= 0) break;
-        }
-        // In logical order: the start's neutrals, the strong core, the end's neutrals.
-        int spans[3][2] = { { rtl ? hi : first, rtl ? end : lo }, { lo, hi }, { rtl ? first : hi, rtl ? lo : end } };
-        int kinds[3] = { -1, dir, -1 };
-        if (dir < 0) spans[0][0] = first, spans[0][1] = end, spans[1][0] = spans[1][1] = spans[2][0] = spans[2][1] = 0;
-        for (int i = 0; i < 3; i++) {
-            if (spans[i][1] <= spans[i][0]) continue;
-            if (*nruns == *runs_cap) *runs = realloc(*runs, sizeof **runs * (size_t)(*runs_cap = *runs_cap ? *runs_cap * 2 : 8));
-            (*runs)[(*nruns)++] = (run_span){ spans[i][0], spans[i][1] - spans[i][0], rtl, kinds[i] };
-        }
+        // The shaper orders a run's glyphs for the direction it finds in the run alone; where that is not
+        // the level's (a stretch of neutrals, read here by the text around it), they are turned round.
+        if ((run.Direction == KBTS_DIRECTION_RTL) != rtl)
+            for (int a = first, b = l->count - 1; a < b; a++, b--) { gs_glyph_pos t = l->glyphs[a]; l->glyphs[a] = l->glyphs[b], l->glyphs[b] = t; }
+        if (*npieces == *pieces_cap) *pieces = realloc(*pieces, sizeof **pieces * (size_t)(*pieces_cap = *pieces_cap ? *pieces_cap * 2 : 8));
+        (*pieces)[(*npieces)++] = (piece){ first, l->count - first, level };
     }
 }
 
@@ -1092,66 +1175,94 @@ static int graphemes(const char *utf8, int len, int **out) {
     return n;
 }
 
-gs_line *gs_fontset_shape_dir(gs_fontset *fs, float px, const char *utf8, int dir) {
+// The level of each code point of text[from, to), by byte offset from `from`, in a paragraph of
+// direction `rtl`. free() the result.
+static uint8_t *levels_of(const char *text, int from, int to, bool rtl) {
+    int len = to - from, ncp = 0;
+    uint32_t *cps = malloc(sizeof *cps * (size_t)(len + 1));
+    int *at = malloc(sizeof *at * (size_t)(len + 1));
+    uint8_t *levels = malloc((size_t)len + 1), *by_byte = calloc((size_t)len + 1, 1);
+    for (const char *p = text + from; p < text + to && *p;) at[ncp] = (int)(p - text) - from, cps[ncp++] = gs_utf8_next(&p);
+    bidi_levels(cps, ncp, rtl, levels);
+    for (int i = 0; i < ncp; i++) by_byte[at[i]] = levels[i];
+    free(cps), free(at), free(levels);
+    return by_byte;
+}
+
+// Shapes a line (a whole text of its own here) whose code points have the levels given by byte offset.
+static gs_line *shape_levels(gs_fontset *fs, float px, const char *utf8, bool rtl, const uint8_t *by_byte) {
     int len = (int)strlen(utf8);
     gs_line *l = calloc(1, sizeof *l);
     if (!l || !len) return l;
-    l->px = px;
-    int *bounds, cap = 0, nruns = 0, runs_cap = 0;
-    kbts_direction paragraph = dir == GS_DIR_LTR ? KBTS_DIRECTION_LTR : dir == GS_DIR_RTL ? KBTS_DIRECTION_RTL : paragraph_direction(utf8);
+    l->px = px, l->rtl = rtl;
+    int *bounds, cap = 0, npieces = 0, pieces_cap = 0;
     int nb = graphemes(utf8, len, &bounds);
-    l->rtl = paragraph == KBTS_DIRECTION_RTL;
-    run_span *runs = NULL;
-    // Consecutive graphemes using the same font are shaped together.
-    for (int i = 0, start = 0, font = -1, stretch = 0; i <= nb; i++) {
-        int f = i < nb ? choose(fs, utf8 + start, utf8 + bounds[i]) : -2;
-        if (f != font) {
-            if (font >= 0) shape_stretch(fs, font, paragraph, utf8, stretch, start - stretch, l, &cap, &runs, &nruns, &runs_cap);
-            font = f, stretch = start;
+    piece *pieces = NULL;
+    // Consecutive graphemes of one font and one level are shaped together.
+    for (int i = 0, start = 0, font = -1, level = -1, stretch = 0; i <= nb; i++) {
+        int f = i < nb ? choose(fs, utf8 + start, utf8 + bounds[i]) : -2, lv = i < nb ? by_byte[start] : -2;
+        if (f != font || lv != level) {
+            if (font >= 0) shape_stretch(fs, font, level, utf8, stretch, start - stretch, l, &cap, &pieces, &npieces, &pieces_cap);
+            font = f, level = lv, stretch = start;
         }
         if (i < nb) start = bounds[i];
     }
     free(bounds);
-    // A run of neutral characters takes the direction of the strong text on both sides when they agree,
-    // and the paragraph's otherwise (Unicode's rules N1 and N2), whatever its stretch alone suggested.
-    for (int i = 0; i < nruns; i++) {
-        if (runs[i].strong >= 0) { runs[i].rtl = runs[i].strong == 1; continue; }
-        int before = -1, after = -1;
-        for (int j = i - 1; j >= 0 && before < 0; j--) before = runs[j].strong;
-        for (int j = i + 1; j < nruns && after < 0; j++) after = runs[j].strong;
-        int sos = l->rtl ? 1 : 0;  // the paragraph's direction at its start and end
-        if (before < 0) before = sos;
-        if (after < 0) after = sos;
-        runs[i].rtl = before == after ? before == 1 : l->rtl;
+    // Pieces come in the order they are read; on the line they go in visual order (rule L2): from the
+    // highest level down to the lowest odd one, each stretch of pieces at that level or above is
+    // reversed. A piece's own glyphs are in visual order already. A right-to-left piece cut in several
+    // by the shaper has its parts in reading order, which the reversal puts right as well.
+    int *order = malloc(sizeof *order * (size_t)(npieces ? npieces : 1)), highest = 0, lowest_odd = 99;
+    for (int i = 0; i < npieces; i++) {
+        order[i] = i;
+        if (pieces[i].level > highest) highest = pieces[i].level;
+        if ((pieces[i].level & 1) && pieces[i].level < lowest_odd) lowest_odd = pieces[i].level;
     }
-    // Runs come in logical order; on the line they go in visual order. Glyphs within a run are already
-    // left to right. A left-to-right line reverses each stretch of right-to-left runs; a right-to-left
-    // line reverses the whole order, which puts left-to-right stretches back in reading order.
-    int *order = malloc(sizeof *order * (size_t)(nruns ? nruns : 1));
-    for (int i = 0; i < nruns; i++) order[i] = i;
-    if (l->rtl)
-        for (int i = 0; i < nruns / 2; i++) { int t = order[i]; order[i] = order[nruns - 1 - i], order[nruns - 1 - i] = t; }
-    for (int i = 0; i < nruns;) {
-        int j = i;
-        bool flip = l->rtl ? !runs[order[i]].rtl : runs[order[i]].rtl;
-        while (j < nruns && (l->rtl ? !runs[order[j]].rtl : runs[order[j]].rtl) == flip) j++;
-        if (flip)
+    for (int lv = highest; lv >= lowest_odd; lv--)
+        for (int i = 0; i < npieces;) {
+            int j = i;
+            while (j < npieces && pieces[order[j]].level >= lv) j++;
             for (int a = i, b = j - 1; a < b; a++, b--) { int t = order[a]; order[a] = order[b], order[b] = t; }
-        i = j > i ? j : i + 1;
-    }
+            i = j > i ? j : i + 1;
+        }
     gs_glyph_pos *visual = malloc(sizeof *visual * (size_t)(l->count ? l->count : 1));
     float pen = 0;
     int k = 0;
-    for (int i = 0; i < nruns; i++)
-        for (int j = 0; j < runs[order[i]].count; j++) {
-            gs_glyph_pos gp = l->glyphs[runs[order[i]].first + j];
+    for (int i = 0; i < npieces; i++)
+        for (int j = 0; j < pieces[order[i]].count; j++) {
+            gs_glyph_pos gp = l->glyphs[pieces[order[i]].first + j];
             gp.x += pen;
             pen += gp.advance;
             visual[k++] = gp;
         }
-    free(l->glyphs), free(order), free(runs);
+    free(l->glyphs), free(order), free(pieces);
     l->glyphs = visual;
     l->width = pen;
+    return l;
+}
+
+gs_line *gs_fontset_shape_dir(gs_fontset *fs, float px, const char *utf8, int dir) {
+    bool rtl = dir == GS_DIR_RTL || (dir == GS_DIR_AUTO && paragraph_direction(utf8) == KBTS_DIRECTION_RTL);
+    uint8_t *levels = levels_of(utf8, 0, (int)strlen(utf8), rtl);
+    gs_line *l = shape_levels(fs, px, utf8, rtl, levels);
+    free(levels);
+    return l;
+}
+
+gs_line *gs_fontset_shape_part(gs_fontset *fs, float px, const char *utf8, int start, int end, int dir) {
+    // Levels come from the whole paragraph the line is part of: what a comma at the end of this line
+    // is depends on the word that begins the next.
+    int len = (int)strlen(utf8), from = start = SDL_clamp(start, 0, len), to = end = SDL_clamp(end, start, len);
+    while (from > 0 && utf8[from - 1] != '\n') from--;
+    while (to < len && utf8[to] != '\n') to++;
+    char *line = malloc((size_t)(end - start) + 1), *paragraph = malloc((size_t)(to - from) + 1);
+    memcpy(line, utf8 + start, (size_t)(end - start)), line[end - start] = 0;
+    memcpy(paragraph, utf8 + from, (size_t)(to - from)), paragraph[to - from] = 0;
+    bool rtl = dir == GS_DIR_RTL || (dir == GS_DIR_AUTO && paragraph_direction(paragraph) == KBTS_DIRECTION_RTL);
+    uint8_t *levels = levels_of(utf8, from, to, rtl), *mine = levels + (start - from);
+    for (int i = end - start - 1; i >= 0 && (line[i] == ' ' || line[i] == '\t'); i--) mine[i] = rtl;  // (rule L1 again: spaces at the end of this line)
+    gs_line *l = shape_levels(fs, px, line, rtl, mine);
+    free(levels), free(line), free(paragraph);
     return l;
 }
 
@@ -1166,9 +1277,27 @@ const gs_line *gs_fontset_line_dir(gs_fontset *fs, float px, const char *utf8, i
     uint32_t h = 2166136261u ^ (uint32_t)size4 ^ (uint32_t)dir * 40503u;
     for (const unsigned char *p = (const unsigned char *)utf8; *p; p++) h = (h ^ *p) * 16777619u;
     cached_line *c = &fs->cache[h % LINE_CACHE];
-    if (c->line && c->size4 == size4 && c->dir == dir && !strcmp(c->text, utf8)) return c->line;
+    if (c->line && c->size4 == size4 && c->dir == dir && !c->around && !strcmp(c->text, utf8)) return c->line;
     free(c->text), gs_line_free(c->line);
-    c->text = SDL_strdup(utf8), c->size4 = size4, c->dir = dir, c->line = gs_fontset_shape_dir(fs, px, utf8, dir);
+    c->text = SDL_strdup(utf8), c->size4 = size4, c->dir = dir, c->around = 0, c->line = gs_fontset_shape_dir(fs, px, utf8, dir);
+    return c->line;
+}
+
+const gs_line *gs_fontset_line_part(gs_fontset *fs, float px, const char *utf8, int start, int end, int dir) {
+    // Kept by the line's own text and by what stands around it in its paragraph, which its levels depend on.
+    int size4 = (int)lroundf(px * 4), len = (int)strlen(utf8), from = start = SDL_clamp(start, 0, len), to = end = SDL_clamp(end, start, len);
+    while (from > 0 && utf8[from - 1] != '\n') from--;
+    while (to < len && utf8[to] != '\n') to++;
+    uint32_t h = 2166136261u ^ (uint32_t)size4 ^ (uint32_t)dir * 40503u, around = 2166136261u ^ (uint32_t)(start - from) * 31u;
+    for (int i = start; i < end; i++) h = (h ^ (unsigned char)utf8[i]) * 16777619u;
+    for (int i = from; i < to; i++) around = (around ^ (unsigned char)utf8[i]) * 16777619u;
+    around += !around;
+    cached_line *c = &fs->cache[(h ^ around) % LINE_CACHE];
+    if (c->line && c->size4 == size4 && c->dir == dir && c->around == around && (int)strlen(c->text) == end - start && !memcmp(c->text, utf8 + start, (size_t)(end - start))) return c->line;
+    free(c->text), gs_line_free(c->line);
+    c->text = malloc((size_t)(end - start) + 1);
+    memcpy(c->text, utf8 + start, (size_t)(end - start)), c->text[end - start] = 0;
+    c->size4 = size4, c->dir = dir, c->around = around, c->line = gs_fontset_shape_part(fs, px, utf8, start, end, dir);
     return c->line;
 }
 

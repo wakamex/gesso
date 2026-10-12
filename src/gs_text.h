@@ -47,7 +47,8 @@ uint32_t gs_utf8_next(const char **s);
 // and for emoji. Fallbacks load on first need, so large CJK fonts cost memory only once such text
 // appears. Text is shaped with kb_text_shape: Arabic letters join, Indic scripts reorder and combine,
 // ligatures and kerning apply, and a line mixing right-to-left and left-to-right text is laid out in
-// visual order. Lines drawn each frame are shaped once and kept.
+// visual order by the Unicode Bidirectional Algorithm (numbers, bracket pairs and punctuation placed
+// as a browser places them; explicit embedding and isolate controls are not acted on). Lines drawn each frame are shaped once and kept.
 typedef struct gs_fontset gs_fontset;
 gs_fontset *gs_fontset_new(void);
 gs_fontset *gs_fontset_system(void);  // the platform's UI font with fallbacks for most scripts and emoji
@@ -98,6 +99,11 @@ gs_line *gs_fontset_shape(gs_fontset *fs, float px, const char *utf8);  // free 
 enum { GS_DIR_AUTO, GS_DIR_LTR, GS_DIR_RTL };
 gs_line *gs_fontset_shape_dir(gs_fontset *fs, float px, const char *utf8, int dir);
 const gs_line *gs_fontset_line_dir(gs_fontset *fs, float px, const char *utf8, int dir);
+// One line of a longer text: the bytes [start, end) of utf8, ordered as part of the paragraph they are
+// in, since what a line's last comma or its first bracket does depends on the text beyond the line.
+// Draw a wrapped text's lines with these. Clusters count from `start`.
+gs_line *gs_fontset_shape_part(gs_fontset *fs, float px, const char *utf8, int start, int end, int dir);
+const gs_line *gs_fontset_line_part(gs_fontset *fs, float px, const char *utf8, int start, int end, int dir);  // the kept copy
 void gs_line_free(gs_line *l);
 // The fontset's kept copy: valid until the next gs_fontset call.
 const gs_line *gs_fontset_line(gs_fontset *fs, float px, const char *utf8);

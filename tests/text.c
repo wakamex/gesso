@@ -3,6 +3,13 @@
 #include "gs_text.h"
 #include "test.h"
 
+// Where the glyph of the character at a byte offset was put along a shaped line; -1 when none is.
+static float x_of(const gs_line *l, int offset) {
+    for (int i = 0; i < l->count; i++)
+        if (l->glyphs[i].cluster == offset) return l->glyphs[i].x;
+    return -1;
+}
+
 void test_text(void) {
     // Grapheme steps: a letter with a combining accent, an emoji family joined by ZWJ, a flag.
     const char *t = "e\xCC\x81x\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7\xF0\x9F\x87\xA8\xF0\x9F\x87\xA6!";
@@ -97,6 +104,42 @@ void test_text(void) {
     float narrow = gs_fontset_width(mono, 40, "iii111"), wide = gs_fontset_width(mono, 40, "mmm000");
     if (narrow > 0 && wide > 0 && gs_fontset_width(mono, 40, "i") != gs_fontset_width(fs, 40, "i")) CHECK_NEAR(narrow, wide, 0.01);  // (where there is a monospace face)
     gs_fontset_free(regular), gs_fontset_free(bold), gs_fontset_free(mono);
+    // Bidirectional text is ordered as the Unicode algorithm orders it, where the fonts for it are installed.
+    #define AR "\xD8\xB9\xD8\xB1\xD8\xA8\xD9\x8A"  // four Arabic letters, 8 bytes
+    gs_line *arabic = gs_fontset_shape(fs, 20, AR);
+    if (arabic && arabic->count && arabic->glyphs[0].glyph) {
+        // In a right-to-left paragraph a number after Latin letters stays with them, its percent sign
+        // too, and the colon after the Arabic word stays against the word.
+        const char *mixed = AR ": mixed (123) and 45.6%";
+        gs_line *l = gs_fontset_shape(fs, 20, mixed);
+        CHECK(l && l->rtl);
+        if (l) CHECK(x_of(l, 10) < x_of(l, 26) && x_of(l, 26) < x_of(l, 30) && x_of(l, 30) < x_of(l, 9) && x_of(l, 9) < x_of(l, 8) && x_of(l, 8) < x_of(l, 0));  // m, 4, %, the space, the colon, the Arabic
+        if (l) CHECK(x_of(l, 16) < x_of(l, 17) && x_of(l, 17) < x_of(l, 20));  // "(123)" reads left to right inside the Latin
+        gs_line_free(l);
+        // In a left-to-right paragraph a number after Arabic sits to the Arabic's left, and one after Latin to the Latin's right.
+        l = gs_fontset_shape(fs, 20, "abc " AR " 123 def 45");
+        if (l) CHECK(!l->rtl && x_of(l, 2) < x_of(l, 13) && x_of(l, 15) < x_of(l, 4) && x_of(l, 4) < x_of(l, 17) && x_of(l, 19) < x_of(l, 21));
+        gs_line_free(l);
+        // A pair of brackets around Latin text in a right-to-left paragraph keeps one bracket on each side of it.
+        l = gs_fontset_shape(fs, 20, AR " (abc) " AR);
+        if (l) CHECK(l->rtl && x_of(l, 13) < x_of(l, 10) && x_of(l, 12) < x_of(l, 9) && x_of(l, 15) < x_of(l, 13) && x_of(l, 9) < x_of(l, 0));  // ")" abc "(", between the two words
+        gs_line_free(l);
+        // A full stop that ends a left-to-right paragraph goes to the right of the Arabic before it.
+        l = gs_fontset_shape(fs, 20, "abc " AR ".");
+        if (l) CHECK(x_of(l, 4) < x_of(l, 12) && x_of(l, 10) < x_of(l, 4));
+        gs_line_free(l);
+        // A line of a longer paragraph is ordered as part of it: a comma that ends a line, with more
+        // Arabic on the next, stays against its word and does not jump to the far end of the line.
+        const char *two = "abc " AR "\xD8\x8C " AR;  // the comma (2 bytes) at 12, the second word at 15
+        l = gs_fontset_shape_part(fs, 20, two, 0, 14, GS_DIR_LTR);
+        gs_line *alone = gs_fontset_shape_dir(fs, 20, "abc " AR "\xD8\x8C", GS_DIR_LTR);
+        if (l && alone) CHECK(x_of(l, 12) < x_of(l, 4) && x_of(alone, 12) > x_of(alone, 4));  // left of its word as part of the paragraph; alone, it ends the text
+        gs_line_free(l), gs_line_free(alone);
+        const gs_line *kept = gs_fontset_line_part(fs, 20, two, 0, 14, GS_DIR_LTR);
+        CHECK(kept && kept == gs_fontset_line_part(fs, 20, two, 0, 14, GS_DIR_LTR) && x_of(kept, 12) < x_of(kept, 4));
+    }
+    gs_line_free(arabic);
+    #undef AR
     // An emoji font put first takes the emoji and leaves digits and spaces, which it often has too,
     // to the text font. Tried with the system's emoji font, or the one GS_TEST_EMOJI_FONT names.
     static const char *const emoji_fonts[] = { "/usr/share/fonts/google-noto-color-emoji-fonts/NotoColorEmoji.ttf", "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
