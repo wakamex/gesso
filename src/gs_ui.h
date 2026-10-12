@@ -58,6 +58,8 @@ void gs_ui_end(gs_ui *ui);
 // Milliseconds until the interface wants to be drawn again on its own (a blinking cursor, a tooltip
 // about to show), or -1 when it waits for events; for apps that draw only when something changes.
 // It is 0 after a frame that drew a glyph new to the atlas, which shows from the next frame on.
+// It is also 0 after a frame that was handed a click, the wheel, a key or text: what that changed is
+// drawn in full from the next frame, so an app that draws on events draws once more after each.
 int gs_ui_wait_ms(const gs_ui *ui);
 // Asks for another frame within `ms`, for something the app draws that changes by itself (a
 // progress bar, a clock): gs_ui_wait_ms after this frame is no more than that.

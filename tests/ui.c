@@ -518,6 +518,13 @@ static void test_ui_draw(SDL_Renderer *r) {
     gs_ui_end(ui);
     CHECK(gs_ui_wait_ms(ui) == 250);
 
+    // A frame that was handed input asks for one more, and the one after that for none.
+    key(SDLK_F5, 0);
+    gs_ui_begin(ui), gs_ui_end(ui);
+    CHECK(gs_ui_wait_ms(ui) == 0);
+    gs_ui_begin(ui), gs_ui_end(ui);
+    CHECK(gs_ui_wait_ms(ui) == -1);
+
     // Opacity fades what is drawn, controls included, and a frame starts opaque.
     gs_ui_begin(ui);
     gs_ui_fill(ui, (gs_rect){ 0, 0, 400, 300 }, (SDL_FColor){ 0, 0, 0, 1 });

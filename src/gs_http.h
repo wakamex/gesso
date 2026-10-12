@@ -28,6 +28,12 @@ typedef struct {
     // while nothing arrives; returning false gives the request up, which then returns 0. Or NULL.
     bool (*progress)(void *user, size_t received, long long total);
     void *progress_user;
+    // Called with each header of the response, name and value, before its body arrives: for an
+    // ETag or Last-Modified to compare before resuming a download, a Content-Type, a rate limit. Of a
+    // followed redirect only the final response's headers are given. Or NULL. gs_http_fetch and
+    // gs_http_stream both call it.
+    void (*header)(void *user, const char *name, const char *value);
+    void *header_user;
 } gs_http_request;
 
 // The response's HTTP status, or 0 when there was no response (a file: URL read through libcurl gives 200). Its body goes to r->to, or into

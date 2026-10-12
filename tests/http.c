@@ -20,6 +20,16 @@ static bool note_progress(void *user, size_t received, long long total) {
     return !p->stop_after || received < p->stop_after;
 }
 
+typedef struct { int count; bool location; char etag[64], type[64]; } headers_log;
+
+static void note_header(void *user, const char *name, const char *value) {
+    headers_log *h = user;
+    h->count++;
+    if (!SDL_strcasecmp(name, "ETag")) SDL_strlcpy(h->etag, value, sizeof h->etag);
+    if (!SDL_strcasecmp(name, "Content-Type")) SDL_strlcpy(h->type, value, sizeof h->type);
+    if (!SDL_strcasecmp(name, "Location")) h->location = true;
+}
+
 extern const char *test_streams;
 
 void test_http(void) {
@@ -59,6 +69,8 @@ void test_http(void) {
     }
 #endif
     if (!SDL_GetHintBoolean("GS_TEST_NETWORK", false)) return;
+    size_t got = 0;
+    SDL_AtomicInt stop = { 0 };
 
     // A POST with headers, read back from the echo.
     const char *headers[] = { "Authorization: Bearer secret-token", "Content-Type: application/x-www-form-urlencoded", NULL };
@@ -70,6 +82,15 @@ void test_http(void) {
     CHECK(!strcmp(gs_json_str(gs_json_path(root, "headers.Authorization"), ""), "Bearer secret-token"));
     CHECK(!strcmp(gs_json_str(gs_json_path(root, "headers.User-Agent"), ""), "gesso-test"));
     gs_json_free(doc), SDL_free(body), body = NULL;
+
+    // The response's headers, of the final response alone when a redirect is followed, for a fetch and a stream.
+    headers_log hl = { 0 };
+    CHECK(gs_http_fetch(&(gs_http_request){ .url = "https://httpbin.org/redirect-to?url=%2Fresponse-headers%3FETag%3Dabc123", .follow = true, .header = note_header, .header_user = &hl }, NULL, NULL) == 200);
+    CHECK(hl.count > 2 && !strcmp(hl.etag, "abc123") && !hl.location && !strncmp(hl.type, "application/json", 16));
+    hl = (headers_log){ 0 };
+    got = 0;
+    CHECK(gs_http_stream(&(gs_http_request){ .url = "https://httpbin.org/response-headers?ETag=xyz", .header = note_header, .header_user = &hl }, 0, count, &got, &stop) == 200);
+    CHECK(!strcmp(hl.etag, "xyz") && got > 0);
 
     // Statuses, redirects followed or not, and a timeout.
     CHECK(gs_http_fetch(&(gs_http_request){ .url = "https://httpbin.org/status/404" }, NULL, NULL) == 404);
@@ -90,8 +111,7 @@ void test_http(void) {
     SDL_RemovePath(jar);
 
     // A stream ended early by its taker.
-    size_t got = 0;
-    SDL_AtomicInt stop = { 0 };
+    got = 0;
     CHECK(gs_http_stream(&(gs_http_request){ .url = "https://httpbin.org/bytes/100000" }, 0, count, &got, &stop) == 200);
     CHECK(got >= 20000 && got < 100000);
 

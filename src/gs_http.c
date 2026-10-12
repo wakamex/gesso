@@ -66,6 +66,20 @@ int gs_http_exit_code(SDL_Process *proc, int code) {
     return code;
 }
 
+// Hands a response's header block (lines ended by CR LF, the status line first) to the request's
+// header hook, a header at a time. The block is changed in the reading.
+static void give_headers(const gs_http_request *r, char *block) {
+    if (!r->header) return;
+    for (char *line = block, *end; line && *line; line = end ? end + 2 : NULL) {
+        if ((end = strstr(line, "\r\n"))) *end = 0;
+        char *colon = strchr(line, ':');
+        if (!colon || !strncmp(line, "HTTP/", 5)) continue;
+        *colon++ = 0;
+        while (*colon == ' ' || *colon == '\t') colon++;
+        r->header(r->header_user, line, colon);
+    }
+}
+
 static size_t body_length(const gs_http_request *r) { return r->body ? (r->body_len ? r->body_len : strlen(r->body)) : 0; }
 
 // A growing buffer for a response body, or a file it is written to; with `request` set, its
@@ -176,7 +190,7 @@ static SDL_Process *start_curl(const gs_http_request *r, bool stream, long long 
 // after the last one, passed to `take`. Returns the final status.
 typedef bool body_fn(void *user, const uint8_t *data, size_t len);
 
-static int read_curl(SDL_Process *proc, bool follow, body_fn *take, void *user, SDL_AtomicInt *stop) {
+static int read_curl(const gs_http_request *r, SDL_Process *proc, bool follow, body_fn *take, void *user, SDL_AtomicInt *stop) {
     SDL_IOStream *out = SDL_GetProcessOutput(proc);
     char head[8192];
     size_t nhead = 0;
@@ -202,6 +216,7 @@ static int read_curl(SDL_Process *proc, bool follow, body_fn *take, void *user, 
                 // An interim 100 response, or a redirect curl follows, is followed by another block.
                 bool redirect = status >= 300 && status < 400 && (strstr(head, "\nlocation:") || strstr(head, "\nLocation:"));
                 body = status != 100 && !(follow && redirect);
+                if (body) give_headers(r, head);
             }
         }
         if (body && at < got && !take(user, buf + at, got - at)) more = false;
@@ -220,7 +235,7 @@ static int fetch_with_curl(const gs_http_request *r, char **body, size_t *len) {
     if (!proc) return 0;
     sink s = { .request = r, .total = -1 };
     if (r->to && !(s.file = fopen(r->to, "wb"))) return SDL_KillProcess(proc, true), SDL_DestroyProcess(proc), 0;
-    int status = read_curl(proc, r->follow, to_sink, &s, NULL);
+    int status = read_curl(r, proc, r->follow, to_sink, &s, NULL);
     SDL_DestroyProcess(proc);
     return sink_finish(&s, status, body, len);
 }
@@ -228,7 +243,7 @@ static int fetch_with_curl(const gs_http_request *r, char **body, size_t *len) {
 static int stream_with_curl(const gs_http_request *r, long long from, gs_http_take *take, void *user, SDL_AtomicInt *stop) {
     SDL_Process *proc = start_curl(r, true, from, true);
     if (!proc) return 0;
-    int status = read_curl(proc, true, take, user, stop);
+    int status = read_curl(r, proc, true, take, user, stop);
     SDL_DestroyProcess(proc);
     return status;
 }
@@ -244,7 +259,7 @@ enum {
     COOKIEJAR = 10082, FOLLOWLOCATION = 52, ACCEPT_ENCODING = 10102, USERAGENT = 10018, CUSTOMREQUEST = 10036,
     WRITEFUNCTION = 20011, WRITEDATA = 10001, NOSIGNAL = 99, RESPONSE_CODE = 0x200002, RANGE = 10007,
     NOPROGRESS = 43, XFERINFOFUNCTION = 20219, XFERINFODATA = 10057, CONNECTTIMEOUT_MS = 156, TIMEOUT_MS = 155,
-    LOW_SPEED_LIMIT = 19, LOW_SPEED_TIME = 20, HTTPGET = 80,
+    LOW_SPEED_LIMIT = 19, LOW_SPEED_TIME = 20, HTTPGET = 80, HEADERFUNCTION = 20079, HEADERDATA = 10029,
 };
 static struct {
     int (*global_init)(long);
@@ -306,6 +321,26 @@ static void *common_options(void *h, const gs_http_request *r) {
     return headers;
 }
 
+// libcurl hands over each header line of each response, a redirect's included: a response's lines
+// are gathered from its status line to the blank line that ends them, and given to the request's
+// hook unless the response is a redirect that is being followed.
+typedef struct { const gs_http_request *r; bool follow; char block[8192]; size_t n; } header_sink;
+
+static size_t take_header(const char *data, size_t size, size_t count, void *user) {
+    header_sink *hs = user;
+    size_t len = size * count;
+    if (len >= 5 && !memcmp(data, "HTTP/", 5)) hs->n = 0;
+    if (len == 2 && data[0] == '\r') {  // the blank line
+        hs->block[hs->n] = 0;
+        const char *sp = strchr(hs->block, ' ');
+        int status = sp ? atoi(sp + 1) : 0;
+        bool redirect = status >= 300 && status < 400 && (strstr(hs->block, "\nlocation:") || strstr(hs->block, "\nLocation:"));
+        if (status != 100 && !(hs->follow && redirect)) give_headers(hs->r, hs->block);
+        hs->n = 0;
+    } else if (hs->n + len < sizeof hs->block) memcpy(hs->block + hs->n, data, len), hs->n += len;
+    return len;
+}
+
 static size_t take_sink(const char *data, size_t size, size_t count, void *user) {
     return sink_add(user, data, size * count) ? size * count : 0;
 }
@@ -328,6 +363,8 @@ static int fetch_with_libcurl(const gs_http_request *r, char **body, size_t *len
     }
     if (r->to && !(s.file = fopen(r->to, "wb"))) return 0;
     void *headers = common_options(h, r);
+    header_sink hs = { .r = r, .follow = r->follow };
+    if (r->header) lib.easy_setopt(h, HEADERFUNCTION, take_header), lib.easy_setopt(h, HEADERDATA, &hs);
     if (r->follow) lib.easy_setopt(h, FOLLOWLOCATION, 1L);
     lib.easy_setopt(h, TIMEOUT_MS, (long)(r->timeout_ms ? r->timeout_ms : DEFAULT_TIMEOUT_MS));
     lib.easy_setopt(h, WRITEFUNCTION, take_sink);
@@ -364,6 +401,8 @@ static int stream_with_libcurl(const gs_http_request *r, long long from, gs_http
     stream_sink s = { h, take, user, stop };
     char range[32];
     void *headers = common_options(h, r);
+    header_sink hs = { .r = r, .follow = true };
+    if (r->header) lib.easy_setopt(h, HEADERFUNCTION, take_header), lib.easy_setopt(h, HEADERDATA, &hs);
     lib.easy_setopt(h, FOLLOWLOCATION, 1L);
     lib.easy_setopt(h, LOW_SPEED_LIMIT, 1L), lib.easy_setopt(h, LOW_SPEED_TIME, 30L);  // a stalled stream ends
     if (from > 0) snprintf(range, sizeof range, "%lld-", from), lib.easy_setopt(h, RANGE, range);
@@ -439,6 +478,16 @@ static int fetch_with_winhttp(const gs_http_request *r, char **body, size_t *len
             DWORD code = 0, size = sizeof code;
             if (WinHttpQueryHeaders(q, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &code, &size, WINHTTP_NO_HEADER_INDEX))
                 status = (int)code;
+            DWORD hsize = 0;
+            if (r->header && !WinHttpQueryHeaders(q, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX, NULL, &hsize, WINHTTP_NO_HEADER_INDEX) && hsize) {
+                wchar_t *raw = malloc(hsize + sizeof(wchar_t));
+                if (raw && WinHttpQueryHeaders(q, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_HEADER_NAME_BY_INDEX, raw, &hsize, WINHTTP_NO_HEADER_INDEX)) {
+                    char *block = SDL_iconv_string("UTF-8", "UTF-16LE", (const char *)raw, hsize + sizeof(wchar_t));
+                    if (block) give_headers(r, block);
+                    SDL_free(block);
+                }
+                free(raw);
+            }
             wchar_t length[32];
             DWORD lsize = sizeof length;
             if (WinHttpQueryHeaders(q, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, length, &lsize, WINHTTP_NO_HEADER_INDEX))

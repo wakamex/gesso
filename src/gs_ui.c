@@ -123,6 +123,7 @@ struct gs_ui {
     char tip_text[400];
     bool tip_wanted;
     int wait_ms;
+    bool had_input;          // this frame was handed a press, a release, the wheel, a key or text
     wrap_entry wraps[WRAPS];  // wrapped text kept, so text drawn every frame is broken into lines once
     char *piece;              // a line's text, copied out to be shaped
     size_t piece_cap;
@@ -261,6 +262,7 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     bool down = ui->pending.down;
     ui->in = ui->pending;
     ui->pending = (input){ .x = ui->in.x, .y = ui->in.y, .down = down };
+    ui->had_input = ui->in.pressed || ui->in.released || ui->in.wheel != 0 || ui->in.nkeys || ui->in.text[0];
     if (ui->in.pressed) ui->before_x = ui->press_x, ui->before_y = ui->press_y, ui->press_before = ui->press_at, ui->press_x = ui->in.x, ui->press_y = ui->in.y, ui->press_at = ui->now;
     memset(ui->taken, 0, sizeof ui->taken);
     ui->float_last = ui->float_now, ui->float_last_on = ui->float_now_on;
@@ -1581,6 +1583,7 @@ void gs_ui_end(gs_ui *ui) {
     }
     if (gs_glyphs_waiting(ui->glyphs)) ui->wait_ms = 0;  // a glyph is missing from this frame: the next one has it
     if (ui->modal_last && !ui->modal_now) ui->wait_ms = 0;   // a modal has gone: the next frame takes input again
+    if (ui->had_input) ui->wait_ms = 0;  // what a click or a key changed shows from the next frame, in the controls drawn before the one that took it
     if (!ui->capture_drawn) ui->capture = 0;  // (a hotkey field no longer drawn waits for nothing)
     if (ui->cursor_want != ui->cursor_now) {  // the pointer's shape, for a link or a field under it
         static const SDL_SystemCursor shapes[4] = { SDL_SYSTEM_CURSOR_DEFAULT, SDL_SYSTEM_CURSOR_POINTER, SDL_SYSTEM_CURSOR_TEXT, SDL_SYSTEM_CURSOR_MOVE };
