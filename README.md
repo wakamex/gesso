@@ -95,6 +95,8 @@ Web sign-in: an app that signs in to a web service through the service's own pag
 
 A tray on every Linux desktop: SDL's tray (`SDL_CreateTray`) needs libayatana-appindicator on Linux and fails without it, and GNOME shows no tray at all without an extension. A tray that speaks the StatusNotifierItem protocol over D-Bus itself, as Electron's does, would work wherever a desktop has a tray. No gesso app has needed it enough yet; the first that ships to Linux desktops without that library is the trigger.
 
+A child's output without polling: SDL hands a child process's output over without waiting, so `gs_http`'s curl fallback, gtube and Earheart read it in a loop that sleeps 1 to 5 ms between tries while they also watch a stop flag. On Linux and macOS a `poll` on the pipe would wait properly, but on Windows the anonymous pipes SDL makes cannot be waited on with a timeout, so a wait there would be the same loop under another name; a real one needs gesso to start the child itself with pipes it can wait on. The cost today is a few hundred wake-ups a second while a child is running. The trigger is a child whose output latency or idle cost shows up in a measurement.
+
 ## Licence
 
 MIT, see `LICENSE`. The stb libraries in `vendor/stb` are public domain (or MIT, at your choice); kb_text_shape in `vendor/kb` is zlib; the libva headers in `vendor/va` are MIT; SDL3 is zlib; libopus (fetched by the build) is BSD. With `-Dvideo`, FFmpeg (fetched by the build) is linked statically under the GNU Lesser General Public License 2.1 or later: an app that ships it ships FFmpeg's source with its binaries, or a way to relink them.
