@@ -39,6 +39,7 @@ typedef struct {
     bool anchored;    // ...when it has one
     bool away;        // a flow is scrolled off its end
     int prepended;    // rows added in front of a flow, to be told apart from rows added after
+    int show;         // the row a flow is to bring into view when next drawn, counted from 1; 0 for none
     float want_x;     // the column a text area's cursor keeps moving up and down along
     bool want;
     float from, to, value;  // an eased value: where it set out from, where it is going, where it is
@@ -1273,6 +1274,13 @@ gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const 
     w->prepended = 0;
     float max_scroll = fmaxf(0, total - area.h), page = area.h * 0.9f;
     if (!w->away) w->scroll = max_scroll;
+    if (w->show) {  // a row asked for: its middle at the area's middle, as far as the ends allow
+        float top = 0;
+        int row = SDL_min(w->show, count) - 1;
+        for (int i = 0; i < row; i++) top += heights[i];
+        if (row >= 0) w->scroll = top + heights[row] / 2 - area.h / 2;
+        w->show = 0;
+    }
     bool over = gs_ui_hovered(ui, area);
     if (over && ui->in.wheel && max_scroll > 0) w->scroll -= ui->in.wheel * ui->style.row * 1.5f, ui->in.wheel = 0;
     if (over || focused) {
@@ -1296,6 +1304,7 @@ gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const 
 }
 
 void gs_ui_flow_prepended(gs_ui *ui, const char *id, int n) { state(ui, hash(id))->prepended = n; }
+void gs_ui_flow_show(gs_ui *ui, const char *id, int row) { state(ui, hash(id))->show = SDL_max(0, row) + 1; }
 
 
 

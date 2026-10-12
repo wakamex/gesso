@@ -92,6 +92,27 @@ static void test_ui_multiline(void) {
     CHECK(shown.above == above && shown.below == 20 + (320 - above));
     gs_ui_flow_prepended(ui, "flow", 3), nrows = 25, multiline_frame();
     CHECK(shown.above == above + 60);
+    // A row asked for is brought to the middle, and the list then stays put as rows are added.
+    for (int i = 0; i < 40; i++) heights[i] = 20;
+    nrows = 30;
+    gs_ui_flow_show(ui, "flow", 10), multiline_frame();
+    CHECK(shown.above == 160 && shown.first == 8 && shown.below == 340);  // row 10 spans 200 to 220, centred in 100 points
+    nrows = 31, multiline_frame();
+    CHECK(shown.above == 160 && shown.below == 360);
+    gs_ui_flow_show(ui, "flow", 0), multiline_frame();  // near an end, as far as it goes
+    CHECK(shown.above == 0 && shown.first == 0);
+    gs_ui_flow_show(ui, "flow", 30), multiline_frame();  // the last row: at the end again, and following it
+    CHECK(shown.below == 0);
+    nrows = 32, multiline_frame();
+    CHECK(shown.below == 0 && shown.end == 32);
+    heights[0] = 20, heights[1] = 60, heights[2] = 20, nrows = 3;
+    gs_ui_flow_show(ui, "fresh flow", 1);  // a list never drawn before, with rows of differing heights
+    gs_ui_begin(ui);
+    gs_ui_rows fresh = gs_ui_flow(ui, (gs_rect){ 0, 0, 300, 40 }, "fresh flow", 3, heights);
+    gs_ui_list_end(ui);
+    gs_ui_end(ui);
+    CHECK(fresh.above == 30 && fresh.first == 1 && fresh.below == 30);  // row 1 spans 20 to 80: its middle, 50, at the middle of 40 points
+    for (int i = 0; i < 40; i++) heights[i] = 20;
     nrows = 2, multiline_frame();  // fewer rows than fill the list sit at its bottom
     CHECK(shown.first == 0 && shown.end == 2 && shown.y == 60);
 

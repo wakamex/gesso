@@ -231,6 +231,12 @@ void gs_ui_list_end(gs_ui *ui);
 // `above` is small the reader has reached the top of the rows held: time to load older ones.
 gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const float *heights);
 void gs_ui_flow_prepended(gs_ui *ui, const char *id, int n);
+// Brings a row into view the next time the list with that id is drawn: its middle at the middle of
+// the area, with rows above and below it, or as near as the list's ends allow. Call it before the
+// gs_ui_flow call of the frame, which may be the first for that id. The list then counts as
+// scrolled off its end, unless the row is in its last screenful, so rows added later do not pull it
+// back down: for opening a conversation at a search result, or jumping to the message a reply answers.
+void gs_ui_flow_show(gs_ui *ui, const char *id, int row);
 
 // A field that takes a key combination, for choosing a hotkey. It shows `shown` (how the app writes
 // the combination it holds, or the placeholder when that is empty) until it is clicked, or Space or
