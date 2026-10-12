@@ -42,7 +42,7 @@ typedef struct {
     float radius;                  // of the controls' corners, in points; 0 (the default) for square ones
     float button_radius;           // of buttons' corners where they differ from the other controls' (a large value for pills); below 0 (the default), the radius above
     SDL_FColor focus;              // the ring around the control the keyboard has reached; the accent by default
-    float line_height;             // from one line of wrapped text to the next, as a multiple of the text's size; 1.4 by default (and for 0)
+    float line_height;             // from one line of wrapped text to the next, as a multiple of the text's size; 0 (the default) for the font's own
 } gs_ui_style;
 
 typedef struct gs_ui gs_ui;
@@ -110,7 +110,10 @@ float gs_ui_text_height(gs_ui *ui, const char *text, float px, float width);
 // ellipsis and *cut (which may be NULL) is set, for showing the whole text some other way, in a
 // tooltip, say. Returns the height of what it drew.
 float gs_ui_text_lines(gs_ui *ui, gs_rect r, const char *text, float px, SDL_FColor c, int max_lines, bool *cut);
-float gs_ui_line_height(const gs_ui *ui, float px);  // the height of one line of wrapped text at size px: px times the style's line_height
+// The height of one line of wrapped text at size px: what the text font asks for (its ascent, descent
+// and line gap; 1.4 times the size for a font set with no text font), or px times the style's
+// line_height where the app has set one.
+float gs_ui_line_height(const gs_ui *ui, float px);
 void gs_ui_texture(gs_ui *ui, gs_rect r, SDL_Texture *t, const SDL_FRect *src);  // fills r, cropping the source to keep its aspect
 // A picture to look at closely: the texture shown whole in r, then zoomed with the wheel about the
 // pointer (to 8 times its own size at most), moved by dragging, and switched between fitted and its

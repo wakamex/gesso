@@ -71,20 +71,23 @@ static void multiline_frame(void) {
     gs_ui_end(ui);
 }
 
+static gs_fontset *fonts;  // the set the interface under test draws with
+
 static void test_ui_multiline(void) {
     gs_ui_begin(ui), gs_ui_end(ui);
     CHECK(gs_ui_text_height(ui, "a\nb\nc", 14, 200) == 3 * gs_ui_line_height(ui, 14));
     CHECK(gs_ui_text_height(ui, "", 14, 200) == gs_ui_line_height(ui, 14));
-    // The space between lines is the style's: 1.4 times the size unless the app says otherwise.
-    CHECK_NEAR(gs_ui_line_height(ui, 10), 14, 1e-4);
+    // The space between lines is the font's own unless the app says otherwise.
+    float ascent, descent, gap;
+    if (gs_fontset_vmetrics(fonts, 10, &ascent, &descent, &gap)) CHECK_NEAR(gs_ui_line_height(ui, 10), ascent - descent + gap, 1e-4);
+    else CHECK_NEAR(gs_ui_line_height(ui, 10), 14, 1e-4);
+    gs_ui_style_of(ui)->line_height = 1.4f;
     float area_before = gs_ui_textarea_height(ui, "a\nb\nc\nd", 200, 8);
     gs_ui_style_of(ui)->line_height = 1.1f;
     CHECK_NEAR(gs_ui_line_height(ui, 10), 11, 1e-4);
     CHECK_NEAR(gs_ui_text_height(ui, "a\nb\nc", 14, 200), 3 * 14 * 1.1, 1e-3);
     CHECK_NEAR(area_before - gs_ui_textarea_height(ui, "a\nb\nc\nd", 200, 8), 4 * 14 * 0.3, 1e-3);
-    gs_ui_style_of(ui)->line_height = 0;  // (a style filled in by older code)
-    CHECK_NEAR(gs_ui_line_height(ui, 10), 14, 1e-4);
-    gs_ui_style_of(ui)->line_height = 1.4f;
+    gs_ui_style_of(ui)->line_height = 0;
 
     // Rows of 20 points in a 100 point list stay at the end as rows are added; scrolled off it, they
     // keep their place, and rows added in front are told apart from rows added behind.
@@ -715,7 +718,7 @@ void test_ui(void) {
     // Wrapped text, rows of differing heights and a multi-line field, with the system's fonts where
     // there are some.
     fs = gs_fontset_system();
-    ui = gs_ui_new(w, r, fs);
+    ui = gs_ui_new(w, r, fs), fonts = fs;
     test_ui_multiline();
     test_ui_cut();
     gs_ui_free(ui);
