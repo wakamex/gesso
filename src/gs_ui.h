@@ -178,6 +178,12 @@ bool gs_ui_number(gs_ui *ui, gs_rect r, const char *id, double *value, double mi
 // True when the text changed this frame.
 bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, const char *placeholder);
 float gs_ui_textarea_height(gs_ui *ui, const char *buf, float width, int max_lines);
+// What is selected in a text area, as byte offsets into its text: true with [*start, *end) when
+// there is a selection, false with both at the cursor when there is none. gs_ui_textarea_select
+// selects a range (the cursor at its end), or places the cursor when start and end are the same.
+// For acting on the words a user picked: replacing them, looking them up.
+bool gs_ui_textarea_selection(gs_ui *ui, const char *id, int *start, int *end);
+void gs_ui_textarea_select(gs_ui *ui, const char *id, int start, int end);
 // A button showing items[*selected] that opens a list of the items. True when the choice changed.
 bool gs_ui_dropdown(gs_ui *ui, gs_rect r, const char *id, const char *const *items, int count, int *selected);
 // Shown after the pointer rests on r, below it or above where there is no room: on one line, or

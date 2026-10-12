@@ -1092,6 +1092,19 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
     return changed;
 }
 
+bool gs_ui_textarea_selection(gs_ui *ui, const char *id, int *start, int *end) {
+    const widget *w = state(ui, hash(id));
+    bool has = w->anchored && w->anchor != w->cursor;
+    if (start) *start = has ? SDL_min(w->anchor, w->cursor) : w->cursor;
+    if (end) *end = has ? SDL_max(w->anchor, w->cursor) : w->cursor;
+    return has;
+}
+
+void gs_ui_textarea_select(gs_ui *ui, const char *id, int start, int end) {
+    widget *w = state(ui, hash(id));
+    w->anchor = start, w->cursor = end, w->anchored = start != end, w->want = false;  // (held within the text when the area is next drawn)
+}
+
 void gs_ui_arrow(gs_ui *ui, gs_rect r, SDL_FColor c) {
     float s = ui->scale, w = fminf(r.w, 8), cx = r.x + r.w / 2, cy = r.y + r.h / 2;
     c = ink(ui, c);

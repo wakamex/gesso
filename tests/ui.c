@@ -114,6 +114,19 @@ static void test_ui_multiline(void) {
     key(SDLK_UP, 0), multiline_frame();  // to the line above, which has no glyph widths without fonts
     text("Y"), multiline_frame();
     CHECK(strlen(area) == 6 && strchr(area, 'Y') && strchr(area, '\n'));
+    // What is selected can be read, and set.
+    int from = -1, to = -1;
+    CHECK(!gs_ui_textarea_selection(ui, "area", &from, &to) && from == to);
+    key(SDLK_HOME, SDL_KMOD_CTRL), key(SDLK_RIGHT, SDL_KMOD_SHIFT), key(SDLK_RIGHT, SDL_KMOD_SHIFT), multiline_frame();
+    CHECK(gs_ui_textarea_selection(ui, "area", &from, &to) && from == 0 && to == 2);
+    gs_ui_textarea_select(ui, "area", 1, 3), multiline_frame();
+    CHECK(gs_ui_textarea_selection(ui, "area", &from, &to) && from == 1 && to == 3);
+    char kept[sizeof area];
+    strcpy(kept, area);
+    text("__"), multiline_frame();  // typing replaces the range that was set
+    CHECK(strlen(area) == strlen(kept) && area[0] == kept[0] && area[1] == '_' && area[2] == '_' && !strcmp(area + 3, kept + 3));
+    gs_ui_textarea_select(ui, "area", 0, 0), multiline_frame();
+    CHECK(!gs_ui_textarea_selection(ui, "area", &from, &to) && from == 0);
     key(SDLK_A, SDL_KMOD_CTRL), text("q"), multiline_frame();
     CHECK(!strcmp(area, "q"));
     SDL_SetClipboardText("one\r\ntwo\tthree");
