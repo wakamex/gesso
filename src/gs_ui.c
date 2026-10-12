@@ -160,7 +160,7 @@ gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
         .accent_text = { 0.04f, 0.07f, 0.06f, 1 }, .border = { 0.22f, 0.24f, 0.235f, 1 }, .warning = { 0.95f, 0.60f, 0.29f, 1 },
         .text_px = 14, .small_px = 12, .row = 30,
     };
-    ui->style.focus = ui->style.accent;
+    ui->style.focus = ui->style.accent, ui->style.button_radius = -1;
     ui->opacity = 1;
     ui->pending.x = ui->pending.y = OUTSIDE;  // until the pointer is seen in the window
     return ui;
@@ -594,13 +594,16 @@ void gs_ui_focus_mark(gs_ui *ui, gs_rect r, const char *id, float radius) { mark
 // A button with an id: plain, or filled in `fill` with the accent's text colour.
 static bool button(gs_ui *ui, gs_rect r, uint32_t h, const char *label, const SDL_FColor *fill) {
     bool focused = stop_at(ui, h, r), hot = gs_ui_hovered(ui, r);
-    gs_ui_round(ui, r, ui->style.radius, fill ? (hot ? ui->style.text : *fill) : hot ? ui->style.border : ui->style.raised);
+    float radius = fminf(ui->style.button_radius >= 0 ? ui->style.button_radius : ui->style.radius, r.h / 2);  // (as round as a pill at most)
+    gs_ui_round(ui, r, radius, fill ? (hot ? ui->style.text : *fill) : hot ? ui->style.border : ui->style.raised);
     gs_ui_text(ui, gs_inset(r, 6), label, ui->style.text_px, fill ? ui->style.accent_text : ui->style.text, 0);
-    mark(ui, focused, r, ui->style.radius);
+    mark(ui, focused, r, radius);
     return gs_ui_clicked(ui, r) || act(ui, focused);
 }
 
 bool gs_ui_button(gs_ui *ui, gs_rect r, const char *label) { return button(ui, r, label_id(ui, label), label, NULL); }
+bool gs_ui_button_primary(gs_ui *ui, gs_rect r, const char *label) { return button(ui, r, label_id(ui, label), label, &ui->style.accent); }
+bool gs_ui_button_danger(gs_ui *ui, gs_rect r, const char *label) { return button(ui, r, label_id(ui, label), label, &ui->style.warning); }
 
 static SDL_FColor mix(SDL_FColor a, SDL_FColor b, float t) {
     return (SDL_FColor){ a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t };

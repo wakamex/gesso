@@ -2,6 +2,8 @@
 
 #include <math.h>
 
+#include "stb_image_write.h"
+
 #define ARC 12                  // the most segments in a quarter circle
 #define POINTS (4 * (ARC + 1))  // the most points in an outline
 
@@ -133,4 +135,12 @@ void gs_draw_triangle(SDL_Renderer *r, float x0, float y0, float x1, float y1, f
     bool clockwise = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0) > 0;
     const SDL_FPoint p[3] = { { x0, y0 }, clockwise ? (SDL_FPoint){ x1, y1 } : (SDL_FPoint){ x2, y2 }, clockwise ? (SDL_FPoint){ x2, y2 } : (SDL_FPoint){ x1, y1 } };
     fill_convex(r, p, 3, c);
+}
+
+bool gs_draw_save_png(SDL_Renderer *r, const char *path) {
+    SDL_Surface *s = SDL_RenderReadPixels(r, NULL), *c = s ? SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA32) : NULL;
+    bool ok = c && stbi_write_png(path, c->w, c->h, 4, c->pixels, c->pitch);
+    if (c && !ok) SDL_SetError("could not write %s", path);
+    SDL_DestroySurface(c), SDL_DestroySurface(s);
+    return ok;
 }

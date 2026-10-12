@@ -4,8 +4,8 @@
 #include <SDL3/SDL.h>
 #include <stdio.h>
 
+#include "gs_draw.h"
 #include "gs_text.h"
-#include "stb_image_write.h"
 
 static const char *const lines[] = {
     "Latin: Office ffi fl \xE2\x80\x94 Caf\xC3\xA9 na\xC3\xAFve, Twitch titles",                   // ligatures, accents
@@ -33,9 +33,7 @@ int main(int argc, char **argv) {
             gs_fontset_draw(g, fs, 30, 20, 60 + 56 * (float)i, lines[i], (SDL_FColor){ 0.1f, 0.1f, 0.1f, 1 });
         if (frame == 0) printf("first frame, shaping included: %.2f ms\n", (SDL_GetTicksNS() - start) / 1e6);
     }
-    SDL_Surface *s = SDL_RenderReadPixels(r, NULL), *c = s ? SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA32) : NULL;
-    bool ok = c && stbi_write_png(argv[1], c->w, c->h, 4, c->pixels, c->pitch);
-    SDL_DestroySurface(c), SDL_DestroySurface(s);
+    bool ok = gs_draw_save_png(r, argv[1]);
     gs_fontset_free(fs), gs_glyphs_free(g);
     SDL_Quit();
     return ok ? 0 : 1;

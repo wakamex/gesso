@@ -576,6 +576,28 @@ static void test_ui_draw(SDL_Renderer *r) {
     gs_ui_focus(ui, NULL);
     gs_ui_begin(ui), gs_ui_end(ui);
 
+    // A button filled as the main action or as one that cannot be undone, round as a pill; and the frame saved as a picture.
+    gs_ui_style *look = gs_ui_style_of(ui);
+    look->button_radius = 99;
+    gs_ui_begin(ui);
+    gs_ui_fill(ui, (gs_rect){ 0, 0, 400, 300 }, (SDL_FColor){ 0, 0, 0, 1 });
+    gs_ui_button_primary(ui, (gs_rect){ 0, 0, 100, 30 }, "Go");
+    gs_ui_button_danger(ui, (gs_rect){ 110, 0, 100, 30 }, "Erase");
+    gs_ui_end(ui);
+    char shot[1024];
+    SDL_snprintf(shot, sizeof shot, "%sgesso-test-shot.png", SDL_GetBasePath());
+    CHECK(gs_draw_save_png(r, shot));
+    SDL_Surface *saved = SDL_LoadPNG(shot);
+    CHECK(saved && saved->w == 400 && saved->h == 300);
+    if (saved) {
+        CHECK_NEAR(red_at(saved, 50, 4), look->accent.r, 0.02);    // filled in the accent
+        CHECK_NEAR(red_at(saved, 160, 4), look->warning.r, 0.02);  // and in the warning colour
+        CHECK(red_at(saved, 1, 1) < 0.05f && red_at(saved, 98, 28) < 0.05f);  // with its corners cut away
+    }
+    SDL_DestroySurface(saved);
+    SDL_RemovePath(shot);
+    look->button_radius = -1;
+
     // Opacity fades what is drawn, controls included, and a frame starts opaque.
     gs_ui_begin(ui);
     gs_ui_fill(ui, (gs_rect){ 0, 0, 400, 300 }, (SDL_FColor){ 0, 0, 0, 1 });

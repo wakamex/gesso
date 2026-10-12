@@ -8,7 +8,6 @@
 
 #include "gs_draw.h"
 #include "gs_ui.h"
-#include "stb_image_write.h"
 
 static char name[64] = "Ada Lovelace", notes[200] = "Wrapped text in a field\nof several lines.";
 static bool on = true, off;
@@ -72,10 +71,14 @@ static void page(gs_ui *ui) {
     gs_cut_left(&r, 20);
 
     gs_rect row = gs_cut_top(&left, st->row);
-    gs_ui_button(ui, gs_cut_left(&row, 100), "Save");
+    gs_ui_button_primary(ui, gs_cut_left(&row, 70), "Save");
+    gs_cut_left(&row, 6);
+    gs_ui_button(ui, gs_cut_left(&row, 70), "Cancel");
+    gs_cut_left(&row, 6);
+    gs_ui_button_danger(ui, gs_cut_left(&row, 70), "Delete");
     gs_cut_left(&row, 10);
-    gs_ui_toggle(ui, gs_cut_left(&row, 80), "On", &on);
-    gs_ui_toggle(ui, gs_cut_left(&row, 80), "Off", &off);
+    gs_ui_toggle(ui, gs_cut_left(&row, 60), "On", &on);
+    gs_ui_toggle(ui, gs_cut_left(&row, 60), "Off", &off);
     gs_cut_top(&left, 10);
     gs_ui_field(ui, gs_cut_top(&left, st->row), "name", name, sizeof name, "Name");
     gs_cut_top(&left, 10);
@@ -146,6 +149,7 @@ int main(int argc, char **argv) {
     gs_fontset *fs = gs_fontset_system();
     gs_ui *ui = gs_ui_new(w, r, fs);
     gs_ui_style_of(ui)->radius = argc > 2 ? (float)SDL_atof(argv[2]) : 6;
+    gs_ui_style_of(ui)->button_radius = 99;  // pills, beside fields with the smaller radius
     page(ui);
     for (int i = 0; i < (argc > 3 ? SDL_atoi(argv[3]) : 0); i++) {  // Tab pressed so many times, to see a control's focus mark
         SDL_Event e = { .key = { .type = SDL_EVENT_KEY_DOWN, .key = SDLK_TAB, .down = true } };
@@ -160,9 +164,7 @@ int main(int argc, char **argv) {
         SDL_Delay(600);
     }
     for (int frame = 0; frame < 3; frame++) page(ui);  // (a glyph first drawn in one frame appears in the next)
-    SDL_Surface *s = SDL_RenderReadPixels(r, NULL), *c = s ? SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA32) : NULL;
-    bool ok = c && stbi_write_png(argv[1], c->w, c->h, 4, c->pixels, c->pitch);
-    SDL_DestroySurface(c), SDL_DestroySurface(s);
+    bool ok = gs_draw_save_png(r, argv[1]);
     gs_ui_free(ui), gs_fontset_free(fs);
     SDL_Quit();
     return ok ? 0 : 1;

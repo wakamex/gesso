@@ -14,6 +14,11 @@ void gs_draw_circle(SDL_Renderer *r, float cx, float cy, float radius, SDL_FColo
 void gs_draw_line(SDL_Renderer *r, float x0, float y0, float x1, float y1, float width, SDL_FColor c);
 void gs_draw_triangle(SDL_Renderer *r, float x0, float y0, float x1, float y1, float x2, float y2, SDL_FColor c);
 
+// What the renderer has drawn since it last presented, saved as a PNG: for a test that compares
+// pictures, a bench, or an app's own screenshot option. Call it before SDL_RenderPresent. False with
+// SDL_GetError set when the pixels could not be read or the file not written.
+bool gs_draw_save_png(SDL_Renderer *r, const char *path);
+
 SDL_FColor gs_rgba(unsigned rgb, float alpha);  // 0xRRGGBB and an opacity
 // Progress t in [0, 1] eased to start fast and settle (a cubic ease-out), for a value moving from
 // one place to another over a fixed time: from + (to - from) * gs_ease(elapsed / duration).

@@ -40,6 +40,7 @@ typedef struct {
     SDL_FColor background, panel, raised, text, muted, accent, accent_text, border, warning;
     float text_px, small_px, row;  // text sizes and a control's height, in points
     float radius;                  // of the controls' corners, in points; 0 (the default) for square ones
+    float button_radius;           // of buttons' corners where they differ from the other controls' (a large value for pills); below 0 (the default), the radius above
     SDL_FColor focus;              // the ring around the control the keyboard has reached; the accent by default
 } gs_ui_style;
 
@@ -161,6 +162,10 @@ void gs_ui_disable(gs_ui *ui, bool disabled, bool dim);
 // ---- Widgets ----
 
 bool gs_ui_button(gs_ui *ui, gs_rect r, const char *label);
+// The same filled in the accent colour, for a window's main action, and in the warning colour, for
+// one that cannot be undone.
+bool gs_ui_button_primary(gs_ui *ui, gs_rect r, const char *label);
+bool gs_ui_button_danger(gs_ui *ui, gs_rect r, const char *label);
 bool gs_ui_toggle(gs_ui *ui, gs_rect r, const char *label, bool *on);  // true when changed
 // A switch, r being the switch itself (40 by 22 points, say), whose knob slides. True when changed.
 bool gs_ui_switch(gs_ui *ui, gs_rect r, const char *id, bool *on);
