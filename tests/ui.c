@@ -719,6 +719,60 @@ static void test_ui_draw(SDL_Renderer *r) {
     SDL_DestroySurface(s);
 }
 
+static char spaced[64];
+static void spaces_frame(void) {
+    gs_ui_begin(ui);
+    gs_ui_textarea(ui, (gs_rect){ 0, 120, 300, 60 }, "area", area, sizeof area, NULL);
+    gs_ui_field(ui, (gs_rect){ 0, 200, 300, 30 }, "spaced", spaced, sizeof spaced, NULL);
+    gs_ui_end(ui);
+}
+
+static int caret(SDL_Window *w) {  // where the cursor was last drawn, as the input method is told
+    int x = -1;
+    SDL_GetTextInputArea(w, NULL, &x);
+    return x;
+}
+
+// The cursor stands after spaces at the end of a line: each one typed moves it, a click past them
+// and End put it after them, and the next character goes there.
+static void test_ui_trailing_spaces(SDL_Window *w) {
+    if (gs_ui_text_width(ui, "a b", 14) <= gs_ui_text_width(ui, "ab", 14)) return;  // (no font to shape with)
+    area[0] = 0, spaced[0] = 0;
+    for (int field = 0; field < 2; field++) {
+        const char *buf = field ? spaced : area;
+        click(50, field ? 215 : 130), spaces_frame();
+        text("ab"), spaces_frame(), spaces_frame();
+        int x0 = caret(w);
+        text(" "), spaces_frame(), spaces_frame();
+        int x1 = caret(w);
+        text(" "), spaces_frame(), spaces_frame();
+        int x2 = caret(w);
+        CHECK(x1 >= x0 + 2 && x2 >= x1 + 2);
+        if (!(x1 >= x0 + 2 && x2 >= x1 + 2)) fprintf(stderr, "  %s caret at %d, %d, %d\n", field ? "field" : "area", x0, x1, x2);
+        key(SDLK_HOME, 0), spaces_frame();
+        click(290, field ? 215 : 130), spaces_frame(), spaces_frame();  // past the end of the line
+        CHECK(caret(w) == x2);
+        if (caret(w) != x2) fprintf(stderr, "  %s caret after a click at %d, not %d\n", field ? "field" : "area", caret(w), x2);
+        text("c"), spaces_frame();
+        CHECK(!strcmp(buf, "ab  c"));
+    }
+    // A line that a newline ends, and one that wraps: the space the wrap falls after leads to the next line.
+    click(50, 130), spaces_frame();
+    key(SDLK_A, SDL_KMOD_CTRL), text("ab  "), spaces_frame();
+    key(SDLK_RETURN, SDL_KMOD_SHIFT), spaces_frame();
+    text("cd"), spaces_frame();
+    key(SDLK_UP, 0), key(SDLK_END, 0), spaces_frame();
+    text("X"), spaces_frame();
+    CHECK(!strcmp(area, "ab  X\ncd"));
+    key(SDLK_A, SDL_KMOD_CTRL), spaces_frame();
+    text("a wide word and then some more words to fill up the line and a bit   over it"), spaces_frame(), spaces_frame();
+    key(SDLK_HOME, SDL_KMOD_CTRL), key(SDLK_END, 0), spaces_frame(), spaces_frame();
+    int end = caret(w);
+    key(SDLK_RIGHT, 0), spaces_frame(), spaces_frame();
+    CHECK(end > 100 && caret(w) < 20);  // (from the first line's end to the second's start)
+    area[0] = 0;
+}
+
 void test_ui(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
@@ -777,6 +831,7 @@ void test_ui(void) {
     fs = gs_fontset_system();
     ui = gs_ui_new(w, r, fs), fonts = fs;
     test_ui_multiline();
+    test_ui_trailing_spaces(w);
     test_ui_cut();
     test_ui_text_weight(r, fs);
     gs_ui_free(ui);

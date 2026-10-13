@@ -919,6 +919,18 @@ static int line_at(const gs_wrap *w, int offset) {  // the line a cursor at `off
     return line;
 }
 
+// Line `i` as the cursor moves in it: with the spaces that hang at its end, which the wrapped line
+// leaves out. A line that ends the text or a paragraph holds all of them, and one that wraps holds
+// all but the last, after which the cursor is at the start of the next line.
+static gs_wrap_line edit_line(const gs_wrap *w, int i, const char *buf) {
+    gs_wrap_line ln = w->lines[i];
+    int next = i + 1 < w->count ? w->lines[i + 1].start : (int)strlen(buf), end = next;
+    while (end > ln.end && (buf[end - 1] == '\n' || buf[end - 1] == '\r')) end--;
+    if (end == next && i + 1 < w->count) end--;  // (a soft break)
+    ln.end = SDL_max(ln.end, end);
+    return ln;
+}
+
 // A line shaped alone, and where it starts across: a right-to-left line reads from the right edge.
 static const gs_line *area_line(gs_ui *ui, const char *buf, const gs_wrap_line *ln, float inner_x, float inner_w, float *origin) {
     piece(ui, buf, ln->start, ln->end);  // (the line's own text, for whoever asks where a point falls in it)
@@ -930,7 +942,8 @@ static const gs_line *area_line(gs_ui *ui, const char *buf, const gs_wrap_line *
 static float caret_x(gs_ui *ui, const char *buf, const gs_wrap_line *ln, int offset, float inner_x, float inner_w) {
     float origin;
     const gs_line *l = area_line(ui, buf, ln, inner_x, inner_w, &origin);
-    return origin + (l ? gs_line_caret(l, SDL_clamp(offset, ln->start, ln->end) - ln->start) / ui->scale : 0);
+    float x = origin + (l ? gs_line_caret(l, SDL_clamp(offset, ln->start, ln->end) - ln->start) / ui->scale : 0);
+    return SDL_clamp(x, inner_x, inner_x + inner_w);  // (spaces may hang past the edge)
 }
 
 // The offset nearest to point x across line `ln`.
@@ -1027,15 +1040,16 @@ static bool area_edit(gs_ui *ui, widget *w, char *buf, size_t size, gs_rect inne
             else select_to(w, left ? (ctrl ? word_prev(buf, w->cursor) : gs_utf8_grapheme_prev(buf, w->cursor)) : (ctrl ? word_next(buf, len, w->cursor) : gs_utf8_grapheme_next(buf, w->cursor)), shift);
         } else if (k == SDLK_UP || k == SDLK_DOWN) {
             int line = wr ? line_at(wr, w->cursor) : 0, to = line + (k == SDLK_UP ? -1 : 1);
-            if (!w->want) w->want_x = caret_x(ui, buf, &wr->lines[line], w->cursor, inner.x, inner.w), w->want = true;
+            gs_wrap_line from = edit_line(wr, line, buf), onto = edit_line(wr, SDL_clamp(to, 0, wr->count - 1), buf);
+            if (!w->want) w->want_x = caret_x(ui, buf, &from, w->cursor, inner.x, inner.w), w->want = true;
             if (to < 0) select_to(w, 0, shift);
             else if (to >= wr->count) select_to(w, len, shift);
-            else select_to(w, offset_at(ui, buf, &wr->lines[to], w->want_x, inner.x, inner.w), shift);
+            else select_to(w, offset_at(ui, buf, &onto, w->want_x, inner.x, inner.w), shift);
             vertical = true;
         } else if (k == SDLK_HOME || k == SDLK_END) {
             bool home = k == SDLK_HOME;
             if (ctrl) select_to(w, home ? 0 : len, shift);
-            else select_to(w, home ? wr->lines[line_at(wr, w->cursor)].start : wr->lines[line_at(wr, w->cursor)].end, shift);
+            else select_to(w, home ? wr->lines[line_at(wr, w->cursor)].start : edit_line(wr, line_at(wr, w->cursor), buf).end, shift);
         } else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER) && shift) {
             changed |= put(buf, size, w, "\n", 1);  // (a plain Enter is the app's)
         } else if (!ctrl && !(mods & SDL_KMOD_ALT) && k >= 32 && k < 127) {
@@ -1065,12 +1079,13 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
         moved = true;
     }
     if (ui->focus == h && ui->in.pressed && !gs_rect_contains(r, ui->in.x, ui->in.y)) gs_ui_focus(ui, NULL);  // a click elsewhere leaves it
-    if (ui->drag == h && ui->in.down) {
+    if (ui->drag == h && (ui->in.down || ui->in.pressed)) {
         const gs_wrap *wr = wrap_of(ui, buf, px, inner.w);
         if (wr) {
             int line = SDL_clamp((int)floorf((ui->in.y - inner.y + w->scroll) / lh), 0, wr->count - 1);
             bool extend = !ui->in.pressed || (SDL_GetModState() & SDL_KMOD_SHIFT);
-            int at = offset_at(ui, buf, &wr->lines[line], ui->in.x, inner.x, inner.w);
+            gs_wrap_line under = edit_line(wr, line, buf);
+            int at = offset_at(ui, buf, &under, ui->in.x, inner.x, inner.w);
             if (ui->in.pressed && !extend) w->anchor = at;
             else if (ui->in.pressed) w->anchor = w->anchored ? w->anchor : w->cursor;
             w->cursor = at, w->want = false, ui->caret_since = ui->now;
@@ -1101,18 +1116,19 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
     bool has = w->anchored && lo != hi;
     for (int i = wr ? (int)(w->scroll / lh) : 0; wr && i < wr->count && inner.y + i * lh - w->scroll < r.y + r.h; i++) {
         const gs_wrap_line *ln = &wr->lines[i];
+        gs_wrap_line el = edit_line(wr, i, buf);
         float top = inner.y + i * lh - w->scroll;
-        if (has && hi > ln->start && (lo <= ln->end || (i + 1 < wr->count && lo < wr->lines[i + 1].start))) {  // the selected part of the line
-            int from = SDL_max(lo, ln->start), to = SDL_min(hi, ln->end);
-            float x0 = caret_x(ui, buf, ln, from, inner.x, inner.w), x1 = caret_x(ui, buf, ln, to, inner.x, inner.w);
-            if (hi > ln->end) x1 += 4;  // (the line end it runs past)
+        if (has && hi > ln->start && (lo <= el.end || (i + 1 < wr->count && lo < wr->lines[i + 1].start))) {  // the selected part of the line
+            int from = SDL_max(lo, ln->start), to = SDL_min(hi, el.end);
+            float x0 = caret_x(ui, buf, &el, from, inner.x, inner.w), x1 = caret_x(ui, buf, &el, to, inner.x, inner.w);
+            if (hi > el.end) x1 += 4;  // (the line end it runs past)
             gs_ui_fill(ui, (gs_rect){ fminf(x0, x1), top, fabsf(x1 - x0), lh }, ui->style.border);
         }
         wrapped_line(ui, buf, ln, px, inner.x, inner.w, top, lh, ink(ui, ui->style.text));
     }
     if (focused && wr) {
-        const gs_wrap_line *ln = &wr->lines[cline];
-        float cx = caret_x(ui, buf, ln, w->cursor, inner.x, inner.w), top = inner.y + cline * lh - w->scroll;
+        gs_wrap_line ln = edit_line(wr, cline, buf);
+        float cx = caret_x(ui, buf, &ln, w->cursor, inner.x, inner.w), top = inner.y + cline * lh - w->scroll;
         if (ui->composition[0]) {  // what the input method is composing, underlined at the cursor
             float cw = gs_ui_text(ui, (gs_rect){ cx, top, 1e6f, lh }, ui->composition, px, ui->style.accent, -1);
             gs_ui_fill(ui, (gs_rect){ cx, top + lh - 3, cw, 1 }, ui->style.accent);
