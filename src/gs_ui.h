@@ -105,6 +105,18 @@ void gs_ui_font(gs_ui *ui, gs_fontset *fonts);
 // draws them. Both keep a text's lines for the frames that ask again, so a few hundred texts can be
 // drawn each frame without being broken into lines each time.
 float gs_ui_text_wrapped(gs_ui *ui, gs_rect r, const char *text, float px, SDL_FColor c);
+// The same text, which the pointer can select in and which has ranges in a colour of their own: a
+// link, a mention. Ranges are byte offsets [start, end) into the text; where two overlap the first
+// counts. The app keeps what is selected: *from is where the drag began and *to where the pointer is,
+// in either order, and nothing is selected when they are equal. A press on the text sets both to
+// the place pressed and a drag moves *to, so a text whose pair changed is the one being selected in
+// and the app can empty the others'. What is between them is drawn on the style's border colour, in a
+// line that mixes directions too. *clicked is the range marked `link` that the button went down and
+// came up on with nothing selected, or -1; the pointer is a hand over one and a text beam elsewhere.
+// Copying what is selected and opening a link are the app's. The id tells this text's drag from
+// another's; an id per row drawn is enough.
+typedef struct { int start, end; SDL_FColor color; bool link; } gs_ui_text_range;
+float gs_ui_text_select(gs_ui *ui, gs_rect r, const char *id, const char *text, float px, SDL_FColor c, const gs_ui_text_range *ranges, int count, int *from, int *to, int *clicked);
 float gs_ui_text_height(gs_ui *ui, const char *text, float px, float width);
 // Wrapped text held to `max_lines` lines: when it has more, the last line shown ends with an
 // ellipsis and *cut (which may be NULL) is set, for showing the whole text some other way, in a

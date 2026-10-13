@@ -773,6 +773,78 @@ static void test_ui_trailing_spaces(SDL_Window *w) {
     area[0] = 0;
 }
 
+static const char *message = "see https://example.com/page for the notes and the rest of what was said about it yesterday";
+static int sel_from, sel_to, link_clicked;
+static SDL_Window *select_window;
+static float message_height;
+static void select_frame(void) {
+    const gs_ui_text_range link = { 4, 28, gs_rgba(0x4080ff, 1), true };
+    SDL_SetRenderDrawColor(SDL_GetRenderer(select_window), 0, 0, 0, 255);
+    SDL_RenderClear(SDL_GetRenderer(select_window));
+    gs_ui_begin(ui);
+    message_height = gs_ui_text_select(ui, (gs_rect){ 10, 100, 200, 0 }, "message", message, 14, gs_ui_style_of(ui)->text, &link, 1, &sel_from, &sel_to, &link_clicked);
+    gs_ui_end(ui);
+}
+
+static void pointer(SDL_EventType type, float x, float y) {
+    SDL_Event e = { .button = { .type = type, .button = SDL_BUTTON_LEFT, .down = type == SDL_EVENT_MOUSE_BUTTON_DOWN, .x = x, .y = y } };
+    if (type == SDL_EVENT_MOUSE_MOTION) e = (SDL_Event){ .motion = { .type = type, .x = x, .y = y } };
+    gs_ui_event(ui, &e);
+}
+
+// How many pixels of the picture are nearer to colour c than 0.02 a channel.
+static int pixels_of(SDL_Renderer *r, SDL_FColor c) {
+    SDL_Surface *s = SDL_RenderReadPixels(r, NULL), *p = s ? SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA32) : NULL;
+    int n = 0;
+    for (int y = 0; p && y < p->h; y++)
+        for (int x = 0; x < p->w; x++) {
+            const Uint8 *q = (const Uint8 *)p->pixels + y * p->pitch + x * 4;
+            if (fabsf(q[0] / 255.f - c.r) < 0.02f && fabsf(q[1] / 255.f - c.g) < 0.02f && fabsf(q[2] / 255.f - c.b) < 0.02f) n++;
+        }
+    SDL_DestroySurface(p), SDL_DestroySurface(s);
+    return n;
+}
+
+// Wrapped text the pointer selects in: a drag reports the bytes from where it began to where it is
+// and they are drawn highlighted, and a click on a range marked a link reports that range.
+static void test_ui_text_select(SDL_Renderer *r) {
+    if (gs_ui_text_width(ui, "see", 14) <= 0) return;  // (no font to shape with)
+    select_window = SDL_GetRenderWindow(r);
+    gs_ui_style_of(ui)->border = gs_rgba(0xff00ff, 1);  // (a colour nothing else in the picture has)
+    float lh = gs_ui_line_height(ui, 14), see = gs_ui_text_width(ui, "see ", 14), line = gs_ui_text_width(ui, "see https://example.com/page", 14);
+    SDL_FColor back = gs_ui_style_of(ui)->border;
+    select_frame();
+    CHECK(message_height >= 3 * lh && pixels_of(r, back) == 0);
+    // A drag from the start of the first line to the middle of the second.
+    pointer(SDL_EVENT_MOUSE_MOTION, 10, 100 + lh / 2), pointer(SDL_EVENT_MOUSE_BUTTON_DOWN, 10, 100 + lh / 2), select_frame();
+    CHECK(sel_from == 0 && sel_to == 0);
+    pointer(SDL_EVENT_MOUSE_MOTION, 10 + see + 1, 100 + lh / 2), select_frame();
+    CHECK(sel_from == 0 && sel_to == 4);
+    pointer(SDL_EVENT_MOUSE_MOTION, 80, 100 + lh * 1.5f), select_frame();
+    int second = sel_to;
+    CHECK(sel_from == 0 && second > 28 && second < (int)strlen(message));
+    pointer(SDL_EVENT_MOUSE_MOTION, 80, 500), select_frame();  // below the text: the last line
+    CHECK(sel_to > second);
+    pointer(SDL_EVENT_MOUSE_MOTION, 80, 100 + lh * 1.5f), pointer(SDL_EVENT_MOUSE_BUTTON_UP, 80, 100 + lh * 1.5f), select_frame();
+    CHECK(sel_from == 0 && sel_to == second && link_clicked == -1);  // (a drag that ends on nothing clicks nothing)
+    CHECK(pixels_of(r, back) > (int)(line * lh * 0.5f));
+    pointer(SDL_EVENT_MOUSE_MOTION, 300, 250), select_frame();  // the pointer elsewhere changes nothing
+    CHECK(sel_from == 0 && sel_to == second);
+    // A click on the link, and one on a plain word.
+    click(10 + see + 20, 100 + lh / 2), select_frame();
+    CHECK(link_clicked == 0 && sel_from == sel_to && pixels_of(r, back) == 0);
+    select_frame();
+    CHECK(link_clicked == -1);
+    click(10 + see / 2, 100 + lh / 2), select_frame();
+    CHECK(link_clicked == -1);
+    // A drag that ends on the link it began on selects and does not open it.
+    pointer(SDL_EVENT_MOUSE_MOTION, 10 + see + 1, 100 + lh / 2), pointer(SDL_EVENT_MOUSE_BUTTON_DOWN, 10 + see + 1, 100 + lh / 2), select_frame();
+    pointer(SDL_EVENT_MOUSE_MOTION, 10 + see + 60, 100 + lh / 2), pointer(SDL_EVENT_MOUSE_BUTTON_UP, 10 + see + 60, 100 + lh / 2), select_frame();
+    CHECK(link_clicked == -1 && sel_from == 4 && sel_to > 6 && sel_to < 28);
+    // The link is in its own colour.
+    CHECK(pixels_of(r, gs_rgba(0x4080ff, 1)) > 0);
+}
+
 void test_ui(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
@@ -832,6 +904,7 @@ void test_ui(void) {
     ui = gs_ui_new(w, r, fs), fonts = fs;
     test_ui_multiline();
     test_ui_trailing_spaces(w);
+    test_ui_text_select(r);
     test_ui_cut();
     test_ui_text_weight(r, fs);
     gs_ui_free(ui);

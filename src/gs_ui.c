@@ -87,6 +87,7 @@ struct gs_ui {
     float before_x, before_y;
     char composition[128];   // the input method's text being composed
     uint32_t focus, drag;    // the widget with the keyboard; the slider being dragged
+    uint32_t selecting;      // the text being selected in, through the frame the button comes up in
     bool marked;             // the keyboard moved the focus last, so the control that has it is marked
     stop stops[STOPS], last_stops[STOPS];  // the Tab order: this frame's as it is drawn, and the last frame's, which Tab walks
     int nstops, nlast;
@@ -457,6 +458,82 @@ float gs_ui_text_wrapped(gs_ui *ui, gs_rect r, const char *text, float size, SDL
     int first = r.y < 0 ? (int)(-r.y / lh) : 0;  // (only the lines on screen are drawn)
     for (int i = first; i < w->count && r.y + i * lh < ui->area.h; i++)
         wrapped_line(ui, text, &w->lines[i], size, r.x, r.w, r.y + i * lh, lh, c);
+    return w->count * lh;
+}
+
+// A wrapped line shaped alone with its text put aside for gs_line_hit, and where it starts across in pixels.
+static const gs_line *shown_line(gs_ui *ui, const char *text, const gs_wrap_line *ln, float size, float x, float width, float *origin) {
+    piece(ui, text, ln->start, ln->end);
+    const gs_line *l = gs_fontset_line_part(ui->fonts, size * ui->scale, text, ln->start, ln->end, ln->rtl ? GS_DIR_RTL : GS_DIR_LTR);
+    *origin = roundf((x + (ln->rtl && l ? width - l->width / ui->scale : 0)) * ui->scale);
+    return l;
+}
+
+// The range that byte `at` of the text is in: the first of them, or -1.
+static int range_of(const gs_ui_text_range *ranges, int count, int at, bool links) {
+    for (int i = 0; i < count; i++)
+        if (at >= ranges[i].start && at < ranges[i].end && (ranges[i].link || !links)) return i;
+    return -1;
+}
+
+// The link drawn at a point of the text, or -1.
+static int link_at(gs_ui *ui, gs_rect r, const char *text, const gs_wrap *w, float size, float lh, float x, float y, const gs_ui_text_range *ranges, int count) {
+    int i = (int)floorf((y - r.y) / lh);
+    float origin;
+    if (!count || i < 0 || i >= w->count) return -1;
+    const gs_line *l = shown_line(ui, text, &w->lines[i], size, r.x, r.w, &origin);
+    for (int g = 0; l && g < l->count; g++) {
+        float gx = origin + l->glyphs[g].x;
+        if (x * ui->scale >= gx && x * ui->scale < gx + l->glyphs[g].advance) return range_of(ranges, count, w->lines[i].start + l->glyphs[g].cluster, true);
+    }
+    return -1;
+}
+
+float gs_ui_text_select(gs_ui *ui, gs_rect r, const char *id, const char *text, float size, SDL_FColor c, const gs_ui_text_range *ranges, int count, int *from, int *to, int *clicked) {
+    if (clicked) *clicked = -1;
+    const gs_wrap *w = wrap_of(ui, text, size, r.w);
+    if (!w) return 0;
+    uint32_t h = hash(id);
+    float lh = gs_ui_line_height(ui, size), s = ui->scale, origin;
+    gs_rect box = { r.x, r.y, r.w, w->count * lh };
+    bool over = gs_ui_hovered(ui, box), press = ui->in.pressed && over;
+    if (press) ui->selecting = h;
+    if (ui->selecting == h) {  // the pointer selects from where it went down to where it is
+        const gs_wrap_line *ln = &w->lines[SDL_clamp((int)floorf((ui->in.y - r.y) / lh), 0, w->count - 1)];
+        const gs_line *l = shown_line(ui, text, ln, size, r.x, r.w, &origin);
+        int at = ln->start + (l ? SDL_min(gs_line_hit(l, ui->in.x * s - origin, ui->piece), ln->end - ln->start) : 0);
+        if (press) *from = at;
+        *to = at;
+    }
+    if (over) {
+        int link = link_at(ui, r, text, w, size, lh, ui->in.x, ui->in.y, ranges, count);
+        ui->cursor_want = link >= 0 ? 1 : 2;
+        // A link is clicked when the button goes down and up on it with nothing selected between.
+        if (clicked && link >= 0 && ui->in.released && *from == *to && link == link_at(ui, r, text, w, size, lh, ui->press_x, ui->press_y, ranges, count)) *clicked = link;
+    }
+    int lo = SDL_min(*from, *to), hi = SDL_max(*from, *to);
+    c = ink(ui, c);
+    int first = r.y < 0 ? (int)(-r.y / lh) : 0;  // (only the lines on screen are drawn)
+    for (int i = first; i < w->count && r.y + i * lh < ui->area.h; i++) {
+        const gs_wrap_line *ln = &w->lines[i];
+        const gs_line *l = shown_line(ui, text, ln, size, r.x, r.w, &origin);
+        if (!l || !l->count) continue;
+        float top = r.y + i * lh, x0 = 0, x1 = -1;
+        // What is selected, glyph by glyph as they lie: a range of the text is not one stretch of a line that mixes directions.
+        for (int g = 0; hi > lo && g <= l->count; g++) {
+            const gs_glyph_pos *p = g < l->count ? &l->glyphs[g] : NULL;
+            bool in = p && ln->start + p->cluster >= lo && ln->start + p->cluster < hi;
+            if (in && x1 >= x0 && fabsf(p->x - x1) < 0.5f) { x1 = p->x + p->advance; continue; }
+            if (x1 > x0) gs_ui_fill(ui, (gs_rect){ (origin + x0) / s, top, (x1 - x0) / s, lh }, ui->style.border);
+            x0 = in ? p->x : 0, x1 = in ? p->x + p->advance : -1;
+        }
+        float y = roundf((top + lh / 2 + size * 0.36f) * s);
+        for (int g = 0; g < l->count; g++) {
+            const gs_glyph_pos *p = &l->glyphs[g];
+            int k = range_of(ranges, count, ln->start + p->cluster, false);
+            gs_glyphs_draw(ui->glyphs, p->font, p->glyph, l->px, origin + p->x, y + p->y, 0, k < 0 ? c : ink(ui, ranges[k].color), 1);
+        }
+    }
     return w->count * lh;
 }
 
@@ -1613,6 +1690,7 @@ int gs_ui_confirm(gs_ui *ui, const char *question, const char *yes, const char *
 }
 
 void gs_ui_end(gs_ui *ui) {
+    if (!ui->in.down) ui->selecting = 0;
     if (ui->tip_wanted) {
         uint64_t rest = ui->now - ui->tip_since;
         if (rest >= TOOLTIP_MS) {
