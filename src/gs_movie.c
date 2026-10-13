@@ -32,7 +32,8 @@ struct gs_movie {
     // The decoder, only while it is wanted.
     gs_video *video;
     SDL_Thread *thread;
-    SDL_AtomicInt looping;
+    SDL_AtomicInt looping, fed;  // fed: the thread has given the decoder everything
+    gs_video_info info;   // the decoder's, as of the last frame asked for
     int first;            // the sample the thread starts at
     bool fresh;           // the decoder has shown nothing since it started
     SDL_Texture *poster;  // the first frame, kept
@@ -172,7 +173,7 @@ static int feed(void *movie) {
     double round = 0;
     for (int i = m->first;; i++) {
         if (i == m->count) {
-            if (!SDL_GetAtomicInt(&m->looping)) { gs_video_drain(m->video); break; }
+            if (!SDL_GetAtomicInt(&m->looping)) { gs_video_drain(m->video); SDL_SetAtomicInt(&m->fed, 1); break; }
             i = 0, round += m->length;
         }
         const sample *s = &m->samples[i];
@@ -213,7 +214,7 @@ static void begin_decoder(gs_movie *m, double seconds) {
     m->video = gs_video_new(m->r, 4, 0);
     if (!m->video) return;
     m->fresh = true;
-    SDL_SetAtomicInt(&m->looping, m->loop);
+    SDL_SetAtomicInt(&m->looping, m->loop), SDL_SetAtomicInt(&m->fed, 0);
     m->thread = SDL_CreateThread(feed, "gs_movie", m);
     if (!m->thread) gs_video_free(m->video), m->video = NULL;
 }
@@ -282,6 +283,22 @@ void gs_movie_rest(gs_movie *m) {
 }
 
 bool gs_movie_playing(const gs_movie *m) { return m->playing; }
+
+bool gs_movie_waiting(const gs_movie *m) {
+    if (!m->video) return !m->poster && !m->playing;  // (its first frame has not been asked for, or its decoder could not start)
+    if (m->fresh) return true;
+    // Behind its clock by more than a frame or two, with frames still to come: after a seek the
+    // decoder works forward from the key frame before the place, and each call shows how far it is.
+    const double behind = clock_now(m) - m->info.shown_pts, frame = m->length / m->count;
+    return behind > 1.5 * frame && (!SDL_GetAtomicInt((SDL_AtomicInt *)&m->fed) || m->info.queued > 0);
+}
+
+gs_video_info gs_movie_get_info(const gs_movie *m) {
+    gs_video_info info = m->info;
+    if (!info.path) info.path = "none";
+    if (!m->video) info.queued = 0, info.next_pts = -1;
+    return info;
+}
 bool gs_movie_ended(const gs_movie *m) { return m->ended; }
 double gs_movie_length(const gs_movie *m) { return m->length; }
 bool gs_movie_has_sound(const gs_movie *m) { return m->sound != NULL; }
@@ -334,10 +351,16 @@ SDL_Texture *gs_movie_frame(gs_movie *m, SDL_FRect *src, int *turns) {
     }
     if (!m->video && (m->playing || !m->poster)) begin_decoder(m, gs_movie_position(m));
     SDL_Texture *frame = m->video ? gs_video_frame(m->video, clock_now(m), src) : NULL;
+    if (m->video) m->info = gs_video_get_info(m->video);
+    if (m->video && m->info.unshown) {  // the hardware's frames cannot be shown here: again, in software
+        end_decoder(m);
+        begin_decoder(m, gs_movie_position(m));
+        frame = NULL;
+    }
     if (frame) {
         m->fresh = false;
         if (m->hold) SDL_DestroyTexture(m->hold), m->hold = NULL;
-        if (!m->poster && gs_video_get_info(m->video).shown_pts < 0.5 / 24) m->poster = keep(m, frame, src);
+        if (!m->poster && m->info.shown_pts < 0.5 / 24) m->poster = keep(m, frame, src);
         // At rest with its first frame kept, the decoder has done what it was started for.
         if (!m->playing && m->poster && clock_now(m) == 0) {
             end_decoder(m);

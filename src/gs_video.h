@@ -2,7 +2,9 @@
 // Hardware decoding is used where the system offers it, with frames handed to the renderer without a
 // copy through the CPU: VAAPI through EGL on Linux (SDL's opengles2 renderer), Direct3D 11 on Windows
 // (direct3d11), VideoToolbox on macOS (metal). Elsewhere, or when the device refuses the stream,
-// libavcodec decodes in software. Needs gesso built with -Dvideo.
+// libavcodec decodes in software. Needs gesso built with -Dvideo. One case is found only once frames
+// arrive: a renderer that cannot take the hardware's frames (one drawing in software). gs_video_info
+// then says so, and decoders made afterwards decode in software.
 //
 // One thread decodes (gs_video_decode, gs_video_flush) while the rendering thread shows frames
 // (gs_video_frame); decoded frames wait in a short queue between them, and the decoder blocks while it is full.
@@ -43,6 +45,10 @@ typedef struct {
     int width, height;     // of the last frame shown
     int queued;            // frames decoded and waiting
     long long decoded, shown, dropped;
+    // The hardware path decoded a frame the renderer could not take, and has shown nothing: this
+    // decoder will show nothing, and one made now decodes in software. Free it and start again from a
+    // key frame (gs_movie does so itself).
+    bool unshown;
     double next_pts;       // of the oldest waiting frame; < 0 when none waits
     double shown_pts;      // of the frame showing; < 0 before the first
     // Over the last whole second: how far each new frame's time was from the clock when it was shown

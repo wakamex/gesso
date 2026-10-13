@@ -44,6 +44,7 @@ struct gs_video {
     AVFrame **queue;
     int cap, count;
     bool stopped, failed;
+    bool unshown;  // a hardware frame could not be handed to the renderer, and none has been
     // The frame on screen, kept until the next replaces it, since hardware textures read from it.
     AVFrame *current;
     SDL_Texture *texture;
@@ -476,7 +477,10 @@ SDL_Texture *gs_video_frame(gs_video *v, double clock, SDL_FRect *src) {
             v->current = next;
             v->shown++;
         } else {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "gs_video: %s", SDL_GetError());
+            if (!v->unshown) SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "gs_video: %s%s", SDL_GetError(), v->path != SOFTWARE && !v->shown ? "; decoders made from now on decode in software" : "");
+            // A hardware path that cannot show its first frame will show none (a renderer drawing in
+            // software, a driver without the import): decoders made after this one do without it.
+            if (v->path != SOFTWARE && !v->shown) v->unshown = true, prepared = SOFTWARE;
             av_frame_free(&next);
             v->dropped++;
         }
@@ -494,6 +498,7 @@ gs_video_info gs_video_get_info(gs_video *v) {
         .height = v->current ? v->current->height : 0,
         .queued = v->count,
         .decoded = v->decoded, .shown = v->shown, .dropped = v->dropped,
+        .unshown = v->unshown,
         .next_pts = v->count ? frame_seconds(v->queue[0]) : -1,
         .shown_pts = v->shown ? v->last_shown_pts : -1,
         .error_ms = v->error_ms, .error_max_ms = v->error_max_ms, .jitter_ms = v->jitter_ms,

@@ -65,6 +65,7 @@ void test_movie(void) {
         CHECK(width == 320 && height == 240);
         CHECK_NEAR(gs_movie_length(m), 2.0, 0.04);
         CHECK(gs_movie_has_sound(m) && !gs_movie_playing(m) && !gs_movie_ended(m));
+        CHECK(gs_movie_waiting(m) && !SDL_strcmp(gs_movie_get_info(m).path, "none"));
         CHECK(until(m, 'r', 3));
         CHECK(gs_movie_position(m) == 0);
         // Played, it reaches the blue second about a second in; paused, it stays where it is.
@@ -81,6 +82,13 @@ void test_movie(void) {
         gs_movie_seek(m, 0.4);
         CHECK(until(m, 'r', 2));
         CHECK_NEAR(gs_movie_position(m), 0.4, 0.001);
+        // Paused, a seek to a place between key frames is reached by drawing until it stops waiting.
+        gs_movie_seek(m, 0.9);
+        CHECK(gs_movie_waiting(m));
+        for (Uint64 start = SDL_GetTicks(); gs_movie_waiting(m) && SDL_GetTicks() - start < 3000; SDL_Delay(5)) seen(m);
+        CHECK(!gs_movie_waiting(m) && seen(m) == 'r');
+        CHECK_NEAR(gs_movie_get_info(m).shown_pts, 0.9, 0.05);
+        CHECK(!SDL_strcmp(gs_movie_get_info(m).path, "software"));
         gs_movie_seek(m, 1.5);
         CHECK(until(m, 'b', 2));
         gs_movie_play(m, true);

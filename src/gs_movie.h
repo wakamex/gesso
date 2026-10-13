@@ -10,13 +10,15 @@
 // decoding the app calls gs_video_prepare before creating its window, as for gs_video; without that,
 // or on a renderer it did not name, movies decode in software, which any renderer shows.
 //
-// An app that draws only when something happens has nothing to wake it while a movie plays: ask for
-// frames while gs_movie_playing is true (gs_ui_wake(ui, 16), say), and notice gs_movie_ended in one
-// of them.
+// An app that draws only when something happens has nothing to wake it while a movie plays, or while
+// a paused one is still reaching the frame it is to show: ask for frames while gs_movie_playing or
+// gs_movie_waiting is true (gs_ui_wake(ui, 16), say), and notice gs_movie_ended in one of them.
 #pragma once
 #include <SDL3/SDL.h>
 #include <stdbool.h>
 #include <stddef.h>
+
+#include "gs_video.h"
 
 typedef struct gs_movie gs_movie;
 
@@ -34,6 +36,11 @@ bool gs_movie_has_sound(const gs_movie *m);
 
 void gs_movie_play(gs_movie *m, bool playing);  // played again after it ended, it starts over
 bool gs_movie_playing(const gs_movie *m);
+// True while what gs_movie_draw shows is not yet the frame for the movie's place: before its first
+// frame is decoded, and after a seek, when the decoder works forward from the key frame before the
+// place and each frame drawn shows how far it has come (a file with one key frame takes longest).
+// Keep drawing until it is false, playing or not.
+bool gs_movie_waiting(const gs_movie *m);
 void gs_movie_seek(gs_movie *m, double seconds);
 double gs_movie_position(const gs_movie *m);  // seconds
 bool gs_movie_ended(const gs_movie *m);       // it played to its end, and went back to its first frame, paused
@@ -51,6 +58,12 @@ bool gs_movie_draw(gs_movie *m, SDL_FRect dst);
 // The same frame for an app that draws it itself: the texture, the part of it holding the picture,
 // and the quarter turns clockwise it is to be shown with. NULL as above.
 SDL_Texture *gs_movie_frame(gs_movie *m, SDL_FRect *src, int *turns);
+
+// How it is being decoded: gs_video's figures for the decoder it has, as of the last frame drawn. The
+// path says whether the system's hardware decodes it ("d3d11va", "vaapi", "videotoolbox") or
+// libavcodec ("software"). At rest they are those of the last decoder it had, and the path is "none"
+// before it has had one.
+gs_video_info gs_movie_get_info(const gs_movie *m);
 
 // Its sound, a gs_mix_fn that adds: add it to the mix with the movie as its user pointer
 // (gs_mix_add) if gs_movie_has_sound. A movie with sound that is not in the mix, or is muted or

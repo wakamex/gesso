@@ -376,6 +376,21 @@ pub fn build(b: *std.Build) void {
         run.step.dependOn(&install.step);
         run.addPassthruArgs();
         b.step("bench-video", "Play an H.264 file through gs_video and report CPU and memory").dependOn(&run.step);
+
+        // zig build bench-movie -Dvideo -- FILE [software]: a movie played through gs_movie's course in a window (bench/movie.c).
+        const movie_bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+        movie_bench.addCSourceFile(.{ .file = b.path("bench/movie.c"), .flags = flags });
+        movie_bench.addIncludePath(b.path("src"));
+        for (a.include) |dir| movie_bench.addIncludePath(dir);
+        useSdk(movie_bench, macos_sdk);
+        movie_bench.linkLibrary(lib);
+        const movie_exe = b.addExecutable(.{ .name = "bench-movie", .root_module = movie_bench });
+        const movie_install = b.addInstallArtifact(movie_exe, .{});
+        const movie_run = b.addRunArtifact(movie_exe);
+        movie_run.step.dependOn(&movie_install.step);
+        movie_run.addPassthruArgs();
+        b.step("bench-movie", "Play a movie file through gs_movie and report how it is decoded").dependOn(&movie_run.step);
+        benches.dependOn(&movie_install.step);
     }
 }
 
