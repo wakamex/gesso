@@ -28,6 +28,9 @@ void gs_video_free(gs_video *v);
 // after an error the decoder cannot recover from.
 bool gs_video_decode(gs_video *v, const uint8_t *data, size_t len, double pts);
 void gs_video_flush(gs_video *v);  // drops queued frames and the decoder's references (at a discontinuity)
+// At the end of a stream, on the decoding thread: the frames the decoder still holds (it keeps a few
+// back to put them in order) are queued. Nothing more is decoded after it until gs_video_flush.
+void gs_video_drain(gs_video *v);
 void gs_video_stop(gs_video *v);   // unblocks and refuses the decoder; any thread
 
 // On the rendering thread: shows the newest frame whose time has come at `clock` (seconds, on the

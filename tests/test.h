@@ -24,6 +24,7 @@ void test_image(void);
 void test_json(void);
 void test_live(void);
 void test_media(void);
+void test_movie(void);
 void test_notify(void);
 void test_oauth(void);
 void test_secret(void);

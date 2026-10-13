@@ -231,7 +231,7 @@ pub fn build(b: *std.Build) void {
     if (av) |a| {
         mod.linkLibrary(a.lib);
         for (a.include) |dir| mod.addIncludePath(dir);
-        mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_video.c", "gs_aac.c", "gs_live.c" }, .flags = flags });
+        mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_video.c", "gs_aac.c", "gs_live.c", "gs_movie.c" }, .flags = flags });
     }
     // gs_sound plays AAC through gs_aac, where gesso has it.
     mod.addCSourceFile(.{ .file = b.path("src/gs_sound.c"), .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_HAVE_AAC"} else flags });
@@ -257,7 +257,7 @@ pub fn build(b: *std.Build) void {
 
     // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "notify.c", "oauth.c", "secret.c", "sound.c", "stream.c", "text.c", "ui.c", "voice.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "movie.c", "notify.c", "oauth.c", "secret.c", "sound.c", "stream.c", "text.c", "ui.c", "voice.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
     tests.addIncludePath(b.path("src"));
     if (av) |a| for (a.include) |dir| tests.addIncludePath(dir);
     useSdk(tests, macos_sdk);

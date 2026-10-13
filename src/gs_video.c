@@ -272,6 +272,15 @@ bool gs_video_decode(gs_video *v, const uint8_t *data, size_t len, double pts) {
     }
 }
 
+void gs_video_drain(gs_video *v) {
+    if (v->stopped || v->failed || avcodec_send_packet(v->codec, NULL) < 0) return;
+    for (;;) {
+        AVFrame *f = av_frame_alloc();
+        if (!f || avcodec_receive_frame(v->codec, f) < 0) { av_frame_free(&f); return; }
+        if (!push(v, f)) return;
+    }
+}
+
 void gs_video_flush(gs_video *v) {
     avcodec_flush_buffers(v->codec);
     SDL_LockMutex(v->lock);
