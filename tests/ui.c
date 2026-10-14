@@ -871,6 +871,14 @@ void test_ui(void) {
     CHECK(!strcmp(field, "aXb"));
     key(SDLK_A, SDL_KMOD_CTRL), text("z"), frame();  // typing over a select-all replaces the text
     CHECK(!strcmp(field, "z"));
+    // A field with the keyboard blinks, and asks for no frames while the window lacks the keyboard.
+    frame(), frame();
+    CHECK(gs_ui_wait_ms(ui) > 0 && gs_ui_wait_ms(ui) <= 530);
+    SDL_Event away = { .window = { .type = SDL_EVENT_WINDOW_FOCUS_LOST } }, back = { .window = { .type = SDL_EVENT_WINDOW_FOCUS_GAINED } };
+    gs_ui_event(ui, &away), frame(), frame();
+    CHECK(gs_ui_wait_ms(ui) == -1 && gs_ui_focused(ui, "field"));
+    gs_ui_event(ui, &back), frame();
+    CHECK(gs_ui_wait_ms(ui) > 480 && gs_ui_wait_ms(ui) <= 530);  // (the caret shows from now, for a whole blink)
     key(SDLK_ESCAPE, 0), frame();
     CHECK(field[0] == 0);
 

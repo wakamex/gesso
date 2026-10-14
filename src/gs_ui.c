@@ -107,6 +107,7 @@ struct gs_ui {
     int cursor_want, cursor_now;  // the pointer's shape: 0 the default, 1 a hand, 2 a text beam, 3 the four arrows of something moved
     SDL_Cursor *cursors[4];
     uint64_t caret_since;
+    bool away;               // the window does not have the keyboard: no caret shows or blinks
     widget states[STATES];
     // The floating layer: what it covered last frame takes the pointer from the widgets under it.
     gs_rect float_last, float_now;
@@ -214,7 +215,8 @@ bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
         return false;
     case SDL_EVENT_MOUSE_WHEEL: p->wheel += e->wheel.y; return false;
     case SDL_EVENT_WINDOW_MOUSE_LEAVE: p->x = p->y = OUTSIDE; return false;  // nothing is under a pointer that has left
-    case SDL_EVENT_WINDOW_FOCUS_LOST: ui->composition[0] = 0, ui->capture = 0; return false;  // (keys pressed elsewhere are not a hotkey field's)
+    case SDL_EVENT_WINDOW_FOCUS_LOST: ui->composition[0] = 0, ui->capture = 0, ui->away = true; return false;  // (keys pressed elsewhere are not a hotkey field's)
+    case SDL_EVENT_WINDOW_FOCUS_GAINED: ui->away = false, ui->caret_since = SDL_GetTicks(); return false;  // (the caret shows at once)
     case SDL_EVENT_KEY_DOWN:  // (whether a key is taken is settled while drawing: see gs_ui_key)
         if (p->nkeys < KEYS) p->keys[p->nkeys] = e->key.key, p->scans[p->nkeys] = e->key.scancode, p->mods[p->nkeys++] = e->key.mod;
         return false;
@@ -807,6 +809,15 @@ bool gs_ui_slider(gs_ui *ui, gs_rect r, const char *id, float *value, float min,
     return *value != before;
 }
 
+// A text cursor, on for BLINK_MS and off for as long from when it last moved, with a frame asked for
+// at each change; none in a window without the keyboard, which typing would not reach.
+static void caret(gs_ui *ui, gs_rect r) {
+    if (ui->away) return;
+    uint64_t t = ui->now - ui->caret_since;
+    if (t % (2 * BLINK_MS) < BLINK_MS) gs_ui_fill(ui, r, ui->style.text);
+    wake_within(ui, (int)(BLINK_MS - t % BLINK_MS));
+}
+
 // The field's edits: typed text, and the keys that move the cursor or change the text.
 static bool edit(gs_ui *ui, widget *w, char *buf, size_t size, bool secret) {
     bool changed = false;
@@ -924,9 +935,7 @@ static bool field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, 
             gs_ui_fill(ui, (gs_rect){ cx, r.y + r.h - 7, cw, 1 }, ui->style.accent);
             cx += cw;
         }
-        uint64_t t = ui->now - ui->caret_since;
-        if (t % (2 * BLINK_MS) < BLINK_MS) gs_ui_fill(ui, (gs_rect){ cx, r.y + 6, 1.5f, r.h - 12 }, ui->style.text);
-        wake_within(ui, (int)(BLINK_MS - t % BLINK_MS));
+        caret(ui, (gs_rect){ cx, r.y + 6, 1.5f, r.h - 12 });
         SDL_Rect area = { (int)r.x, (int)r.y, (int)r.w, (int)r.h };  // where the input method's candidates go
         SDL_SetTextInputArea(ui->win, &area, (int)(cx - r.x));
     }
@@ -1211,9 +1220,7 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
             gs_ui_fill(ui, (gs_rect){ cx, top + lh - 3, cw, 1 }, ui->style.accent);
             cx += cw;
         }
-        uint64_t t = ui->now - ui->caret_since;
-        if (t % (2 * BLINK_MS) < BLINK_MS) gs_ui_fill(ui, (gs_rect){ cx, top + 2, 1.5f, lh - 4 }, ui->style.text);
-        wake_within(ui, (int)(BLINK_MS - t % BLINK_MS));
+        caret(ui, (gs_rect){ cx, top + 2, 1.5f, lh - 4 });
         SDL_Rect area = { (int)r.x, (int)top, (int)r.w, (int)lh };  // where the input method's candidates go
         SDL_SetTextInputArea(ui->win, &area, (int)(cx - r.x));
     }
