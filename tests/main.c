@@ -8,6 +8,7 @@ const char *test_streams;  // tests/streams, from the command line
 static const struct { const char *name; void (*run)(void); } tests[] = {
     { "gs_abr", test_abr },
     { "gs_desk", test_desk },
+    { "gs_eta", test_eta },
     { "gs_hls", test_hls },
     { "gs_http", test_http },
     { "gs_image", test_image },
