@@ -405,8 +405,8 @@ fn addEchoCanceller(b: *std.Build, target: std.Build.ResolvedTarget, sdk: ?std.B
     const t = target.result;
     const webrtc = b.lazyDependency("webrtc_audio_processing", .{});
     const abseil = b.lazyDependency("abseil", .{});
-    const src = (webrtc orelse return null).path("webrtc-audio-processing-2.1/webrtc");
-    const absl = (abseil orelse return null).path("abseil-cpp-20240722.0");
+    const src = (webrtc orelse return null).path("webrtc");
+    const absl = (abseil orelse return null).path(".");
     // Its checks and logging are compiled out, and it is always optimized and never sanitized.
     var list: std.ArrayList([]const u8) = .empty;
     list.appendSlice(b.allocator, &.{ "-std=c++17", "-w", "-DNDEBUG", "-DWEBRTC_APM_DEBUG_DUMP=0", "-DRTC_DISABLE_LOGGING", "-DRTC_DISABLE_CHECK_MSG", "-DRTC_DISABLE_METRICS" }) catch @panic("OOM");

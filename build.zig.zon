@@ -16,12 +16,12 @@
         // Abseil release it is written against, for its headers.
         .webrtc_audio_processing = .{
             .url = "https://freedesktop.org/software/pulseaudio/webrtc-audio-processing/webrtc-audio-processing-2.1.tar.xz",
-            .hash = "N-V-__8AAMgQPABHXldy6pRhshtWba1U-yQoFdiHZrnTWuQV",
+            .hash = "N-V-__8AAMgQPABO2msGPM0r0sbOsTbSfJDzW3u_ahBsn9O2",
             .lazy = true,
         },
         .abseil = .{
             .url = "https://github.com/abseil/abseil-cpp/releases/download/20240722.0/abseil-cpp-20240722.0.tar.gz",
-            .hash = "N-V-__8AACJgoQDBT3tveZBhLCI2BsWS0i_iL59CqRlOYjt1",
+            .hash = "N-V-__8AACJgoQA_Y0S-Ha_Y_Ay2l4nKl7HnHElnT4GBScZ7",
             .lazy = true,
         },
         // Fetched only for -Dvideo: FFmpeg's sources, and NASM to assemble its x86 code.
