@@ -868,6 +868,72 @@ static void test_ui_text_select(SDL_Renderer *r) {
     CHECK(pixels_of(r, gs_rgba(0x4080ff, 1)) > 0);
 }
 
+static void area_frame(void) {
+    gs_ui_begin(ui);
+    gs_ui_textarea(ui, (gs_rect){ 0, 120, 300, 60 }, "area", area, sizeof area, NULL);
+    gs_ui_end(ui);
+}
+
+// Undo and redo: typing goes back a word at a time, a paste and the deletion of a selection a step
+// each, the cursor and selection with them; a text the app puts in starts a fresh history.
+static void test_ui_undo(void) {
+    area[0] = 0;
+    click(50, 130), area_frame();
+    text("hello"), area_frame(), text(" "), area_frame(), text("wor"), area_frame(), text("ld"), area_frame();
+    CHECK(!strcmp(area, "hello world"));
+    key(SDLK_Z, SDL_KMOD_CTRL), area_frame();
+    CHECK(!strcmp(area, "hello "));
+    key(SDLK_Z, SDL_KMOD_CTRL), area_frame();
+    CHECK(area[0] == 0);
+    key(SDLK_Z, SDL_KMOD_CTRL | SDL_KMOD_SHIFT), area_frame();
+    CHECK(!strcmp(area, "hello "));
+    key(SDLK_Y, SDL_KMOD_CTRL), area_frame();
+    CHECK(!strcmp(area, "hello world"));
+    key(SDLK_Y, SDL_KMOD_CTRL), area_frame();  // (nothing more to redo)
+    CHECK(!strcmp(area, "hello world"));
+    // Backspace a character at a time is one step; a selection deleted is one, and comes back selected.
+    key(SDLK_BACKSPACE, 0), key(SDLK_BACKSPACE, 0), area_frame(), key(SDLK_BACKSPACE, 0), area_frame();
+    CHECK(!strcmp(area, "hello wo"));
+    key(SDLK_Z, SDL_KMOD_CTRL), area_frame();
+    CHECK(!strcmp(area, "hello world"));
+    gs_ui_textarea_select(ui, "area", 0, 5), area_frame();
+    key(SDLK_DELETE, 0), area_frame();
+    CHECK(!strcmp(area, " world"));
+    text("X"), area_frame();
+    CHECK(!strcmp(area, "X world"));
+    key(SDLK_Z, SDL_KMOD_CTRL), area_frame();
+    CHECK(!strcmp(area, " world"));
+    key(SDLK_Z, SDL_KMOD_CTRL), area_frame();
+    int from = -1, to = -1;
+    CHECK(!strcmp(area, "hello world") && gs_ui_textarea_selection(ui, "area", &from, &to) && from == 0 && to == 5);
+    // A paste is one step.
+    SDL_SetClipboardText("pasted text");
+    key(SDLK_END, SDL_KMOD_CTRL), key(SDLK_V, SDL_KMOD_CTRL), area_frame();
+    CHECK(!strcmp(area, "hello worldpasted text"));
+    key(SDLK_Z, SDL_KMOD_CTRL), area_frame();
+    CHECK(!strcmp(area, "hello world"));
+    // The app clears the box (a message sent): nothing it held before can be brought back.
+    area[0] = 0, area_frame();
+    key(SDLK_Z, SDL_KMOD_CTRL), area_frame();
+    CHECK(area[0] == 0);
+    strcpy(area, "a draft"), area_frame();  // (a draft put back)
+    text("!"), area_frame();
+    key(SDLK_Z, SDL_KMOD_CTRL), area_frame(), key(SDLK_Z, SDL_KMOD_CTRL), area_frame();
+    CHECK(!strcmp(area, "a draft"));
+    area[0] = 0;
+
+    // The single-line field too, and Esc's clearing.
+    click(50, 15), frame();
+    text("ab"), frame(), text(" "), frame(), text("cd"), frame();
+    key(SDLK_ESCAPE, 0), frame();
+    CHECK(field[0] == 0);
+    key(SDLK_Z, SDL_KMOD_CTRL), frame();
+    CHECK(!strcmp(field, "ab cd"));
+    key(SDLK_Z, SDL_KMOD_CTRL), frame();
+    CHECK(!strcmp(field, "ab "));
+    key(SDLK_ESCAPE, 0), frame(), key(SDLK_ESCAPE, 0), frame();
+}
+
 void test_ui(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
@@ -935,6 +1001,7 @@ void test_ui(void) {
     ui = gs_ui_new(w, r, fs), fonts = fs;
     test_ui_multiline();
     test_ui_trailing_spaces(w);
+    test_ui_undo();
     test_ui_text_select(r);
     test_ui_cut();
     test_ui_text_weight(r, fs);

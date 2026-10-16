@@ -197,6 +197,13 @@ bool gs_ui_stops(gs_ui *ui, gs_rect r, const char *id, int *value, int count);
 bool gs_ui_link(gs_ui *ui, gs_rect r, const char *label);
 bool gs_ui_slider(gs_ui *ui, gs_rect r, const char *id, float *value, float min, float max);  // true while it changes
 // A single-line text field editing buf (UTF-8). True when the text changed this frame.
+//
+// A field and a text area undo their own edits with Ctrl+Z (Cmd+Z on macOS) and redo them with
+// Ctrl+Shift+Z or Ctrl+Y (Cmd+Shift+Z): typing a word at a time, or after a pause of a second; a run
+// of Backspace or Delete as one; a paste, a cut, a selection deleted or typed over and Esc's clearing
+// each as one. The cursor and selection go back with the text. A text the app puts in the buffer (a
+// draft, a cleared box after sending) starts a fresh history, so what was there is not brought back.
+// The last 4 controls edited keep 100 steps each; a secret field keeps none.
 bool gs_ui_field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, const char *placeholder);
 // The same with flags. A masked field shows a dot for each character and does not copy or cut, for
 // a password or an API key; with GS_UI_REVEAL it shows its text while it has the keyboard. Esc empties

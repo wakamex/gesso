@@ -55,8 +55,26 @@ typedef enum { FL_FILL, FL_TEXT, FL_FRAME, FL_ROUND, FL_OUTLINE } fl_kind;
 typedef struct { fl_kind kind; gs_rect r; SDL_FColor c; char text[160]; float px; int align; float radius, width; gs_fontset *fonts; } fl_item;
 
 #define WRAPS 256      // texts kept wrapped
+#define HISTORIES 4    // fields and text areas whose edits can be undone
+#define UNDOS 100      // the steps each keeps
+#define PAUSE_MS 1000  // typing after a pause this long is a step of its own
 
 typedef struct { char *text; int size4, width4, max; gs_fontset *fonts; gs_wrap *wrap; } wrap_entry;
+
+// A field's or text area's text, cursor and selection at one moment.
+typedef struct { char *text; int cursor, anchor; bool anchored, all; } snapshot;
+enum { EDIT_TYPE = 1, EDIT_DELETE, EDIT_ONE };  // typing, deleting a character at a time, and edits that are each a step
+// What a control can undo and redo. `last` is the text it left in the buffer, so a text the app put
+// there is told from its own and starts a fresh history. `kind`, `at` and `end` are the edit being
+// grouped: its kind, when it last added to the step, and where it left the cursor.
+typedef struct {
+    uint32_t id;
+    uint64_t frame;
+    char *last;
+    snapshot undo[UNDOS], redo[UNDOS];
+    int nundo, nredo, kind, end;
+    uint64_t at;
+} history;
 
 typedef struct { uint32_t id, page; gs_rect r; } stop;  // a control the Tab key reaches, and the page it is in
 typedef struct { gs_rect r; bool on; } clip_state;
@@ -130,6 +148,7 @@ struct gs_ui {
     int wait_ms;
     bool focus_moved;        // the keyboard went to another control since the last frame ended
     bool had_input;          // this frame was handed a press, a release, the wheel, a key or text
+    history histories[HISTORIES];
     wrap_entry wraps[WRAPS];  // wrapped text kept, so text drawn every frame is broken into lines once
     char *piece;              // a line's text, copied out to be shaped
     size_t piece_cap;
@@ -175,6 +194,12 @@ void gs_ui_free(gs_ui *ui) {
     gs_glyphs_free(ui->glyphs);
     for (int i = 1; i < 4; i++) SDL_DestroyCursor(ui->cursors[i]);
     for (int i = 0; i < WRAPS; i++) SDL_free(ui->wraps[i].text), gs_wrap_free(ui->wraps[i].wrap);
+    for (int i = 0; i < HISTORIES; i++) {
+        history *h = &ui->histories[i];
+        for (int j = 0; j < h->nundo; j++) free(h->undo[j].text);
+        for (int j = 0; j < h->nredo; j++) free(h->redo[j].text);
+        free(h->last);
+    }
     free(ui->piece);
     free(ui);
 }
@@ -843,35 +868,115 @@ static void caret(gs_ui *ui, gs_rect r) {
     wake_within(ui, (int)(BLINK_MS - t % BLINK_MS));
 }
 
+// ---- Undo ----
+
+static char *copy(const char *s) {
+    size_t n = strlen(s) + 1;
+    char *c = malloc(n);
+    return c ? memcpy(c, s, n) : NULL;
+}
+
+static void forget(snapshot *steps, int *n) {
+    for (int i = 0; i < *n; i++) free(steps[i].text);
+    *n = 0;
+}
+
+// The history of control `w`, with `buf` as the app hands it this frame: a fresh one when the app
+// changed the text since the control last did. NULL for a secret's (what is typed there is not kept).
+static history *history_of(gs_ui *ui, widget *w, const char *buf, bool secret) {
+    if (secret) return NULL;
+    history *h = NULL, *oldest = &ui->histories[0];
+    for (int i = 0; i < HISTORIES && !h; i++) {
+        if (ui->histories[i].id == w->id) h = &ui->histories[i];
+        else if (ui->histories[i].frame < oldest->frame) oldest = &ui->histories[i];
+    }
+    if (!h) h = oldest, forget(h->undo, &h->nundo), forget(h->redo, &h->nredo), free(h->last), h->last = NULL, h->id = w->id;
+    h->frame = ui->frame;
+    if (!h->last || strcmp(h->last, buf)) forget(h->undo, &h->nundo), forget(h->redo, &h->nredo), free(h->last), h->last = copy(buf), h->kind = 0;
+    if (w->cursor != h->end) h->kind = 0;  // (the cursor was moved: typing there is a new step)
+    return h;
+}
+
+static snapshot take(const widget *w, const char *buf) { return (snapshot){ copy(buf), w->cursor, w->anchor, w->anchored, w->all }; }
+
+static void push(snapshot *steps, int *n, snapshot s) {
+    if (!s.text) return;
+    if (*n == UNDOS) free(steps[0].text), memmove(steps, steps + 1, sizeof *steps * (UNDOS - 1)), --*n;  // (the oldest goes)
+    steps[(*n)++] = s;
+}
+
+// Before an edit of `kind`, typing `typed` when it is typing: the text as it is becomes a step to undo
+// back to, unless the edit continues the one before (typing on within a word, or deleting on, with no
+// pause or cursor move between).
+static void before_edit(gs_ui *ui, history *h, const widget *w, const char *buf, int kind, const char *typed) {
+    if (!h) return;
+    bool word = kind == EDIT_TYPE && typed && typed[0] != ' ' && typed[0] != '\n' && w->cursor > 0 && (buf[w->cursor - 1] == ' ' || buf[w->cursor - 1] == '\n');
+    if (kind == EDIT_ONE || kind != h->kind || ui->now - h->at > PAUSE_MS || word || !h->nundo) push(h->undo, &h->nundo, take(w, buf)), forget(h->redo, &h->nredo);
+    h->kind = kind == EDIT_ONE ? 0 : kind, h->at = ui->now;
+}
+
+// After the control's edits this frame: what it left in the buffer.
+static void after_edits(history *h, const widget *w, const char *buf) {
+    if (!h) return;
+    h->end = w->cursor;
+    if (!h->last || strcmp(h->last, buf)) free(h->last), h->last = copy(buf);
+}
+
+// Undoes (or redoes) a step: the text, cursor and selection go back to it, and what was there goes on the other stack.
+static bool undo(history *h, widget *w, char *buf, size_t size, bool redo) {
+    if (!h) return false;
+    snapshot *from = redo ? h->redo : h->undo, *to = redo ? h->undo : h->redo;
+    int *nfrom = redo ? &h->nredo : &h->nundo, *nto = redo ? &h->nundo : &h->nredo;
+    if (!*nfrom) return false;
+    snapshot s = from[--*nfrom];
+    push(to, nto, take(w, buf));
+    SDL_strlcpy(buf, s.text, size);
+    int len = (int)strlen(buf);
+    w->cursor = SDL_min(s.cursor, len), w->anchor = SDL_min(s.anchor, len), w->anchored = s.anchored, w->all = s.all, w->want = false;
+    free(s.text);
+    h->kind = 0;
+    return true;
+}
+
+// Ctrl+Z (Cmd+Z on macOS) undoes; Ctrl+Shift+Z, Cmd+Shift+Z and Ctrl+Y redo. Returns 1 for undo, 2 for redo, 0 for neither.
+static int undo_key(SDL_Keycode k, SDL_Keymod mods) {
+    if (!(mods & (SDL_KMOD_CTRL | SDL_KMOD_GUI))) return 0;
+    if (k == SDLK_Z) return mods & SDL_KMOD_SHIFT ? 2 : 1;
+    return k == SDLK_Y ? 2 : 0;
+}
+
 // The field's edits: typed text, and the keys that move the cursor or change the text.
 static bool edit(gs_ui *ui, widget *w, char *buf, size_t size, bool secret) {
-    bool changed = false;
+    bool changed = false, pasted = false;
     size_t len = strlen(buf);
     if (w->cursor > (int)len) w->cursor = (int)len;
+    history *h = history_of(ui, w, buf, secret);
     char clean[512];
     const char *typed = ui->in.text;
     for (int i = 0; i < ui->in.nkeys; i++) {
         SDL_Keycode k = ui->in.keys[i];
         bool ctrl = ui->in.mods[i] & (SDL_KMOD_CTRL | SDL_KMOD_GUI);
         if (ui->taken[i]) continue;
-        if (ctrl && k == SDLK_V) {
+        if (undo_key(k, ui->in.mods[i])) {
+            if (h && undo(h, w, buf, size, undo_key(k, ui->in.mods[i]) == 2)) len = strlen(buf), changed = true;
+        } else if (ctrl && k == SDLK_V) {
             char *paste = SDL_GetClipboardText();
             size_t n = 0;
             for (const char *p = paste ? paste : ""; *p && n + 1 < sizeof clean; p++) clean[n++] = *p == '\n' || *p == '\r' || *p == '\t' ? ' ' : *p;
             clean[n] = 0;
             SDL_free(paste);
-            typed = clean;
+            typed = clean, pasted = true;
         } else if (ctrl && k == SDLK_A) {
             w->all = true;
         } else if (ctrl && (k == SDLK_C || k == SDLK_X) && w->all && len && !secret) {  // (what is shown as dots is not copied out)
             SDL_SetClipboardText(buf);  // (only when the user copies)
-            if (k == SDLK_X) buf[0] = 0, len = 0, w->cursor = 0, w->all = false, changed = true;
+            if (k == SDLK_X) before_edit(ui, h, w, buf, EDIT_ONE, NULL), buf[0] = 0, len = 0, w->cursor = 0, w->all = false, changed = true;
         } else if (k == SDLK_BACKSPACE || k == SDLK_DELETE) {
-            if (w->all) buf[0] = 0, len = 0, w->cursor = 0, w->all = false, changed = true;
+            if (w->all) before_edit(ui, h, w, buf, EDIT_ONE, NULL), buf[0] = 0, len = 0, w->cursor = 0, w->all = false, changed = true;
             else {
                 int from = k == SDLK_BACKSPACE ? gs_utf8_grapheme_prev(buf, w->cursor) : w->cursor;
                 int to = k == SDLK_BACKSPACE ? w->cursor : gs_utf8_grapheme_next(buf, w->cursor);
-                if (to > from) memmove(buf + from, buf + to, len - to + 1), len -= to - from, w->cursor = from, changed = true;
+                if (to > from) before_edit(ui, h, w, buf, EDIT_DELETE, NULL), memmove(buf + from, buf + to, len - to + 1), len -= to - from, w->cursor = from, changed = true;
             }
         } else if (k == SDLK_LEFT) {
             w->cursor = w->all ? 0 : gs_utf8_grapheme_prev(buf, w->cursor), w->all = false;
@@ -882,7 +987,7 @@ static bool edit(gs_ui *ui, widget *w, char *buf, size_t size, bool secret) {
         } else if (k == SDLK_END) {
             w->cursor = (int)len, w->all = false;
         } else if (k == SDLK_ESCAPE && len) {
-            buf[0] = 0, len = 0, w->cursor = 0, changed = true;  // Esc clears the field; a second Esc goes to the app
+            before_edit(ui, h, w, buf, EDIT_ONE, NULL), buf[0] = 0, len = 0, w->cursor = 0, changed = true;  // Esc clears the field; a second Esc goes to the app
         } else if (!ctrl && !(ui->in.mods[i] & SDL_KMOD_ALT) && k >= 32 && k < 127) {
             // A printable key arrives as typed text too: it is the field's, not a shortcut's.
         } else {
@@ -891,14 +996,16 @@ static bool edit(gs_ui *ui, widget *w, char *buf, size_t size, bool secret) {
         ui->taken[i] = true, ui->caret_since = ui->now;
     }
     if (typed[0]) {
-        if (w->all) buf[0] = 0, len = 0, w->cursor = 0, w->all = false;
         size_t n = strlen(typed);
+        if ((w->all ? 0 : len) + n < size) before_edit(ui, h, w, buf, pasted || w->all ? EDIT_ONE : EDIT_TYPE, typed);
+        if (w->all) buf[0] = 0, len = 0, w->cursor = 0, w->all = false;
         if (len + n < size) {
             memmove(buf + w->cursor + n, buf + w->cursor, len - w->cursor + 1);
             memcpy(buf + w->cursor, typed, n);
             w->cursor += (int)n, changed = true, ui->caret_since = ui->now;
         }
     }
+    after_edits(h, w, buf);
     return changed;
 }
 
@@ -1115,6 +1222,8 @@ static char *clipboard_lines(void) {
 
 static bool area_edit(gs_ui *ui, widget *w, char *buf, size_t size, gs_rect inner, bool *moved) {
     bool changed = false;
+    w->cursor = SDL_clamp(w->cursor, 0, (int)strlen(buf));
+    history *h = history_of(ui, w, buf, false);
     for (int i = 0; i < ui->in.nkeys; i++) {
         SDL_Keycode k = ui->in.keys[i];
         SDL_Keymod mods = ui->in.mods[i];
@@ -1127,23 +1236,26 @@ static bool area_edit(gs_ui *ui, widget *w, char *buf, size_t size, gs_rect inne
         const gs_wrap *wr = NULL;
         if (k == SDLK_UP || k == SDLK_DOWN || ((k == SDLK_HOME || k == SDLK_END) && !ctrl)) wr = wrap_of(ui, buf, ui->style.text_px, inner.w);
         bool vertical = false;
-        if (ctrl && k == SDLK_V) {
+        if (undo_key(k, mods)) {
+            changed |= undo(h, w, buf, size, undo_key(k, mods) == 2);
+        } else if (ctrl && k == SDLK_V) {
             char *paste = clipboard_lines();
-            if (paste) changed |= put(buf, size, w, paste, strlen(paste));
+            if (paste) before_edit(ui, h, w, buf, EDIT_ONE, NULL), changed |= put(buf, size, w, paste, strlen(paste));
             free(paste);
         } else if (ctrl && k == SDLK_A) {
             w->anchor = 0, w->cursor = len, w->anchored = true;
         } else if (ctrl && (k == SDLK_C || k == SDLK_X)) {
             if (has) {
                 SDL_SetClipboardText(piece(ui, buf, lo, hi));
-                if (k == SDLK_X) changed |= put(buf, size, w, "", 0);
+                if (k == SDLK_X) before_edit(ui, h, w, buf, EDIT_ONE, NULL), changed |= put(buf, size, w, "", 0);
             }
         } else if (k == SDLK_BACKSPACE || k == SDLK_DELETE) {
             if (!has) {
                 int back = k == SDLK_BACKSPACE, at = w->cursor;
                 int to = back ? (ctrl ? word_prev(buf, at) : gs_utf8_grapheme_prev(buf, at)) : (ctrl ? word_next(buf, len, at) : gs_utf8_grapheme_next(buf, at));
+                if (to != at) before_edit(ui, h, w, buf, EDIT_DELETE, NULL);
                 w->anchor = to, w->anchored = true;
-            }
+            } else before_edit(ui, h, w, buf, EDIT_ONE, NULL);
             changed |= put(buf, size, w, "", 0);
         } else if (k == SDLK_LEFT || k == SDLK_RIGHT) {
             bool left = k == SDLK_LEFT;
@@ -1162,7 +1274,7 @@ static bool area_edit(gs_ui *ui, widget *w, char *buf, size_t size, gs_rect inne
             if (ctrl) select_to(w, home ? 0 : len, shift);
             else select_to(w, home ? wr->lines[line_at(wr, w->cursor)].start : edit_line(wr, line_at(wr, w->cursor), buf).end, shift);
         } else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER) && shift) {
-            changed |= put(buf, size, w, "\n", 1);  // (a plain Enter is the app's)
+            before_edit(ui, h, w, buf, has ? EDIT_ONE : EDIT_TYPE, "\n"), changed |= put(buf, size, w, "\n", 1);  // (a plain Enter is the app's)
         } else if (!ctrl && !(mods & SDL_KMOD_ALT) && k >= 32 && k < 127) {
             // A printable key arrives as typed text too: it is the field's, not a shortcut's.
         } else {
@@ -1171,7 +1283,11 @@ static bool area_edit(gs_ui *ui, widget *w, char *buf, size_t size, gs_rect inne
         if (!vertical) w->want = false;
         ui->taken[i] = true, ui->caret_since = ui->now, *moved = true;
     }
-    if (ui->in.text[0]) changed |= put(buf, size, w, ui->in.text, strlen(ui->in.text)), ui->caret_since = ui->now, *moved = true;
+    if (ui->in.text[0]) {
+        before_edit(ui, h, w, buf, w->anchored && w->anchor != w->cursor ? EDIT_ONE : EDIT_TYPE, ui->in.text);
+        changed |= put(buf, size, w, ui->in.text, strlen(ui->in.text)), ui->caret_since = ui->now, *moved = true;
+    }
+    after_edits(h, w, buf);
     return changed;
 }
 
