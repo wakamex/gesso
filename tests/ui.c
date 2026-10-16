@@ -912,6 +912,20 @@ static void test_ui_undo(void) {
     CHECK(!strcmp(area, "hello worldpasted text"));
     key(SDLK_Z, SDL_KMOD_CTRL), area_frame();
     CHECK(!strcmp(area, "hello world"));
+    // An edit the app records is a step: a partial name completed, then taken back, then the typing before.
+    area[0] = 0, area_frame();
+    text("hi "), area_frame(), text("@Me"), area_frame();
+    strcpy(area, "hi @Melissa "), gs_ui_edited(ui, "area", area, 12), area_frame();
+    text("x"), area_frame();
+    CHECK(!strcmp(area, "hi @Melissa x"));
+    key(SDLK_Z, SDL_KMOD_CTRL), area_frame();
+    CHECK(!strcmp(area, "hi @Melissa "));
+    key(SDLK_Z, SDL_KMOD_CTRL), area_frame();
+    CHECK(!strcmp(area, "hi @Me") && gs_ui_textarea_selection(ui, "area", &from, &to) == false && from == 6);
+    key(SDLK_Z, SDL_KMOD_CTRL), area_frame();
+    CHECK(!strcmp(area, "hi "));
+    key(SDLK_Y, SDL_KMOD_CTRL), key(SDLK_Y, SDL_KMOD_CTRL), area_frame();
+    CHECK(!strcmp(area, "hi @Melissa "));
     // The app clears the box (a message sent): nothing it held before can be brought back.
     area[0] = 0, area_frame();
     key(SDLK_Z, SDL_KMOD_CTRL), area_frame();

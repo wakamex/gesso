@@ -883,15 +883,20 @@ static void forget(snapshot *steps, int *n) {
 
 // The history of control `w`, with `buf` as the app hands it this frame: a fresh one when the app
 // changed the text since the control last did. NULL for a secret's (what is typed there is not kept).
-static history *history_of(gs_ui *ui, widget *w, const char *buf, bool secret) {
-    if (secret) return NULL;
+static history *history_find(gs_ui *ui, uint32_t id) {
     history *h = NULL, *oldest = &ui->histories[0];
     for (int i = 0; i < HISTORIES && !h; i++) {
-        if (ui->histories[i].id == w->id) h = &ui->histories[i];
+        if (ui->histories[i].id == id) h = &ui->histories[i];
         else if (ui->histories[i].frame < oldest->frame) oldest = &ui->histories[i];
     }
-    if (!h) h = oldest, forget(h->undo, &h->nundo), forget(h->redo, &h->nredo), free(h->last), h->last = NULL, h->id = w->id;
+    if (!h) h = oldest, forget(h->undo, &h->nundo), forget(h->redo, &h->nredo), free(h->last), h->last = NULL, h->id = id;
     h->frame = ui->frame;
+    return h;
+}
+
+static history *history_of(gs_ui *ui, widget *w, const char *buf, bool secret) {
+    if (secret) return NULL;
+    history *h = history_find(ui, w->id);
     if (!h->last || strcmp(h->last, buf)) forget(h->undo, &h->nundo), forget(h->redo, &h->nredo), free(h->last), h->last = copy(buf), h->kind = 0;
     if (w->cursor != h->end) h->kind = 0;  // (the cursor was moved: typing there is a new step)
     return h;
@@ -936,6 +941,17 @@ static bool undo(history *h, widget *w, char *buf, size_t size, bool redo) {
     free(s.text);
     h->kind = 0;
     return true;
+}
+
+void gs_ui_edited(gs_ui *ui, const char *id, const char *buf, int cursor) {
+    widget *w = state(ui, hash(id));
+    history *h = history_find(ui, w->id);
+    if (h->last && strcmp(h->last, buf)) {  // what the control left, with its cursor and selection, is the step back
+        snapshot was = take(w, h->last);
+        push(h->undo, &h->nundo, was), forget(h->redo, &h->nredo);
+    }
+    free(h->last), h->last = copy(buf);
+    w->cursor = h->end = SDL_clamp(cursor, 0, (int)strlen(buf)), w->anchored = w->all = false, w->want = false, h->kind = 0;
 }
 
 // Ctrl+Z (Cmd+Z on macOS) undoes; Ctrl+Shift+Z, Cmd+Shift+Z and Ctrl+Y redo. Returns 1 for undo, 2 for redo, 0 for neither.
