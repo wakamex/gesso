@@ -64,6 +64,7 @@ typedef struct { gs_rect r; bool on; } clip_state;
 typedef struct {
     float x, y, wheel;
     bool down, pressed, released;
+    int clicks;  // of the last press: 2 for a double click, 3 for a triple
     SDL_Keycode keys[KEYS];
     SDL_Keymod mods[KEYS];
     SDL_Scancode scans[KEYS];
@@ -88,6 +89,7 @@ struct gs_ui {
     char composition[128];   // the input method's text being composed
     uint32_t focus, drag;    // the widget with the keyboard; the slider being dragged
     uint32_t selecting;      // the text being selected in, through the frame the button comes up in
+    int select_unit, select_lo, select_hi;  // what its drag selects by (1 characters, 2 words, 3 paragraphs) and the unit it began on
     bool marked;             // the keyboard moved the focus last, so the control that has it is marked
     stop stops[STOPS], last_stops[STOPS];  // the Tab order: this frame's as it is drawn, and the last frame's, which Tab walks
     int nstops, nlast;
@@ -208,7 +210,7 @@ bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
     switch (e->type) {
     case SDL_EVENT_MOUSE_MOTION: p->x = e->motion.x, p->y = e->motion.y; return false;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
-        if (e->button.button == SDL_BUTTON_LEFT) p->down = p->pressed = true, p->x = e->button.x, p->y = e->button.y;
+        if (e->button.button == SDL_BUTTON_LEFT) p->down = p->pressed = true, p->clicks = e->button.clicks, p->x = e->button.x, p->y = e->button.y;
         return false;
     case SDL_EVENT_MOUSE_BUTTON_UP:
         if (e->button.button == SDL_BUTTON_LEFT) p->down = false, p->released = true, p->x = e->button.x, p->y = e->button.y;
@@ -478,17 +480,31 @@ static int range_of(const gs_ui_text_range *ranges, int count, int at, bool link
     return -1;
 }
 
-// The link drawn at a point of the text, or -1.
-static int link_at(gs_ui *ui, gs_rect r, const char *text, const gs_wrap *w, float size, float lh, float x, float y, const gs_ui_text_range *ranges, int count) {
+// The byte of the text whose glyph is drawn at a point, or -1.
+static int glyph_at(gs_ui *ui, gs_rect r, const char *text, const gs_wrap *w, float size, float lh, float x, float y) {
     int i = (int)floorf((y - r.y) / lh);
     float origin;
-    if (!count || i < 0 || i >= w->count) return -1;
+    if (i < 0 || i >= w->count) return -1;
     const gs_line *l = shown_line(ui, text, &w->lines[i], size, r.x, r.w, &origin);
     for (int g = 0; l && g < l->count; g++) {
         float gx = origin + l->glyphs[g].x;
-        if (x * ui->scale >= gx && x * ui->scale < gx + l->glyphs[g].advance) return range_of(ranges, count, w->lines[i].start + l->glyphs[g].cluster, true);
+        if (x * ui->scale >= gx && x * ui->scale < gx + l->glyphs[g].advance) return w->lines[i].start + l->glyphs[g].cluster;
     }
     return -1;
+}
+
+// The link drawn at a point of the text, or -1.
+static int link_at(gs_ui *ui, gs_rect r, const char *text, const gs_wrap *w, float size, float lh, float x, float y, const gs_ui_text_range *ranges, int count) {
+    int at = count ? glyph_at(ui, r, text, w, size, lh, x, y) : -1;
+    return at < 0 ? -1 : range_of(ranges, count, at, true);
+}
+
+// The word or paragraph (unit 2 or 3) that byte `at` of the text is in, as [*lo, *hi).
+static void unit_of(const char *text, int at, int unit, int *lo, int *hi) {
+    int len = (int)strlen(text);
+    if (unit == 2) { gs_utf8_word(text, at, lo, hi); return; }
+    for (*lo = SDL_min(at, len); *lo > 0 && text[*lo - 1] != '\n';) --*lo;
+    for (*hi = SDL_min(at, len); *hi < len && text[*hi] != '\n';) ++*hi;
 }
 
 float gs_ui_text_select(gs_ui *ui, gs_rect r, const char *id, const char *text, float size, SDL_FColor c, const gs_ui_text_range *ranges, int count, int *from, int *to, int *clicked) {
@@ -504,8 +520,17 @@ float gs_ui_text_select(gs_ui *ui, gs_rect r, const char *id, const char *text, 
         const gs_wrap_line *ln = &w->lines[SDL_clamp((int)floorf((ui->in.y - r.y) / lh), 0, w->count - 1)];
         const gs_line *l = shown_line(ui, text, ln, size, r.x, r.w, &origin);
         int at = ln->start + (l ? SDL_min(gs_line_hit(l, ui->in.x * s - origin, ui->piece), ln->end - ln->start) : 0);
-        if (press) *from = at;
-        *to = at;
+        if (press) ui->select_unit = SDL_clamp(ui->in.clicks, 1, 3);
+        if (ui->select_unit == 1) {
+            if (press) *from = at;
+            *to = at;
+        } else {  // by words or paragraphs: from the one pressed on to the one the pointer is over, whole
+            int under = glyph_at(ui, r, text, w, size, lh, ui->in.x, ui->in.y), lo, hi;
+            unit_of(text, under >= 0 ? under : at, ui->select_unit, &lo, &hi);
+            if (press) ui->select_lo = lo, ui->select_hi = hi;
+            if (lo < ui->select_lo) *from = ui->select_hi, *to = lo;
+            else *from = ui->select_lo, *to = SDL_max(hi, ui->select_hi);
+        }
     }
     if (over) {
         int link = link_at(ui, r, text, w, size, lh, ui->in.x, ui->in.y, ranges, count);

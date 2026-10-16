@@ -841,6 +841,29 @@ static void test_ui_text_select(SDL_Renderer *r) {
     pointer(SDL_EVENT_MOUSE_MOTION, 10 + see + 1, 100 + lh / 2), pointer(SDL_EVENT_MOUSE_BUTTON_DOWN, 10 + see + 1, 100 + lh / 2), select_frame();
     pointer(SDL_EVENT_MOUSE_MOTION, 10 + see + 60, 100 + lh / 2), pointer(SDL_EVENT_MOUSE_BUTTON_UP, 10 + see + 60, 100 + lh / 2), select_frame();
     CHECK(link_clicked == -1 && sel_from == 4 && sel_to > 6 && sel_to < 28);
+    // A double click selects the word under the pointer, a drag from it grows by words, and a triple
+    // click selects the paragraph (here the whole text, which has no newline).
+    SDL_Event two = { .button = { .type = SDL_EVENT_MOUSE_BUTTON_DOWN, .button = SDL_BUTTON_LEFT, .down = true, .clicks = 2, } };
+    int notes = (int)(strstr(message, "notes") - message), row = 0;
+    gs_wrap *wrapped = gs_fontset_wrap(fonts, 14, message, 200);
+    while (row + 1 < wrapped->count && wrapped->lines[row + 1].start <= notes) row++;
+    char head[96];
+    SDL_snprintf(head, sizeof head, "%.*s", notes + 2 - wrapped->lines[row].start, message + wrapped->lines[row].start);
+    float word_x = 10 + gs_ui_text_width(ui, head, 14), word_y = 100 + lh * (row + 0.5f);  // (inside "notes")
+    gs_wrap_free(wrapped);
+    two.button.x = word_x, two.button.y = word_y;
+    pointer(SDL_EVENT_MOUSE_MOTION, word_x, word_y), gs_ui_event(ui, &two), select_frame();
+    int lo = SDL_min(sel_from, sel_to), hi = SDL_max(sel_from, sel_to);
+    CHECK(hi - lo == 5 && !strncmp(message + lo, "notes", 5));
+    if (!(hi - lo == 5 && !strncmp(message + lo, "notes", 5))) fprintf(stderr, "  double click selected '%.*s'\n", hi - lo, message + lo);
+    pointer(SDL_EVENT_MOUSE_MOTION, 10 + see + 1, 100 + lh / 2), select_frame();  // back into the address: whole words up to its start
+    lo = SDL_min(sel_from, sel_to), hi = SDL_max(sel_from, sel_to);
+    CHECK(!strncmp(message + hi - 5, "notes", 5) && (lo == 4 || message[lo - 1] == '/' || message[lo - 1] == '.' || message[lo - 1] == ':'));
+    pointer(SDL_EVENT_MOUSE_BUTTON_UP, 10 + see + 1, 100 + lh / 2), select_frame();
+    CHECK(link_clicked == -1);
+    two.button.clicks = 3;
+    gs_ui_event(ui, &two), pointer(SDL_EVENT_MOUSE_BUTTON_UP, word_x, word_y), select_frame();
+    CHECK(SDL_min(sel_from, sel_to) == 0 && SDL_max(sel_from, sel_to) == (int)strlen(message));
     // The link is in its own colour.
     CHECK(pixels_of(r, gs_rgba(0x4080ff, 1)) > 0);
 }

@@ -1559,5 +1559,24 @@ static int grapheme_step(const char *utf8, int offset, bool forward) {
     return forward ? len : prev < offset ? prev : 0;
 }
 
+void gs_utf8_word(const char *utf8, int offset, int *start, int *end) {
+    int len = (int)strlen(utf8);
+    offset = offset < 0 ? 0 : offset > len ? len : offset;
+    *start = 0, *end = len;
+    kbts_break_state state;
+    kbts_BreakBegin(&state, KBTS_DIRECTION_DONT_KNOW, KBTS_JAPANESE_LINE_BREAK_STYLE_NORMAL, 0);
+    for (const char *p = utf8; *p;) {
+        const char *at = p;
+        uint32_t cp = gs_utf8_next(&p);
+        kbts_BreakAddCodepoint(&state, (int)cp, (int)(p - at), !*p);
+        kbts_break b;
+        while (kbts_Break(&state, &b)) {
+            if (!(b.Flags & KBTS_BREAK_FLAG_WORD) || b.Position <= 0) continue;
+            if (b.Position <= offset) *start = b.Position;
+            else if (b.Position < *end) { *end = b.Position; return; }
+        }
+    }
+}
+
 int gs_utf8_grapheme_next(const char *utf8, int offset) { return grapheme_step(utf8, offset, true); }
 int gs_utf8_grapheme_prev(const char *utf8, int offset) { return offset <= 0 ? 0 : grapheme_step(utf8, offset, false); }

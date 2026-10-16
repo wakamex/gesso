@@ -110,7 +110,9 @@ float gs_ui_text_wrapped(gs_ui *ui, gs_rect r, const char *text, float px, SDL_F
 // counts. The app keeps what is selected: *from is where the drag began and *to where the pointer is,
 // in either order, and nothing is selected when they are equal. A press on the text sets both to
 // the place pressed and a drag moves *to, so a text whose pair changed is the one being selected in
-// and the app can empty the others'. What is between them is drawn on the style's border colour, in a
+// and the app can empty the others'. A double click selects the word pressed on (gs_utf8_word) and a
+// triple click its paragraph, between newlines; a drag from either grows the selection by whole words
+// or paragraphs. The system's double-click time and distance apply. What is between them is drawn on the style's border colour, in a
 // line that mixes directions too. *clicked is the range marked `link` that the button went down and
 // came up on with nothing selected, or -1; the pointer is a hand over one and a text beam elsewhere.
 // Copying what is selected and opening a link are the app's. The id tells this text's drag from

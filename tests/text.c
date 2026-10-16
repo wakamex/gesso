@@ -11,6 +11,15 @@ static float x_of(const gs_line *l, int offset) {
 }
 
 void test_text(void) {
+    {  // words by Unicode's boundaries
+        const char *t = "it's 3.14, ok  done";
+        int a, b;
+        gs_utf8_word(t, 1, &a, &b); CHECK(a == 0 && b == 4);    // "it's"
+        gs_utf8_word(t, 6, &a, &b); CHECK(a == 5 && b == 9);    // "3.14"
+        gs_utf8_word(t, 9, &a, &b); CHECK(a == 9 && b == 10);   // ","
+        gs_utf8_word(t, 13, &a, &b); CHECK(a == 13 && b == 15); // the two spaces
+        gs_utf8_word(t, 17, &a, &b); CHECK(a == 15 && b == 19); // the last word, to the end
+    }
     // Grapheme steps: a letter with a combining accent, an emoji family joined by ZWJ, a flag.
     const char *t = "e\xCC\x81x\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7\xF0\x9F\x87\xA8\xF0\x9F\x87\xA6!";
     int a = gs_utf8_grapheme_next(t, 0);

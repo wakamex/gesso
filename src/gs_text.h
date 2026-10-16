@@ -131,6 +131,9 @@ int gs_line_hit(const gs_line *l, float x, const char *utf8);
 // emoji sequence or a letter with its marks moves and deletes as one.
 int gs_utf8_grapheme_next(const char *utf8, int offset);
 int gs_utf8_grapheme_prev(const char *utf8, int offset);
+// The word the byte at `offset` is in, as [*start, *end), by Unicode's word boundaries: a run of
+// letters and digits (with the apostrophes and points inside it), a run of spaces, or one mark.
+void gs_utf8_word(const char *utf8, int offset, int *start, int *end);
 
 // Text wrapped to a width, in the units of `px` (pixels, for a line to be drawn). A line ends where
 // Unicode allows one to break (after a space or hyphen, between CJK characters), at a newline, or
