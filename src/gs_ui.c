@@ -57,6 +57,7 @@ typedef struct { fl_kind kind; gs_rect r; SDL_FColor c; char text[160]; float px
 #define WRAPS 256      // texts kept wrapped
 #define HISTORIES 4    // fields and text areas whose edits can be undone
 #define UNDOS 100      // the steps each keeps
+#define PLACE_REST_MS 500  // how long a moved window rests before its place is saved
 #define PAUSE_MS 1000  // typing after a pause this long is a step of its own
 
 typedef struct { char *text; int size4, width4, max; gs_fontset *fonts; gs_wrap *wrap; } wrap_entry;
@@ -149,6 +150,9 @@ struct gs_ui {
     bool focus_moved;        // the keyboard went to another control since the last frame ended
     bool had_input;          // this frame was handed a press, a release, the wheel, a key or text
     history histories[HISTORIES];
+    char *place;              // the file the window's place is kept in, or NULL
+    gs_window_state placed;
+    uint64_t placed_at;       // when the window last moved or changed size without being saved; 0 when saved
     wrap_entry wraps[WRAPS];  // wrapped text kept, so text drawn every frame is broken into lines once
     char *piece;              // a line's text, copied out to be shaped
     size_t piece_cap;
@@ -172,6 +176,30 @@ static widget *state(gs_ui *ui, uint32_t id) {
     return free_slot;
 }
 
+// The window comes back where it was: the file named by its GS_UI_PLACE property, or for the first
+// interface made, window.txt in the app's data folder (not for windows nobody sees, under SDL's
+// offscreen and dummy drivers). A name with a slash is a path.
+static void place_window(gs_ui *ui) {
+    static bool first = true;
+    const char *name = ui->win ? SDL_GetStringProperty(SDL_GetWindowProperties(ui->win), GS_UI_PLACE, NULL) : NULL;
+    const char *driver = SDL_GetCurrentVideoDriver();
+    bool seen = driver && SDL_strcmp(driver, "offscreen") && SDL_strcmp(driver, "dummy");
+    if (!name && first && seen) name = "window.txt";
+    first = false;
+    if (!name || !name[0]) return;
+    if (SDL_strchr(name, '/') || SDL_strchr(name, '\\')) ui->place = SDL_strdup(name);
+    else {
+        // The data folder: SDL's for the app's creator and name (its program's name unless set with SDL_SetAppMetadata).
+        char app[256];
+        SDL_strlcpy(app, SDL_GetAppMetadataProperty(SDL_PROP_APP_METADATA_NAME_STRING), sizeof app);
+        char *dot = SDL_strrchr(app, '.');
+        if (dot && !SDL_strcasecmp(dot, ".exe")) *dot = 0;
+        char *dir = SDL_GetPrefPath(SDL_GetAppMetadataProperty(SDL_PROP_APP_METADATA_CREATOR_STRING), app);
+        if (dir) SDL_asprintf(&ui->place, "%s%s", dir, name), SDL_free(dir);
+    }
+    if (ui->place && gs_window_state_load(ui->place, &ui->placed)) gs_window_state_apply(&ui->placed, ui->win);
+}
+
 gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
     gs_ui *ui = calloc(1, sizeof *ui);
     if (!ui) return NULL;
@@ -186,11 +214,14 @@ gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
     ui->style.focus = ui->style.accent, ui->style.button_radius = -1;
     ui->opacity = 1;
     ui->pending.x = ui->pending.y = OUTSIDE;  // until the pointer is seen in the window
+    place_window(ui);
     return ui;
 }
 
 void gs_ui_free(gs_ui *ui) {
     if (!ui) return;
+    if (ui->placed_at) gs_window_state_save(ui->place, &ui->placed);
+    SDL_free(ui->place);
     gs_glyphs_free(ui->glyphs);
     for (int i = 1; i < 4; i++) SDL_DestroyCursor(ui->cursors[i]);
     for (int i = 0; i < WRAPS; i++) SDL_free(ui->wraps[i].text), gs_wrap_free(ui->wraps[i].wrap);
@@ -232,6 +263,7 @@ bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
     input *p = &ui->pending;
     SDL_WindowID to = event_window(e);
     if (to && to != SDL_GetWindowID(ui->win)) return false;  // another window's
+    if (ui->place && gs_window_state_track(&ui->placed, ui->win, e)) ui->placed_at = SDL_max(SDL_GetTicks(), 1);
     switch (e->type) {
     case SDL_EVENT_MOUSE_MOTION: p->x = e->motion.x, p->y = e->motion.y; return false;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -1854,6 +1886,11 @@ int gs_ui_confirm(gs_ui *ui, const char *question, const char *yes, const char *
 }
 
 void gs_ui_end(gs_ui *ui) {
+    if (ui->placed_at) {  // the window's place is saved once it has rested half a second after moving
+        uint64_t rest = SDL_GetTicks() - ui->placed_at;
+        if (rest >= PLACE_REST_MS) gs_window_state_save(ui->place, &ui->placed), ui->placed_at = 0;
+        else wake_within(ui, (int)(PLACE_REST_MS - rest));
+    }
     if (!ui->in.down) ui->selecting = 0;
     if (ui->tip_wanted) {
         uint64_t rest = ui->now - ui->tip_since;

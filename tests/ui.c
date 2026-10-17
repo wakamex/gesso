@@ -549,6 +549,33 @@ static SDL_Window *offscreen_window(int w, int h) {
 }
 
 // Two windows, each with a gs_ui: each takes its own window's events and leaves the other's.
+// A window named a place file comes back at the size kept there, and its new size is kept when it
+// changes and the interface is freed.
+static void test_ui_place(gs_fontset *fs) {
+    char path[512];
+    const char *tmp = SDL_GetEnvironmentVariable(SDL_GetEnvironment(), "TMPDIR");
+    SDL_snprintf(path, sizeof path, "%s/gesso-test-place-%d.txt", tmp ? tmp : "/tmp", (int)SDL_GetTicks());
+    gs_window_state was = { 40, 50, 333, 222, false, false };
+    CHECK(gs_window_state_save(path, &was));
+    SDL_Window *win = offscreen_window(200, 100);
+    SDL_SetStringProperty(SDL_GetWindowProperties(win), GS_UI_PLACE, path);
+    SDL_Renderer *r = SDL_CreateRenderer(win, NULL);
+    gs_ui *placed = gs_ui_new(win, r, fs);
+    int w = 0, h = 0;
+    SDL_GetWindowSize(win, &w, &h);
+    CHECK(w == 333 && h == 222);
+    SDL_SetWindowSize(win, 300, 180), SDL_SyncWindow(win);
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) gs_ui_event(placed, &e);
+    gs_ui_begin(placed), gs_ui_end(placed);
+    CHECK(gs_ui_wait_ms(placed) > 0 && gs_ui_wait_ms(placed) <= 500);  // (a frame asked for, to save it once it rests)
+    gs_ui_free(placed);
+    gs_window_state now = { 0 };
+    CHECK(gs_window_state_load(path, &now) && now.w == 300 && now.h == 180);
+    SDL_RemovePath(path);
+    SDL_DestroyRenderer(r), SDL_DestroyWindow(win);
+}
+
 static void test_ui_windows(SDL_Window *first, gs_fontset *fs) {
     SDL_Window *second = offscreen_window(200, 100);
     SDL_Renderer *r2 = second ? SDL_CreateRenderer(second, NULL) : NULL;
@@ -1006,6 +1033,7 @@ void test_ui(void) {
     test_ui_hotkey();
     test_ui_draw(r);
     test_ui_windows(w, fs);
+    test_ui_place(fs);
     gs_ui_free(ui);
     gs_fontset_free(fs);
 

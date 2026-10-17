@@ -47,6 +47,15 @@ typedef struct {
 
 typedef struct gs_ui gs_ui;
 
+// The window comes back where it was and at its size: gs_ui_new moves it as it was left, gs_ui_event
+// follows its moves, and its place is saved when it has rested half a second and when the interface
+// is freed. Create the window hidden and show it after gs_ui_new, so it does not jump. The place is
+// kept in window.txt in the app's data folder (SDL_GetPrefPath for the creator and name given to
+// SDL_SetAppMetadata, the program's name by default), for the first interface the program makes. Set
+// the window's GS_UI_PLACE string property before gs_ui_new to name another file in that folder (one
+// per window, for an app with several), to give a path (a name with a slash), or to "" for none.
+// Windows under SDL's offscreen and dummy drivers are not placed unless the property names a file.
+#define GS_UI_PLACE "gesso.place"
 gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts);
 void gs_ui_free(gs_ui *ui);
 gs_ui_style *gs_ui_style_of(gs_ui *ui);  // change its colours and sizes as wanted
