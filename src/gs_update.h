@@ -3,7 +3,8 @@
 // signed with the publisher's Ed25519 key (gs_ed25519). When the signature holds and the build is
 // not this one, each file that differs from the one beside the program is downloaded and checked;
 // once all have arrived, each running file is renamed aside to NAME.old (Windows lets a running
-// program be renamed, not overwritten) and the new one put in its place. The app is then told, and
+// program be renamed, not overwritten) and the new one put in its place. The app is then told (a
+// callback, or gs_update_ready), and
 // starts the new build when it chooses (gs_update_restart). The .old files go at the next start.
 //
 // The manifest may come over plain HTTP: the signature, made with a key that never leaves the
@@ -30,6 +31,10 @@ typedef struct {
     const char *program;   // the program's own file, made executable on Linux and macOS when it is new; other files keep the mode of the ones they replace
     const char *agent;     // the User-Agent, and what the log's lines begin with; NULL for "gesso"
     int every_ms;          // how often to look; 0 for once a minute
+    // Called once, on the update's own thread, when a newer build is in place: for an app that sleeps
+    // until an event comes (SDL_WaitEvent) to push one and wake. Or NULL, and the app asks gs_update_ready.
+    void (*ready)(void *user);
+    void *ready_user;
 } gs_update_config;
 
 typedef struct gs_update gs_update;

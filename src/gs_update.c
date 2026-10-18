@@ -21,6 +21,8 @@ struct gs_update {
     char build[128], manifest[512], folder[1024], program[64], agent[64];
     uint8_t key[32];
     int every_ms;
+    void (*ready_fn)(void *user);
+    void *ready_user;
     SDL_Semaphore *wake;
     SDL_AtomicInt stopping, ready;
     SDL_Mutex *lock;
@@ -183,7 +185,11 @@ static int run(void *user) {
         char error[300] = "";
         bool done = look(u, error, sizeof error);
         SDL_LockMutex(u->lock), SDL_strlcpy(u->error, error, sizeof u->error), SDL_UnlockMutex(u->lock);
-        if (done) { SDL_SetAtomicInt(&u->ready, 1); return 0; }
+        if (done) {
+            SDL_SetAtomicInt(&u->ready, 1);
+            if (u->ready_fn) u->ready_fn(u->ready_user);
+            return 0;
+        }
         if (error[0] && SDL_strcmp(error, said)) SDL_Log("%s: looking for an update: %s", u->agent, error);  // (when it first happens, not every look)
         SDL_strlcpy(said, error, sizeof said);
     } while (!SDL_GetAtomicInt(&u->stopping) && !SDL_WaitSemaphoreTimeout(u->wake, u->every_ms));
@@ -199,6 +205,7 @@ gs_update *gs_update_start(const gs_update_config *c) {
     SDL_strlcpy(u->program, c->program ? c->program : "", sizeof u->program), SDL_strlcpy(u->agent, c->agent ? c->agent : "gesso", sizeof u->agent);
     memcpy(u->key, c->key, 32);
     u->every_ms = c->every_ms > 0 ? c->every_ms : 60000;
+    u->ready_fn = c->ready, u->ready_user = c->ready_user;
     // (what the last update renamed aside is no longer running, and goes)
     int count = 0;
     char **old = SDL_GlobDirectory(u->folder, "*.old", 0, &count);
