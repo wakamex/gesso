@@ -194,7 +194,7 @@ pub fn build(b: *std.Build) void {
     const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
     mod.addCSourceFiles(.{
         .root = b.path("src"),
-        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_draw.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c", "gs_eta.c" },
+        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_draw.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c", "gs_eta.c", "gs_ed25519.c" },
         .flags = flags,
     });
     mod.addIncludePath(b.path("src"));
@@ -203,11 +203,12 @@ pub fn build(b: *std.Build) void {
     mod.addIncludePath(b.path("vendor/minimp3"));
     mod.addIncludePath(b.path("vendor/rnnoise"));
     // The vendored libraries do arithmetic the undefined-behaviour sanitizer of debug builds stops on
-    // (unaligned reads in kb_text_shape, shifts of negative values in stb_image_write), harmless on the
+    // (unaligned reads in kb_text_shape, shifts of negative values in stb_image_write and TweetNaCl), harmless on the
     // compilers gesso uses; they are built without it.
     mod.addCSourceFile(.{ .file = b.path("src/gs_kb.c"), .flags = &.{ "-std=c11", "-w", "-fno-sanitize=undefined" } });
     mod.addCSourceFile(.{ .file = b.path("src/gs_stb.c"), .flags = &.{ "-std=c11", "-w", "-fno-sanitize=undefined" } });
     mod.addCSourceFile(.{ .file = b.path("src/gs_mp3.c"), .flags = &.{ "-std=c11", "-w", "-fno-sanitize=undefined" } });
+    mod.addCSourceFile(.{ .file = b.path("src/gs_tweetnacl.c"), .flags = &.{ "-std=c11", "-w", "-fno-sanitize=undefined" } });
     useSdk(mod, macos_sdk);
     mod.linkLibrary(sdl);
     mod.linkLibrary(opus);
@@ -257,7 +258,7 @@ pub fn build(b: *std.Build) void {
 
     // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "eta.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "movie.c", "notify.c", "oauth.c", "secret.c", "sound.c", "stream.c", "text.c", "ui.c", "voice.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "eta.c", "ed25519.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "movie.c", "notify.c", "oauth.c", "secret.c", "sound.c", "stream.c", "text.c", "ui.c", "voice.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
     tests.addIncludePath(b.path("src"));
     if (av) |a| for (a.include) |dir| tests.addIncludePath(dir);
     useSdk(tests, macos_sdk);
