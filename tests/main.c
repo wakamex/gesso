@@ -25,6 +25,7 @@ static const struct { const char *name; void (*run)(void); } tests[] = {
     { "gs_stream clock", test_stream_clock },
     { "gs_text", test_text },
     { "gs_ui", test_ui },
+    { "gs_update", test_update },
     { "gs_voice", test_voice },
 };
 

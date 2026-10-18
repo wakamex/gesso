@@ -379,12 +379,13 @@ static int fetch_with_libcurl(const gs_http_request *r, char **body, size_t *len
     return sink_finish(&s, (int)status, body, len);
 }
 
-typedef struct { void *h; gs_http_take *take; void *user; SDL_AtomicInt *stop; } stream_sink;
+typedef struct { void *h; gs_http_take *take; void *user; SDL_AtomicInt *stop; bool file; } stream_sink;
 
 static size_t pass(const char *data, size_t size, size_t count, void *user) {
     stream_sink *s = user;
     long status = 0;
     lib.easy_getinfo(s->h, RESPONSE_CODE, &status);
+    if (!status && s->file) status = 200;  // (a local file read has no HTTP status)
     if (status < 200 || status >= 300) return 0;  // (an error's body is not the stream)
     return s->take(s->user, (const uint8_t *)data, size * count) ? size * count : 0;
 }
@@ -398,7 +399,7 @@ static int check_stop(void *user, long long dltotal, long long dlnow, long long 
 static int stream_with_libcurl(const gs_http_request *r, long long from, gs_http_take *take, void *user, SDL_AtomicInt *stop) {
     void *h = handle();
     if (!h) return 0;
-    stream_sink s = { h, take, user, stop };
+    stream_sink s = { h, take, user, stop, !SDL_strncasecmp(r->url, "file:", 5) };
     char range[32];
     void *headers = common_options(h, r);
     header_sink hs = { .r = r, .follow = true };
@@ -411,9 +412,10 @@ static int stream_with_libcurl(const gs_http_request *r, long long from, gs_http
     lib.easy_setopt(h, NOPROGRESS, 0L);
     lib.easy_setopt(h, XFERINFOFUNCTION, check_stop);
     lib.easy_setopt(h, XFERINFODATA, &s);
-    lib.easy_perform(h);  // (a break or a stop ends it early; what arrived has gone to take)
+    bool done = lib.easy_perform(h) == 0;  // (a break or a stop ends it early; what arrived has gone to take)
     long status = 0;
     lib.easy_getinfo(h, RESPONSE_CODE, &status);
+    if (!status && s.file && done) status = 200;
     lib.slist_free_all(headers);
     return (int)status;
 }

@@ -19,6 +19,7 @@ extern int test_failures;
 void test_abr(void);
 void test_eta(void);
 void test_ed25519(void);
+void test_update(void);
 void test_desk(void);
 void test_hls(void);
 void test_http(void);

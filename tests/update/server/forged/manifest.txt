@@ -1,0 +1,4 @@
+build 2
+file prog 7a74c6e1fdb7853219f9be3ff0e3eb1fede88168fb47ff819b678eb1c4825565 23
+file data.txt d4c8845b7a720c7326458c9d5bb131abdd24cc02841f6de6c152117f6c2f52df 16 assets/data.txt
+file same.txt d4c8845b7a720c7326458c9d5bb131abdd24cc02841f6de6c152117f6c2f52df 24

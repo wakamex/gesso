@@ -1,0 +1,2 @@
+tests/update/server/** -text
+tests/ed25519/cases.txt -text

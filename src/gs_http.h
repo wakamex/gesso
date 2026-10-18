@@ -40,7 +40,8 @@ typedef struct {
 // *body (SDL_free it; zero-terminated, *len bytes) when body is not NULL, or is dropped.
 int gs_http_fetch(const gs_http_request *r, char **body, size_t *len);
 
-// Streams a GET's body to `take` as it arrives, from byte `from` on (a range request) when from > 0.
+// Streams a GET's body to `take` as it arrives, from byte `from` on (a range request) when from > 0;
+// a file: URL read through libcurl gives 200, as for gs_http_fetch.
 // `take` returns false to end the transfer, and so does setting *stop, which is checked at least
 // every 100 ms while waiting on the network. Returns the HTTP status, or 0 when there was no
 // response; the body stops short of the whole when the connection breaks, which only `take` sees.
