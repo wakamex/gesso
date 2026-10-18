@@ -553,8 +553,7 @@ static SDL_Window *offscreen_window(int w, int h) {
 // changes and the interface is freed.
 static void test_ui_place(gs_fontset *fs) {
     char path[512];
-    const char *tmp = SDL_GetEnvironmentVariable(SDL_GetEnvironment(), "TMPDIR");
-    SDL_snprintf(path, sizeof path, "%s/gesso-test-place-%d.txt", tmp ? tmp : "/tmp", (int)SDL_GetTicks());
+    SDL_snprintf(path, sizeof path, "./gesso-test-place-%d.txt", (int)SDL_GetTicks());  // (a path, with its slash: here, on every system)
     gs_window_state was = { 40, 50, 333, 222, false, false };
     CHECK(gs_window_state_save(path, &was));
     SDL_Window *win = offscreen_window(200, 100);

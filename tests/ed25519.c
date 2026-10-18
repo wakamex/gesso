@@ -9,7 +9,7 @@
 
 static size_t unhex(const char *h, uint8_t *out, size_t cap) {
     size_t n = 0;
-    for (; h[0] && h[1] && h[0] != ' ' && h[0] != '\n' && n < cap; h += 2) {
+    for (; SDL_isxdigit(h[0]) && SDL_isxdigit(h[1]) && n < cap; h += 2) {  // (to the end of the field, whatever the line ends with)
         char b[3] = { h[0], h[1], 0 };
         out[n++] = (uint8_t)strtoul(b, NULL, 16);
     }
