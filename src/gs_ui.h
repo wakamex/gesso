@@ -126,6 +126,20 @@ float gs_ui_text_wrapped(gs_ui *ui, gs_rect r, const char *text, float px, SDL_F
 // came up on with nothing selected, or -1; the pointer is a hand over one and a text beam elsewhere.
 // Copying what is selected and opening a link are the app's. The id tells this text's drag from
 // another's; an id per row drawn is enough.
+//
+// A selection can run across texts, as on a web page: the texts drawn between gs_ui_select_group(ui,
+// "name") and gs_ui_select_group(ui, NULL) in a frame are one group (a conversation's message bodies,
+// say, without their names and times). A drag that begins in one of them selects from the press to
+// the end of that text, all of each text between, and from the start of the text under the pointer to
+// the pointer (the other way round going up); over the gap between two texts, up to the end of the
+// one above. Each text's part is in its own pair, as for one text, and words and paragraphs carry
+// across. A text not drawn keeps the pair it was last given, so when gs_ui_select_began says a new
+// selection began in the group (after the frame's texts are drawn), empty the pairs of the texts that
+// were not drawn. Texts drawn in order from top to bottom, as a list's or flow's rows are, are what it
+// expects. Dragged past the top or bottom edge of the gs_ui_flow the texts are in, the flow scrolls.
+// The group lasts until set again or the frame ends.
+void gs_ui_select_group(gs_ui *ui, const char *group);
+bool gs_ui_select_began(gs_ui *ui, const char *group);
 typedef struct { int start, end; SDL_FColor color; bool link; } gs_ui_text_range;
 float gs_ui_text_select(gs_ui *ui, gs_rect r, const char *id, const char *text, float px, SDL_FColor c, const gs_ui_text_range *ranges, int count, int *from, int *to, int *clicked);
 float gs_ui_text_height(gs_ui *ui, const char *text, float px, float width);

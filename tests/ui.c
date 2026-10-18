@@ -832,6 +832,64 @@ static int pixels_of(SDL_Renderer *r, SDL_FColor c) {
     return n;
 }
 
+// Thirty messages in a flow 100 points tall, each a selectable text in one group, 10 points apart.
+static char bodies[30][32];
+static int parts[30][2];
+static float body_h, row_heights[30];
+static gs_ui_rows convo;
+static bool began;
+static void convo_frame(void) {
+    gs_ui_begin(ui);
+    gs_rect area = { 0, 100, 300, 100 };
+    convo = gs_ui_flow(ui, area, "convo", 30, row_heights);
+    gs_ui_select_group(ui, "bodies");
+    float y = convo.y;
+    for (int i = convo.first; i < convo.end; y += row_heights[i++]) {
+        char id[16];
+        SDL_snprintf(id, sizeof id, "body-%d", i);
+        gs_ui_text_select(ui, (gs_rect){ 0, y, 300, 0 }, id, bodies[i], 14, gs_ui_style_of(ui)->text, NULL, 0, &parts[i][0], &parts[i][1], NULL);
+    }
+    gs_ui_select_group(ui, NULL);
+    gs_ui_list_end(ui);
+    began = gs_ui_select_began(ui, "bodies");
+    gs_ui_end(ui);
+}
+
+static float row_top(int i) {
+    float y = convo.y;
+    for (int j = convo.first; j < i; j++) y += row_heights[j];
+    return y;
+}
+
+// A drag across messages selects the rest of the first, all of those between and the start of the
+// last; going up it mirrors; held below the flow it scrolls on and takes in the messages it brings.
+static void test_ui_select_across(void) {
+    if (gs_ui_text_width(ui, "see", 14) <= 0) return;  // (no font to shape with)
+    body_h = gs_ui_line_height(ui, 14);
+    for (int i = 0; i < 30; i++) SDL_snprintf(bodies[i], sizeof bodies[i], "message %d says hello", i), row_heights[i] = body_h + 10;
+    convo_frame(), convo_frame();
+    int first = convo.first + 1, len = (int)strlen(bodies[first]);
+    float mid = gs_ui_text_width(ui, "message", 14) + 1;  // (just after "message")
+    pointer(SDL_EVENT_MOUSE_MOTION, mid, row_top(first) + body_h / 2), pointer(SDL_EVENT_MOUSE_BUTTON_DOWN, mid, row_top(first) + body_h / 2), convo_frame();
+    CHECK(began && parts[first][0] == 7 && parts[first][1] == 7);
+    pointer(SDL_EVENT_MOUSE_MOTION, mid, row_top(first + 2) + body_h / 2), convo_frame();
+    CHECK(!began);
+    CHECK(parts[first][0] == 7 && parts[first][1] == len);
+    CHECK(SDL_min(parts[first + 1][0], parts[first + 1][1]) == 0 && SDL_max(parts[first + 1][0], parts[first + 1][1]) == (int)strlen(bodies[first + 1]));
+    CHECK(parts[first + 2][0] == 0 && parts[first + 2][1] == 7);
+    pointer(SDL_EVENT_MOUSE_MOTION, mid, row_top(first + 2) - 4), convo_frame();  // in the gap above the third: the second to its end, the third nothing
+    CHECK(parts[first + 2][0] == parts[first + 2][1] && SDL_max(parts[first + 1][0], parts[first + 1][1]) == (int)strlen(bodies[first + 1]));
+    pointer(SDL_EVENT_MOUSE_MOTION, mid, row_top(first) - 4), convo_frame();  // above the first message: its start, back to the press
+    CHECK(parts[first][0] == 7 && parts[first][1] == 0 && parts[first + 1][0] == parts[first + 1][1]);
+    // Held above the flow (which starts at its bottom), it scrolls and takes in what comes down.
+    pointer(SDL_EVENT_MOUSE_MOTION, mid, 80), convo_frame();
+    int was = convo.first;
+    for (int i = 0; i < 40; i++) SDL_Delay(10), convo_frame();
+    CHECK(convo.first < was);
+    CHECK(parts[convo.first][0] == (int)strlen(bodies[convo.first]) && parts[convo.first][1] == 0 && parts[first][0] == 7 && parts[first][1] == 0);
+    pointer(SDL_EVENT_MOUSE_BUTTON_UP, mid, 80), convo_frame();
+}
+
 // Wrapped text the pointer selects in: a drag reports the bytes from where it began to where it is
 // and they are drawn highlighted, and a click on a range marked a link reports that range.
 static void test_ui_text_select(SDL_Renderer *r) {
@@ -1045,6 +1103,7 @@ void test_ui(void) {
     test_ui_trailing_spaces(w);
     test_ui_undo();
     test_ui_text_select(r);
+    test_ui_select_across();
     test_ui_cut();
     test_ui_text_weight(r, fs);
     gs_ui_free(ui);

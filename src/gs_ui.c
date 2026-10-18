@@ -109,6 +109,12 @@ struct gs_ui {
     uint32_t focus, drag;    // the widget with the keyboard; the slider being dragged
     uint32_t selecting;      // the text being selected in, through the frame the button comes up in
     int select_unit, select_lo, select_hi;  // what its drag selects by (1 characters, 2 words, 3 paragraphs) and the unit it began on
+    uint32_t group, select_group;  // the group texts drawn now belong to (gs_ui_select_group); the one the selection began in
+    bool select_began;             // a selection began in a text of select_group this frame
+    float anchor_top;              // where the text it began in is on screen, as last drawn; far off when it is not drawn
+    bool anchor_seen;              // ...which it was this frame
+    uint32_t list_id, select_list; // the list or flow being drawn; the one the selection's texts are in
+    uint64_t select_scrolled;      // when a flow last scrolled for the selection
     bool marked;             // the keyboard moved the focus last, so the control that has it is marked
     stop stops[STOPS], last_stops[STOPS];  // the Tab order: this frame's as it is drawn, and the last frame's, which Tab walks
     int nstops, nlast;
@@ -331,6 +337,7 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     memset(ui->taken, 0, sizeof ui->taken);
     ui->float_last = ui->float_now, ui->float_last_on = ui->float_now_on;
     ui->float_now_on = false, ui->nfl = 0, ui->tip_wanted = false, ui->wait_ms = -1, ui->opacity = 1;
+    ui->group = 0, ui->select_began = false;
     if (!down) ui->drag = 0;
     ui->disabled = ui->dim = false, ui->clip.on = false, ui->page = 0, ui->cursor_want = 0, ui->fonts = ui->own_fonts;
     bool was_modal = ui->modal_last;
@@ -564,6 +571,9 @@ static void unit_of(const char *text, int at, int unit, int *lo, int *hi) {
     for (*hi = SDL_min(at, len); *hi < len && text[*hi] != '\n';) ++*hi;
 }
 
+void gs_ui_select_group(gs_ui *ui, const char *group) { ui->group = group ? hash(group) : 0; }
+bool gs_ui_select_began(gs_ui *ui, const char *group) { return ui->select_began && group && ui->select_group == hash(group); }
+
 float gs_ui_text_select(gs_ui *ui, gs_rect r, const char *id, const char *text, float size, SDL_FColor c, const gs_ui_text_range *ranges, int count, int *from, int *to, int *clicked) {
     if (clicked) *clicked = -1;
     const gs_wrap *w = wrap_of(ui, text, size, r.w);
@@ -572,21 +582,35 @@ float gs_ui_text_select(gs_ui *ui, gs_rect r, const char *id, const char *text, 
     float lh = gs_ui_line_height(ui, size), s = ui->scale, origin;
     gs_rect box = { r.x, r.y, r.w, w->count * lh };
     bool over = gs_ui_hovered(ui, box), press = ui->in.pressed && over;
-    if (press) ui->selecting = h;
-    if (ui->selecting == h) {  // the pointer selects from where it went down to where it is
-        const gs_wrap_line *ln = &w->lines[SDL_clamp((int)floorf((ui->in.y - r.y) / lh), 0, w->count - 1)];
-        const gs_line *l = shown_line(ui, text, ln, size, r.x, r.w, &origin);
-        int at = ln->start + (l ? SDL_min(gs_line_hit(l, ui->in.x * s - origin, ui->piece), ln->end - ln->start) : 0);
-        if (press) ui->select_unit = SDL_clamp(ui->in.clicks, 1, 3);
-        if (ui->select_unit == 1) {
-            if (press) *from = at;
-            *to = at;
-        } else {  // by words or paragraphs: from the one pressed on to the one the pointer is over, whole
-            int under = glyph_at(ui, r, text, w, size, lh, ui->in.x, ui->in.y), lo, hi;
-            unit_of(text, under >= 0 ? under : at, ui->select_unit, &lo, &hi);
-            if (press) ui->select_lo = lo, ui->select_hi = hi;
-            if (lo < ui->select_lo) *from = ui->select_hi, *to = lo;
-            else *from = ui->select_lo, *to = SDL_max(hi, ui->select_hi);
+    if (press) {
+        ui->selecting = h, ui->select_group = ui->group, ui->select_began = true, ui->select_unit = SDL_clamp(ui->in.clicks, 1, 3);
+        ui->select_list = 0, ui->select_scrolled = ui->now;
+    }
+    bool anchor = ui->selecting == h, member = !anchor && ui->selecting && ui->group && ui->group == ui->select_group;
+    if (anchor || member) {
+        // Where the pointer is in this text: before it, after it, or the unit [p0, p1] it is in.
+        // (Past the top or bottom of the list it is in, the pointer is past every text there, the parts hidden at its edge too.)
+        float py = ui->list_id && ui->in.y < ui->list_area.y ? -1e9f : ui->list_id && ui->in.y >= ui->list_area.y + ui->list_area.h ? 1e9f : ui->in.y;
+        int len = (int)strlen(text), side = py < box.y ? -1 : py >= box.y + box.h ? 1 : 0, p0 = side > 0 ? len : 0, p1 = p0;
+        if (!side) {
+            const gs_wrap_line *ln = &w->lines[SDL_clamp((int)floorf((py - r.y) / lh), 0, w->count - 1)];
+            const gs_line *l = shown_line(ui, text, ln, size, r.x, r.w, &origin);
+            p0 = p1 = ln->start + (l ? SDL_min(gs_line_hit(l, ui->in.x * s - origin, ui->piece), ln->end - ln->start) : 0);
+            if (ui->select_unit > 1) {  // by words or paragraphs, whole
+                int under = glyph_at(ui, r, text, w, size, lh, ui->in.x, ui->in.y);
+                unit_of(text, under >= 0 ? under : p0, ui->select_unit, &p0, &p1);
+            }
+        }
+        if (ui->list_id) ui->select_list = ui->list_id;
+        if (anchor) {  // the text it began in: from the unit pressed on to the pointer
+            if (press) ui->select_lo = p0, ui->select_hi = p1;
+            ui->anchor_top = box.y, ui->anchor_seen = true;
+            if (p0 < ui->select_lo) *from = ui->select_hi, *to = p0;
+            else *from = ui->select_lo, *to = SDL_max(p1, ui->select_hi);
+        } else if (box.y > ui->anchor_top) {  // a text after it: from its start to the pointer, if the pointer has reached it
+            *from = 0, *to = side < 0 ? 0 : p1;
+        } else {  // and one before it, from its end
+            *from = side > 0 ? 0 : len, *to = side > 0 ? 0 : p0;
         }
     }
     if (over) {
@@ -1546,8 +1570,8 @@ void gs_ui_menu_end(gs_ui *ui) {
     if (gs_ui_key(ui, SDLK_ESCAPE, 0)) w->open = false;
 }
 
-static void list_begin(gs_ui *ui, gs_rect area, bool focused) {
-    ui->list_area = area, ui->list_marked = focused && ui->marked;
+static void list_begin(gs_ui *ui, gs_rect area, bool focused, uint32_t id) {
+    ui->list_id = id, ui->list_area = area, ui->list_marked = focused && ui->marked;
     ui->list_clip = clip_push(ui, area);
 }
 
@@ -1584,11 +1608,12 @@ gs_ui_rows gs_ui_list(gs_ui *ui, gs_rect area, const char *id, int count, float 
     rows.first = (int)(w->scroll / row_h);
     rows.end = SDL_min(count, (int)((w->scroll + area.h) / row_h) + 1);
     rows.y = area.y - w->scroll;
-    list_begin(ui, area, focused);
+    list_begin(ui, area, focused, h);
     return rows;
 }
 
 void gs_ui_list_end(gs_ui *ui) {
+    ui->list_id = 0;
     if (ui->list_marked) gs_ui_outline(ui, ui->list_area, ui->style.radius, 2, ui->style.focus);  // the focus mark, inside its edge
     clip_pop(ui, ui->list_clip);
 }
@@ -1620,6 +1645,13 @@ gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const 
         if (gs_ui_key(ui, SDLK_HOME, 0)) w->scroll = 0;
         if (gs_ui_key(ui, SDLK_END, 0)) w->scroll = max_scroll;
     }
+    if (ui->selecting && ui->select_list == hash(id) && ui->in.down) {  // a selection dragged to an edge scrolls, the faster the further past it
+        float edge = fminf(24, area.h / 4), d = 0, dt = (float)SDL_min(ui->now - ui->select_scrolled, 100) / 1000;
+        if (ui->in.y < area.y + edge) d = ui->in.y - (area.y + edge);
+        if (ui->in.y > area.y + area.h - edge) d = ui->in.y - (area.y + area.h - edge);
+        if (d) w->scroll += SDL_clamp(d * 12, -3000, 3000) * dt, wake_within(ui, 16);
+        ui->select_scrolled = ui->now;
+    }
     w->scroll = fminf(max_scroll, fmaxf(0, w->scroll));
     w->away = w->scroll < max_scroll - 0.5f;  // scrolled off the end: new rows no longer carry it along
     float y = 0;
@@ -1628,7 +1660,7 @@ gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const 
     rows.end = rows.first;
     for (float bottom = y; rows.end < count && bottom < w->scroll + area.h; bottom += heights[rows.end++]) {}
     rows.above = w->scroll, rows.below = max_scroll - w->scroll;
-    list_begin(ui, area, focused);
+    list_begin(ui, area, focused, hash(id));
     return rows;
 }
 
@@ -1886,6 +1918,8 @@ int gs_ui_confirm(gs_ui *ui, const char *question, const char *yes, const char *
 }
 
 void gs_ui_end(gs_ui *ui) {
+    if (ui->selecting && !ui->anchor_seen) ui->anchor_top = ui->anchor_top < ui->in.y ? -1e9f : 1e9f;  // (it went off the way the pointer is not)
+    ui->anchor_seen = false;
     if (ui->placed_at) {  // the window's place is saved once it has rested half a second after moving
         uint64_t rest = SDL_GetTicks() - ui->placed_at;
         if (rest >= PLACE_REST_MS) gs_window_state_save(ui->place, &ui->placed), ui->placed_at = 0;
