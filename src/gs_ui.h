@@ -159,7 +159,10 @@ void gs_ui_texture(gs_ui *ui, gs_rect r, SDL_Texture *t, const SDL_FRect *src); 
 // until the user zooms. Give each picture an id of its own so each keeps its own place; a texture of
 // the whole image comes from gs_images_full. gs_ui_image_zoom is screen pixels to an image pixel (1
 // at its own size; 0 before the view has been drawn), for showing a percentage.
-void gs_ui_image_view(gs_ui *ui, gs_rect r, const char *id, SDL_Texture *t);
+// True in the frame the user clicks beside the picture as it is drawn (pressed and let go in r but
+// off the picture, without moving the pointer between), for closing a viewer the way a lightbox does;
+// the end of a drag and the second click of a double click are not clicks.
+bool gs_ui_image_view(gs_ui *ui, gs_rect r, const char *id, SDL_Texture *t);
 float gs_ui_image_zoom(gs_ui *ui, const char *id);
 // Clips drawing to r, and the pointer with it: a control cut off by the clip cannot be clicked where
 // it does not show. NULL ends clipping. A list ends its own clip with gs_ui_list_end and puts back

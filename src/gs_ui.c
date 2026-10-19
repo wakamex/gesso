@@ -47,6 +47,7 @@ typedef struct {
     bool eased;
     float zoom, cx, cy;     // an image view: screen pixels to an image pixel, and the image's point at the view's centre
     bool fitted;            // ...which stays fitted to its area until the user zooms
+    bool margin, strayed;   // its press was beside the picture; and the pointer then moved, or the press zoomed
     gs_rect view;           // a page's area
     float extent, grab;     // the height of its content; where on its scroll thumb the pointer holds it
 } widget;
@@ -1671,12 +1672,12 @@ void gs_ui_flow_show(gs_ui *ui, const char *id, int row) { state(ui, hash(id))->
 
 // ---- An image view ----
 
-void gs_ui_image_view(gs_ui *ui, gs_rect r, const char *id, SDL_Texture *t) {
+bool gs_ui_image_view(gs_ui *ui, gs_rect r, const char *id, SDL_Texture *t) {
     uint32_t h = hash(id);
     widget *w = state(ui, h);
     bool focused = stop_at(ui, h, r);
     float tw, th, s = ui->scale;
-    if (!t || !SDL_GetTextureSize(t, &tw, &th) || tw <= 0 || th <= 0 || r.w <= 0 || r.h <= 0) return;
+    if (!t || !SDL_GetTextureSize(t, &tw, &th) || tw <= 0 || th <= 0 || r.w <= 0 || r.h <= 0) return false;
     // Zoom is screen pixels to an image pixel: 1 shows the image at its own size. Fitted, it is as
     // large as the area lets it be, and no larger than its own size.
     float fit = fminf(1, fminf(r.w * s / tw, r.h * s / th)), most = fmaxf(8, fit);
@@ -1684,11 +1685,12 @@ void gs_ui_image_view(gs_ui *ui, gs_rect r, const char *id, SDL_Texture *t) {
     float before = w->zoom, px = (ui->in.x - (r.x + r.w / 2)) * s, py = (ui->in.y - (r.y + r.h / 2)) * s;  // the pointer, in screen pixels from the centre
     bool over = gs_ui_hovered(ui, r);
     if (over && ui->in.wheel) w->zoom *= powf(1.2f, ui->in.wheel), ui->in.wheel = 0;
-    if (pressed(ui, r)) {
-        ui->drag = h;
+    bool press = pressed(ui, r);
+    if (press) {
+        ui->drag = h, w->strayed = false;
         // A second press soon after the first, in the same place: between fitted and the image's own size.
         if (ui->press_before && ui->press_at - ui->press_before < 400 && fabsf(ui->press_x - ui->before_x) < 4 && fabsf(ui->press_y - ui->before_y) < 4)
-            w->zoom = w->zoom > fit * 1.01f ? fit : 1, ui->press_at = 0;
+            w->zoom = w->zoom > fit * 1.01f ? fit : 1, ui->press_at = 0, w->strayed = true;
         w->want_x = ui->in.x, w->grab = ui->in.y;  // (where the drag last was)
     }
     if (focused) {  // + and - zoom about the centre, 0 fits, 1 is its own size, and the arrows move it
@@ -1710,6 +1712,7 @@ void gs_ui_image_view(gs_ui *ui, gs_rect r, const char *id, SDL_Texture *t) {
         w->cx += px / before - px / w->zoom, w->cy += py / before - py / w->zoom;
         w->fitted = w->zoom <= fit * 1.001f;
     }
+    if (ui->drag == h && (ui->in.down || ui->in.released) && (fabsf(ui->in.x - ui->press_x) >= 4 || fabsf(ui->in.y - ui->press_y) >= 4)) w->strayed = true;  // (a drag, not a click)
     if (ui->drag == h && ui->in.down) {
         w->cx -= (ui->in.x - w->want_x) * s / w->zoom, w->cy -= (ui->in.y - w->grab) * s / w->zoom;
         w->want_x = ui->in.x, w->grab = ui->in.y;
@@ -1728,6 +1731,10 @@ void gs_ui_image_view(gs_ui *ui, gs_rect r, const char *id, SDL_Texture *t) {
     if (fade < 1) SDL_SetTextureAlphaModFloat(t, alpha);
     clip_pop(ui, outer);
     if (focused && ui->marked) gs_ui_outline(ui, r, ui->style.radius, 2, ui->style.focus);
+    // A click beside the picture as it is drawn: pressed and let go there, not moved between.
+    gs_rect picture = { dst.x / s, dst.y / s, dst.w / s, dst.h / s };
+    if (press) w->margin = !gs_rect_contains(picture, ui->in.x, ui->in.y);
+    return ui->in.released && w->margin && !w->strayed && gs_ui_clicked(ui, r) && !gs_rect_contains(picture, ui->in.x, ui->in.y);
 }
 
 float gs_ui_image_zoom(gs_ui *ui, const char *id) { return state(ui, hash(id))->zoom; }

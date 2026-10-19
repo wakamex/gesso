@@ -103,6 +103,28 @@ void test_image(void) {
             if (click == 1) CHECK(gs_ui_image_zoom(ui, "big") == 1);
             if (click == 3) CHECK_NEAR(gs_ui_image_zoom(ui, "big"), 0.25, 1e-6);
         }
+        // Fitted, the picture is 200 by 100 across the middle: a click above it is a click beside it, one
+        // on it is not, nor a drag that ends above it, nor the second click of a double click.
+        #define CLICKED(id, t) (gs_ui_begin(ui), beside = gs_ui_image_view(ui, area, id, t), gs_ui_end(ui), beside)
+        bool beside;
+        SDL_Delay(450);  // (after the double clicks above)
+        SDL_Event down = { .button = { .type = SDL_EVENT_MOUSE_BUTTON_DOWN, .button = SDL_BUTTON_LEFT, .down = true, .x = 100, .y = 20 } }, up = down;
+        up.button.type = SDL_EVENT_MOUSE_BUTTON_UP, up.button.down = false;
+        SDL_Event there = { .motion = { .type = SDL_EVENT_MOUSE_MOTION, .x = 100, .y = 20 } };
+        gs_ui_event(ui, &there), gs_ui_event(ui, &down); CHECK(!CLICKED("big", big));
+        gs_ui_event(ui, &up); CHECK(CLICKED("big", big));
+        gs_ui_event(ui, &down), gs_ui_event(ui, &up); CHECK(!CLICKED("big", big));  // (the second click of a double click: it zooms)
+        CHECK(gs_ui_image_zoom(ui, "big") == 1);
+        gs_ui_event(ui, &zero), FRAME("big", big);
+        SDL_Delay(450);
+        down.button.y = up.button.y = 100;
+        gs_ui_event(ui, &down), gs_ui_event(ui, &up); CHECK(!CLICKED("big", big));  // on the picture
+        SDL_Delay(450);
+        SDL_Event away = { .motion = { .type = SDL_EVENT_MOUSE_MOTION, .x = 100, .y = 20 } };
+        up.button.y = 20;
+        gs_ui_event(ui, &down); CHECK(!CLICKED("big", big));
+        gs_ui_event(ui, &away); CHECK(!CLICKED("big", big));
+        gs_ui_event(ui, &up); CHECK(!CLICKED("big", big));  // a drag from the picture that ends beside it
     }
     SDL_DestroyTexture(big);
     gs_ui_free(ui), gs_fontset_free(fs);
