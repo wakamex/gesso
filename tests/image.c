@@ -125,6 +125,18 @@ void test_image(void) {
         gs_ui_event(ui, &down); CHECK(!CLICKED("big", big));
         gs_ui_event(ui, &away); CHECK(!CLICKED("big", big));
         gs_ui_event(ui, &up); CHECK(!CLICKED("big", big));  // a drag from the picture that ends beside it
+        SDL_Delay(450);
+        down.button.y = 20, up.button.x = 150;
+        SDL_Event along = { .motion = { .type = SDL_EVENT_MOUSE_MOTION, .x = 150, .y = 20 } };
+        gs_ui_event(ui, &there), gs_ui_event(ui, &down); CHECK(!CLICKED("big", big));
+        gs_ui_event(ui, &along); CHECK(!CLICKED("big", big));
+        gs_ui_event(ui, &up); CHECK(!CLICKED("big", big));  // a drag beside it
+        // A small picture at its own size: a double click beside it leaves it as it is, and only its first click counts.
+        SDL_Delay(450);
+        down.button.x = up.button.x = 2, down.button.y = up.button.y = 2;
+        SDL_Event corner = { .motion = { .type = SDL_EVENT_MOUSE_MOTION, .x = 2, .y = 2 } };
+        gs_ui_event(ui, &corner), gs_ui_event(ui, &down), gs_ui_event(ui, &up); CHECK(CLICKED("small", flat));
+        gs_ui_event(ui, &down), gs_ui_event(ui, &up); CHECK(!CLICKED("small", flat));
     }
     SDL_DestroyTexture(big);
     gs_ui_free(ui), gs_fontset_free(fs);
