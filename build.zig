@@ -217,13 +217,13 @@ pub fn build(b: *std.Build) void {
     // gs_desk, one implementation per system.
     mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{"gs_desk.c"}, .flags = flags });
     switch (target.result.os.tag) {
-        .windows => mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_windows.c", "gs_notify_windows.c" }, .flags = flags }),
+        .windows => mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_windows.c", "gs_notify_windows.c", "gs_nowplaying_windows.c" }, .flags = flags }),
         .macos => {
             mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_macos.c", "gs_desk_unix.c" }, .flags = flags });
-            for ([_][]const u8{ "gs_desk_macos.m", "gs_notify_macos.m" }) |f| mod.addCSourceFile(.{ .file = b.path(b.fmt("src/{s}", .{f})), .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra", "-Wno-unused-parameter" } });
-            for ([_][]const u8{ "AppKit", "Carbon", "ApplicationServices", "UserNotifications", "Security" }) |f| mod.linkFramework(f, .{});
+            for ([_][]const u8{ "gs_desk_macos.m", "gs_notify_macos.m", "gs_nowplaying_macos.m" }) |f| mod.addCSourceFile(.{ .file = b.path(b.fmt("src/{s}", .{f})), .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra", "-Wno-unused-parameter" } });
+            for ([_][]const u8{ "AppKit", "Carbon", "ApplicationServices", "UserNotifications", "Security", "MediaPlayer" }) |f| mod.linkFramework(f, .{});
         },
-        .linux => mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_linux.c", "gs_desk_unix.c", "gs_notify_linux.c" }, .flags = flags }),
+        .linux => mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_linux.c", "gs_desk_unix.c", "gs_notify_linux.c", "gs_nowplaying_linux.c" }, .flags = flags }),
         else => {},
     }
     if (target.result.isGnuLibC() and target.result.os.versionRange().gnuLibCVersion().?.order(.{ .major = 2, .minor = 29, .patch = 0 }) == .lt)
@@ -258,7 +258,7 @@ pub fn build(b: *std.Build) void {
 
     // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "eta.c", "ed25519.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "movie.c", "notify.c", "oauth.c", "secret.c", "sound.c", "stream.c", "text.c", "ui.c", "update.c", "voice.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "eta.c", "ed25519.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "movie.c", "notify.c", "nowplaying.c", "oauth.c", "secret.c", "sound.c", "stream.c", "text.c", "ui.c", "update.c", "voice.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
     tests.addIncludePath(b.path("src"));
     if (av) |a| for (a.include) |dir| tests.addIncludePath(dir);
     useSdk(tests, macos_sdk);
@@ -331,8 +331,21 @@ pub fn build(b: *std.Build) void {
     notify_run.step.dependOn(&notify_install.step);
     notify_run.addPassthruArgs();
     b.step("bench-notify", "Show a desktop notification and wait for its click").dependOn(&notify_run.step);
+    // zig build bench-nowplaying -- [TITLE] [ARTIST] [SECONDS]: the system's media controls, printing the commands that come.
+    const nowplaying_bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    nowplaying_bench.addCSourceFile(.{ .file = b.path("bench/nowplaying.c"), .flags = flags });
+    nowplaying_bench.addIncludePath(b.path("src"));
+    useSdk(nowplaying_bench, macos_sdk);
+    nowplaying_bench.linkLibrary(lib);
+    const nowplaying_exe = b.addExecutable(.{ .name = "bench-nowplaying", .root_module = nowplaying_bench });
+    const nowplaying_install = b.addInstallArtifact(nowplaying_exe, .{});
+    const nowplaying_run = b.addRunArtifact(nowplaying_exe);
+    nowplaying_run.step.dependOn(&nowplaying_install.step);
+    nowplaying_run.addPassthruArgs();
+    b.step("bench-nowplaying", "Turn the system's media controls on and print the commands that come").dependOn(&nowplaying_run.step);
     const benches = b.step("benches", "Build the benches without running them");
     benches.dependOn(&notify_install.step);
+    benches.dependOn(&nowplaying_install.step);
     benches.dependOn(&overlay_install.step);
 
     // zig build bench-sound -- FILE: a sound file opened and played through by gs_sound, without a device.
