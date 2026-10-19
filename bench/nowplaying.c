@@ -30,7 +30,13 @@ int main(int argc, char **argv) {
         int next = e.user.code == GS_NOWPLAYING_PLAY ? GS_NOWPLAYING_PLAYING : e.user.code == GS_NOWPLAYING_PAUSE ? GS_NOWPLAYING_PAUSED
                  : e.user.code == GS_NOWPLAYING_TOGGLE ? (state == GS_NOWPLAYING_PLAYING ? GS_NOWPLAYING_PAUSED : GS_NOWPLAYING_PLAYING)
                  : e.user.code == GS_NOWPLAYING_STOP ? GS_NOWPLAYING_STOPPED : state;
-        if (next != state) gs_nowplaying_set(title, artist, state = next);
+        if (e.user.code == GS_NOWPLAYING_NEXT || e.user.code == GS_NOWPLAYING_PREVIOUS) {  // another track, still playing
+            static char track[128];
+            static int n;
+            SDL_snprintf(track, sizeof track, "%s, track %d", argc > 1 ? argv[1] : "A song from gesso", e.user.code == GS_NOWPLAYING_NEXT ? ++n : --n);
+            title = track;
+            gs_nowplaying_set(title, artist, state);
+        } else if (next != state) gs_nowplaying_set(title, artist, state = next);
     }
     gs_nowplaying_quit();
     SDL_DestroyWindow(win);

@@ -97,18 +97,35 @@ Uint32 gs_nowplaying_init(SDL_Window *win, const char *name, const char *id) {
     return W.event;
 }
 
+// Logs a call that failed, once for each call and result, so that what the system refused is in the log.
+static void check(HRESULT hr, const char *what) {
+    static char said[8][64];
+    if (SUCCEEDED(hr)) return;
+    char line[64];
+    SDL_snprintf(line, sizeof line, "%s %08lx", what, (unsigned long)hr);
+    for (int i = 0; i < 8; i++)
+        if (!SDL_strcmp(said[i], line)) return;
+    for (int i = 0; i < 8; i++)
+        if (!said[i][0]) { SDL_strlcpy(said[i], line, sizeof said[i]); break; }
+    SDL_Log("gs_nowplaying: %s failed: 0x%08lx", what, (unsigned long)hr);
+}
+
 void gs_nowplaying_set(const char *title, const char *artist, int state) {
     if (!W.smtc) return;
     void *music = NULL;
-    if (W.updater && SUCCEEDED(CALL(W.updater, UPDATER_GET_MUSIC, HRESULT (WINAPI *)(void *, void **))(W.updater, &music)) && music) {
+    HRESULT hr = W.updater ? CALL(W.updater, UPDATER_GET_MUSIC, HRESULT (WINAPI *)(void *, void **))(W.updater, &music) : E_POINTER;
+    check(hr, "get_MusicProperties");
+    if (SUCCEEDED(hr) && music) {
         hstring t = string(title ? title : ""), a = string(artist ? artist : "");
-        CALL(music, MUSIC_PUT_TITLE, HRESULT (WINAPI *)(void *, hstring))(music, t);
-        CALL(music, MUSIC_PUT_ARTIST, HRESULT (WINAPI *)(void *, hstring))(music, a);
+        check(CALL(music, MUSIC_PUT_TITLE, HRESULT (WINAPI *)(void *, hstring))(music, t), "put_Title");
+        check(CALL(music, MUSIC_PUT_ARTIST, HRESULT (WINAPI *)(void *, hstring))(music, a), "put_Artist");
         W.delete_string(t), W.delete_string(a), release(music);
-        CALL(W.updater, UPDATER_UPDATE, HRESULT (WINAPI *)(void *))(W.updater);
+        // (the type again before each update, as Chromium does: without it the title and artist may not show)
+        check(CALL(W.updater, UPDATER_PUT_TYPE, HRESULT (WINAPI *)(void *, int))(W.updater, TYPE_MUSIC), "put_Type");
+        check(CALL(W.updater, UPDATER_UPDATE, HRESULT (WINAPI *)(void *))(W.updater), "Update");
     }
-    CALL(W.smtc, SMTC_PUT_STATUS, HRESULT (WINAPI *)(void *, int))(W.smtc, state == GS_NOWPLAYING_PLAYING ? STATUS_PLAYING : state == GS_NOWPLAYING_PAUSED ? STATUS_PAUSED : STATUS_STOPPED);
-    PUT_BOOL(W.smtc, SMTC_PUT_ENABLED, state != GS_NOWPLAYING_STOPPED);
+    check(CALL(W.smtc, SMTC_PUT_STATUS, HRESULT (WINAPI *)(void *, int))(W.smtc, state == GS_NOWPLAYING_PLAYING ? STATUS_PLAYING : state == GS_NOWPLAYING_PAUSED ? STATUS_PAUSED : STATUS_STOPPED), "put_PlaybackStatus");
+    check(PUT_BOOL(W.smtc, SMTC_PUT_ENABLED, state != GS_NOWPLAYING_STOPPED), "put_IsEnabled");
 }
 
 void gs_nowplaying_quit(void) {
