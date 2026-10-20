@@ -103,7 +103,9 @@ void test_movie(void) {
         gs_movie_seek(m, 1.6);
         CHECK(until(m, 'b', 2));
         CHECK(until(m, 'r', 1.5));
-        CHECK(gs_movie_playing(m) && gs_movie_position(m) < 1);
+        // (it went round: its clock is back below where it was sent; on a slow machine the clock may
+        // already be past the red second by the time a red frame is seen, so the bound is the seek's)
+        CHECK(gs_movie_playing(m) && gs_movie_position(m) < 1.6);
         gs_movie_rest(m);
         CHECK(!gs_movie_playing(m) && gs_movie_position(m) == 0 && seen(m) == 'r');
         // The picture follows the sound: with 1.2 s of its sound taken by the mixer at once, it is in
