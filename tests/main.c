@@ -10,6 +10,7 @@ static const struct { const char *name; void (*run)(void); } tests[] = {
     { "gs_desk", test_desk },
     { "gs_ed25519", test_ed25519 },
     { "gs_eta", test_eta },
+    { "gs_gif", test_gif },
     { "gs_hls", test_hls },
     { "gs_http", test_http },
     { "gs_image", test_image },

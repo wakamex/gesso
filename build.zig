@@ -194,7 +194,7 @@ pub fn build(b: *std.Build) void {
     const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
     mod.addCSourceFiles(.{
         .root = b.path("src"),
-        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_draw.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c", "gs_eta.c", "gs_ed25519.c", "gs_update.c" },
+        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_draw.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c", "gs_eta.c", "gs_ed25519.c", "gs_update.c", "gs_gif.c" },
         .flags = flags,
     });
     mod.addIncludePath(b.path("src"));
@@ -258,7 +258,7 @@ pub fn build(b: *std.Build) void {
 
     // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "eta.c", "ed25519.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "movie.c", "notify.c", "nowplaying.c", "oauth.c", "secret.c", "sound.c", "stream.c", "text.c", "ui.c", "update.c", "voice.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "eta.c", "ed25519.c", "gif.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "movie.c", "notify.c", "nowplaying.c", "oauth.c", "secret.c", "sound.c", "stream.c", "text.c", "ui.c", "update.c", "voice.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
     tests.addIncludePath(b.path("src"));
     if (av) |a| for (a.include) |dir| tests.addIncludePath(dir);
     useSdk(tests, macos_sdk);
@@ -331,6 +331,18 @@ pub fn build(b: *std.Build) void {
     notify_run.step.dependOn(&notify_install.step);
     notify_run.addPassthruArgs();
     b.step("bench-notify", "Show a desktop notification and wait for its click").dependOn(&notify_run.step);
+    // zig build bench-gif -- FILE.gif: what opening a GIF and playing it through costs.
+    const gif_bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    gif_bench.addCSourceFile(.{ .file = b.path("bench/gif.c"), .flags = flags });
+    gif_bench.addIncludePath(b.path("src"));
+    useSdk(gif_bench, macos_sdk);
+    gif_bench.linkLibrary(lib);
+    const gif_exe = b.addExecutable(.{ .name = "bench-gif", .root_module = gif_bench });
+    const gif_install = b.addInstallArtifact(gif_exe, .{});
+    const gif_run = b.addRunArtifact(gif_exe);
+    gif_run.step.dependOn(&gif_install.step);
+    gif_run.addPassthruArgs();
+    b.step("bench-gif", "Open a GIF and play it through, timing each frame").dependOn(&gif_run.step);
     // zig build bench-nowplaying -- [TITLE] [ARTIST] [SECONDS]: the system's media controls, printing the commands that come.
     const nowplaying_bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
     nowplaying_bench.addCSourceFile(.{ .file = b.path("bench/nowplaying.c"), .flags = flags });
@@ -346,6 +358,7 @@ pub fn build(b: *std.Build) void {
     const benches = b.step("benches", "Build the benches without running them");
     benches.dependOn(&notify_install.step);
     benches.dependOn(&nowplaying_install.step);
+    benches.dependOn(&gif_install.step);
     benches.dependOn(&overlay_install.step);
 
     // zig build bench-sound -- FILE: a sound file opened and played through by gs_sound, without a device.
