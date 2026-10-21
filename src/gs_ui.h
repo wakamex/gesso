@@ -259,7 +259,9 @@ float gs_ui_textarea_height(gs_ui *ui, const char *buf, float width, int max_lin
 // What is selected in a text area, as byte offsets into its text: true with [*start, *end) when
 // there is a selection, false with both at the cursor when there is none. gs_ui_textarea_select
 // selects a range (the cursor at its end), or places the cursor when start and end are the same.
-// For acting on the words a user picked: replacing them, looking them up.
+// For acting on the words a user picked: replacing them, looking them up. gs_ui_textarea_select
+// works on a field (gs_ui_field, gs_ui_input) too: a range covering its whole text selects it all,
+// so typing replaces it, and any other range places the cursor at the range's end.
 bool gs_ui_textarea_selection(gs_ui *ui, const char *id, int *start, int *end);
 void gs_ui_textarea_select(gs_ui *ui, const char *id, int start, int end);
 // A button showing items[*selected] that opens a list of the items. True when the choice changed.

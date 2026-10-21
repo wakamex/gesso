@@ -1068,6 +1068,15 @@ void test_ui(void) {
     CHECK(gs_ui_wait_ms(ui) > 480 && gs_ui_wait_ms(ui) <= 530);  // (the caret shows from now, for a whole blink)
     key(SDLK_ESCAPE, 0), frame();
     CHECK(field[0] == 0);
+    // The app selects a field's whole text, as a find shortcut does, and typing replaces it; or places its cursor.
+    text("f3b275"), frame();
+    gs_ui_textarea_select(ui, "field", 0, (int)strlen(field)), frame();
+    text("lorem"), frame();
+    CHECK(!strcmp(field, "lorem"));
+    gs_ui_textarea_select(ui, "field", 2, 2), frame();
+    text("X"), frame();
+    CHECK(!strcmp(field, "loXrem"));
+    key(SDLK_ESCAPE, 0), frame();
 
     click(230, 15), frame();  // the toggle
     CHECK(on);

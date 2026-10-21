@@ -1096,6 +1096,11 @@ static int bullets(const char *buf, int cursor, char *out, size_t size) {
 static bool field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, const char *placeholder, int flags) {
     uint32_t h = hash(id);
     widget *w = state(ui, h);
+    if (w->anchored) {  // a range set from outside (gs_ui_textarea_select): a field's selection is all of its text or none
+        int len = (int)strlen(buf), lo = SDL_min(w->anchor, w->cursor), hi = SDL_max(w->anchor, w->cursor);
+        w->all = len > 0 && lo <= 0 && hi >= len;
+        w->cursor = SDL_clamp(hi, 0, len), w->anchored = false;
+    }
     float s = ui->scale, pad = 8, text_px = ui->style.text_px;
     gs_rect inner = gs_inset(r, pad);
     inner.y = r.y, inner.h = r.h;
