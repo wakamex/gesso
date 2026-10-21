@@ -98,6 +98,13 @@ void test_movie(void) {
         CHECK(seen(m) == 'r');
         gs_movie_play(m, true);
         CHECK(!gs_movie_ended(m) && gs_movie_position(m) < 0.2);
+        // A seek while it plays holds it at the place until the frame for the place is shown, so the
+        // first frame drawn after the wait is the one its clock says.
+        gs_movie_seek(m, 1.3);
+        CHECK(gs_movie_playing(m) && gs_movie_position(m) == 1.3);
+        for (Uint64 start = SDL_GetTicks(); gs_movie_waiting(m) && SDL_GetTicks() - start < 3000; SDL_Delay(5)) { CHECK(gs_movie_position(m) == 1.3); seen(m); }
+        CHECK(seen(m) == 'b' && gs_movie_position(m) >= 1.3 && gs_movie_position(m) < 1.45);
+        CHECK_NEAR(gs_movie_get_info(m).shown_pts, gs_movie_position(m), 0.1);
         // Looping, it is red again after its length has passed.
         gs_movie_set_loop(m, true), gs_movie_set_muted(m, true);
         gs_movie_seek(m, 1.6);
@@ -108,10 +115,15 @@ void test_movie(void) {
         CHECK(gs_movie_playing(m) && !gs_movie_ended(m));
         gs_movie_rest(m);
         CHECK(!gs_movie_playing(m) && gs_movie_position(m) == 0 && seen(m) == 'r');
-        // The picture follows the sound: with 1.2 s of its sound taken by the mixer at once, it is in
-        // the blue second.
+        // Started from rest it waits, the sound with it, until its first frame is up: its clock stays
+        // at 0 however long that takes, and then runs.
         gs_movie_set_loop(m, false), gs_movie_set_muted(m, false);
         gs_movie_play(m, true);
+        CHECK(gs_movie_position(m) == 0);
+        for (Uint64 start = SDL_GetTicks(); gs_movie_waiting(m) && SDL_GetTicks() - start < 3000; SDL_Delay(5)) { CHECK(gs_movie_position(m) == 0); seen(m); }
+        CHECK(!gs_movie_waiting(m) && seen(m) == 'r');
+        // The picture follows the sound: with 1.2 s of its sound taken by the mixer at once, it is in
+        // the blue second.
         static float lr[2 * 4800];
         for (int i = 0; i < 12; i++) SDL_memset(lr, 0, sizeof lr), gs_movie_render(m, lr, 4800);
         seen(m);

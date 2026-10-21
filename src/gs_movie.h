@@ -34,7 +34,10 @@ void gs_movie_size(const gs_movie *m, int *width, int *height);
 double gs_movie_length(const gs_movie *m);
 bool gs_movie_has_sound(const gs_movie *m);
 
-void gs_movie_play(gs_movie *m, bool playing);  // played again after it ended, it starts over
+// Played again after it ended, it starts over. Started, and after a seek while it plays, it holds
+// where it is, its sound too, until the decoder shows the frame for that place, and then runs from
+// there: the picture never trails its clock, at the cost of a moment's wait on a slow machine.
+void gs_movie_play(gs_movie *m, bool playing);
 bool gs_movie_playing(const gs_movie *m);
 // True while what gs_movie_draw shows is not yet the frame for the movie's place: before its first
 // frame is decoded, and after a seek, when the decoder works forward from the key frame before the

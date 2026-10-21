@@ -36,6 +36,7 @@ struct gs_movie {
     gs_video_info info;   // the decoder's, as of the last frame asked for
     int first;            // the sample the thread starts at
     bool fresh;           // the decoder has shown nothing since it started
+    bool settling;        // playing, but held where it is until the decoder has the frame for that place
     SDL_Texture *poster;  // the first frame, kept
     SDL_Texture *hold;    // the last frame of a decoder that was replaced, until the new one shows
 };
@@ -213,7 +214,7 @@ static void begin_decoder(gs_movie *m, double seconds) {
         if (m->samples[i].sync && m->samples[i].time <= seconds + 1e-6 && m->samples[i].time >= m->samples[m->first].time) m->first = i;
     m->video = gs_video_new(m->r, 4, 0);
     if (!m->video) return;
-    m->fresh = true;
+    m->fresh = true, m->settling = m->playing;
     SDL_SetAtomicInt(&m->looping, m->loop), SDL_SetAtomicInt(&m->fed, 0);
     m->thread = SDL_CreateThread(feed, "gs_movie", m);
     if (!m->thread) gs_video_free(m->video), m->video = NULL;
@@ -234,7 +235,7 @@ static SDL_Texture *keep(gs_movie *m, SDL_Texture *frame, const SDL_FRect *src) 
 
 // ---- The clock ----
 
-static double clock_now(const gs_movie *m) { return m->playing ? m->base + (double)(SDL_GetTicksNS() - m->since) / 1e9 : m->base; }
+static double clock_now(const gs_movie *m) { return m->playing && !m->settling ? m->base + (double)(SDL_GetTicksNS() - m->since) / 1e9 : m->base; }
 
 static void clock_set(gs_movie *m, double seconds) { m->base = seconds, m->since = SDL_GetTicksNS(); }
 
@@ -257,7 +258,7 @@ void gs_movie_seek(gs_movie *m, double seconds) {
     const bool decoding = m->video != NULL;
     end_decoder(m);
     clock_set(m, seconds), m->loops = 0, m->ended = false;
-    if (m->sound) gs_sound_seek(m->sound, seconds), m->heard = seconds;
+    if (m->sound) gs_sound_seek(m->sound, seconds), gs_sound_play(m->sound, false), m->heard = seconds;
     if (decoding || m->playing) begin_decoder(m, seconds);
 }
 
@@ -267,9 +268,12 @@ void gs_movie_play(gs_movie *m, bool playing) {
     if (playing) m->since = SDL_GetTicksNS();
     else m->base = clock_now(m);
     m->playing = playing;
+    // (it waits, the sound with it, until the decoder shows the frame for where it starts; at once
+    // when that frame is already up)
+    if (playing) m->settling = true;
     if (m->sound) {
         if (playing) gs_sound_seek(m->sound, gs_movie_position(m)), m->heard = gs_movie_position(m);
-        gs_sound_play(m->sound, playing && sounding(m));
+        gs_sound_play(m->sound, playing && sounding(m) && !m->settling);
     }
     if (playing && !m->video) begin_decoder(m, gs_movie_position(m));
 }
@@ -277,7 +281,7 @@ void gs_movie_play(gs_movie *m, bool playing) {
 void gs_movie_rest(gs_movie *m) {
     end_decoder(m);
     if (m->hold) SDL_DestroyTexture(m->hold), m->hold = NULL;
-    m->playing = false, m->loops = 0;
+    m->playing = false, m->settling = false, m->loops = 0;
     clock_set(m, 0);
     if (m->sound) gs_sound_play(m->sound, false), gs_sound_seek(m->sound, 0);
 }
@@ -316,7 +320,7 @@ void gs_movie_set_loop(gs_movie *m, bool loop) {
 void gs_movie_set_muted(gs_movie *m, bool muted) {
     if (muted == m->muted) return;
     m->muted = muted;
-    if (m->sound && m->playing) {
+    if (m->sound && m->playing && !m->settling) {
         if (!muted) gs_sound_seek(m->sound, gs_movie_position(m)), m->heard = gs_movie_position(m);
         gs_sound_play(m->sound, !muted);
     }
@@ -332,7 +336,7 @@ void gs_movie_render(void *movie, float *lr, int frames) {
 SDL_Texture *gs_movie_frame(gs_movie *m, SDL_FRect *src, int *turns) {
     if (turns) *turns = m->turns;
     double t = clock_now(m);
-    if (m->playing && sounding(m)) {
+    if (m->playing && sounding(m) && !m->settling) {
         if (m->loop) {
             // Each time round, the sound starts again with the picture.
             const int loops = (int)(t / m->length);
@@ -352,6 +356,13 @@ SDL_Texture *gs_movie_frame(gs_movie *m, SDL_FRect *src, int *turns) {
     if (!m->video && (m->playing || !m->poster)) begin_decoder(m, gs_movie_position(m));
     SDL_Texture *frame = m->video ? gs_video_frame(m->video, clock_now(m), src) : NULL;
     if (m->video) m->info = gs_video_get_info(m->video);
+    // Held after a seek or a start until the decoder has reached the place: then the clock runs from
+    // there, and the sound with it, so that the picture never trails them.
+    if (m->settling && m->video && !m->info.unshown && frame &&
+        (m->base - m->info.shown_pts <= 1.5 * m->length / m->count || (SDL_GetAtomicInt(&m->fed) && m->info.queued == 0))) {
+        m->settling = false, m->since = SDL_GetTicksNS();
+        if (m->sound && sounding(m)) gs_sound_seek(m->sound, gs_movie_position(m)), m->heard = gs_movie_position(m), gs_sound_play(m->sound, true);
+    }
     if (m->video && m->info.unshown) {  // the hardware's frames cannot be shown here: again, in software
         end_decoder(m);
         begin_decoder(m, gs_movie_position(m));
