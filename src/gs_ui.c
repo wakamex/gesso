@@ -99,6 +99,7 @@ struct gs_ui {
     gs_fontset *fonts, *own_fonts;  // the fonts text is drawn with now, and the ones it was made with
     gs_ui_style style;
     float scale, opacity;
+    float zoom;              // points to window coordinates: the app's own scale on top of the display's
     gs_rect area;
     uint64_t frame, now;
     input pending, in;
@@ -219,7 +220,7 @@ gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
         .text_px = 14, .small_px = 12, .row = 30,
     };
     ui->style.focus = ui->style.accent, ui->style.button_radius = -1;
-    ui->opacity = 1;
+    ui->opacity = 1, ui->zoom = 1;
     ui->pending.x = ui->pending.y = OUTSIDE;  // until the pointer is seen in the window
     place_window(ui);
     return ui;
@@ -245,6 +246,15 @@ void gs_ui_free(gs_ui *ui) {
 gs_ui_style *gs_ui_style_of(gs_ui *ui) { return &ui->style; }
 gs_glyphs *gs_ui_glyphs(gs_ui *ui) { return ui->glyphs; }
 float gs_ui_scale(const gs_ui *ui) { return ui->scale; }
+void gs_ui_set_zoom(gs_ui *ui, float zoom) { ui->zoom = zoom > 0.01f ? zoom : 1; }
+float gs_ui_zoom(const gs_ui *ui) { return ui->zoom; }
+
+// Where the input method's candidates go, told in window coordinates.
+static void text_input_area(gs_ui *ui, gs_rect r, float cursor) {
+    float z = ui->zoom;
+    SDL_Rect area = { (int)(r.x * z), (int)(r.y * z), (int)(r.w * z), (int)(r.h * z) };
+    SDL_SetTextInputArea(ui->win, &area, (int)(cursor * z));
+}
 int gs_ui_wait_ms(const gs_ui *ui) { return ui->wait_ms; }
 
 static void wake_within(gs_ui *ui, int ms) {
@@ -272,12 +282,12 @@ bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
     if (to && to != SDL_GetWindowID(ui->win)) return false;  // another window's
     if (ui->place && gs_window_state_track(&ui->placed, ui->win, e)) ui->placed_at = SDL_max(SDL_GetTicks(), 1);
     switch (e->type) {
-    case SDL_EVENT_MOUSE_MOTION: p->x = e->motion.x, p->y = e->motion.y; return false;
+    case SDL_EVENT_MOUSE_MOTION: p->x = e->motion.x / ui->zoom, p->y = e->motion.y / ui->zoom; return false;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
-        if (e->button.button == SDL_BUTTON_LEFT) p->down = p->pressed = true, p->clicks = e->button.clicks, p->x = e->button.x, p->y = e->button.y;
+        if (e->button.button == SDL_BUTTON_LEFT) p->down = p->pressed = true, p->clicks = e->button.clicks, p->x = e->button.x / ui->zoom, p->y = e->button.y / ui->zoom;
         return false;
     case SDL_EVENT_MOUSE_BUTTON_UP:
-        if (e->button.button == SDL_BUTTON_LEFT) p->down = false, p->released = true, p->x = e->button.x, p->y = e->button.y;
+        if (e->button.button == SDL_BUTTON_LEFT) p->down = false, p->released = true, p->x = e->button.x / ui->zoom, p->y = e->button.y / ui->zoom;
         return false;
     case SDL_EVENT_MOUSE_WHEEL: p->wheel += e->wheel.y; return false;
     case SDL_EVENT_WINDOW_MOUSE_LEAVE: p->x = p->y = OUTSIDE; return false;  // nothing is under a pointer that has left
@@ -326,8 +336,8 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     int ww, wh, pw, ph;
     SDL_GetWindowSize(ui->win, &ww, &wh);
     SDL_GetCurrentRenderOutputSize(ui->r, &pw, &ph);
-    ui->scale = ww > 0 ? (float)pw / ww : 1;  // pixels per point, from the window's pixel density
-    ui->area = (gs_rect){ 0, 0, (float)ww, (float)wh };
+    ui->scale = (ww > 0 ? (float)pw / ww : 1) * ui->zoom;  // pixels per point, from the window's pixel density and the app's zoom
+    ui->area = (gs_rect){ 0, 0, (float)ww / ui->zoom, (float)wh / ui->zoom };
     ui->frame++;
     ui->now = SDL_GetTicks();
     bool down = ui->pending.down;
@@ -1146,8 +1156,7 @@ static bool field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, 
             cx += cw;
         }
         caret(ui, (gs_rect){ cx, r.y + 6, 1.5f, r.h - 12 });
-        SDL_Rect area = { (int)r.x, (int)r.y, (int)r.w, (int)r.h };  // where the input method's candidates go
-        SDL_SetTextInputArea(ui->win, &area, (int)(cx - r.x));
+        text_input_area(ui, (gs_rect){ r.x, r.y, r.w, r.h }, cx - r.x);
     }
     clip_pop(ui, outer);
     return changed;
@@ -1440,8 +1449,7 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
             cx += cw;
         }
         caret(ui, (gs_rect){ cx, top + 2, 1.5f, lh - 4 });
-        SDL_Rect area = { (int)r.x, (int)top, (int)r.w, (int)lh };  // where the input method's candidates go
-        SDL_SetTextInputArea(ui->win, &area, (int)(cx - r.x));
+        text_input_area(ui, (gs_rect){ r.x, top, r.w, lh }, cx - r.x);
     }
     clip_pop(ui, outer);
     return changed;

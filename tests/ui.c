@@ -575,6 +575,30 @@ static void test_ui_place(gs_fontset *fs) {
     SDL_DestroyRenderer(r), SDL_DestroyWindow(win);
 }
 
+// Zoomed, the interface is larger by that much: the area in points shrinks, a fill covers that many
+// more pixels, and a click lands on the control drawn under it.
+static void test_ui_zoom(SDL_Renderer *r) {
+    gs_ui_set_zoom(ui, 2);
+    gs_rect area = gs_ui_begin(ui);
+    CHECK(gs_ui_zoom(ui) == 2 && area.w == 200 && area.h == 150 && gs_ui_scale(ui) == 2);
+    gs_ui_end(ui);
+    click(45, 30);  // (window coordinates: 22.5, 15 in points)
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
+    SDL_RenderClear(r);
+    gs_ui_begin(ui);
+    gs_ui_fill(ui, (gs_rect){ 0, 0, 10, 10 }, (SDL_FColor){ 1, 1, 1, 1 });
+    bool hit = gs_ui_clicked(ui, (gs_rect){ 20, 10, 10, 10 }), miss = gs_ui_clicked(ui, (gs_rect){ 40, 25, 10, 10 });
+    gs_ui_end(ui);
+    CHECK(hit && !miss);
+    SDL_Surface *s = SDL_RenderReadPixels(r, NULL);
+    Uint8 in = 0, out = 0, g, b;
+    if (s) SDL_ReadSurfacePixel(s, 19, 19, &in, &g, &b, NULL), SDL_ReadSurfacePixel(s, 21, 21, &out, &g, &b, NULL);
+    SDL_DestroySurface(s);
+    CHECK(in > 200 && out < 50);  // (10 points are 20 pixels)
+    gs_ui_set_zoom(ui, 1);
+    gs_ui_begin(ui), gs_ui_end(ui);
+}
+
 static void test_ui_windows(SDL_Window *first, gs_fontset *fs) {
     SDL_Window *second = offscreen_window(200, 100);
     SDL_Renderer *r2 = second ? SDL_CreateRenderer(second, NULL) : NULL;
@@ -1098,6 +1122,7 @@ void test_ui(void) {
     test_ui_form();
     test_ui_hotkey();
     test_ui_draw(r);
+    test_ui_zoom(r);
     test_ui_windows(w, fs);
     test_ui_place(fs);
     gs_ui_free(ui);

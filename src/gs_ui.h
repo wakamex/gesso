@@ -78,6 +78,15 @@ int gs_ui_wait_ms(const gs_ui *ui);
 // progress bar, a clock): gs_ui_wait_ms after this frame is no more than that.
 void gs_ui_wake(gs_ui *ui, int ms);
 float gs_ui_scale(const gs_ui *ui);  // pixels per point
+// Scales the whole interface by `zoom` on top of the display's pixel density (1, the default, for
+// none): text, controls, their hit areas and the window's area in points all follow, so a layout
+// made for one size fits another, or the user can make everything larger. It takes effect at the
+// next gs_ui_begin, which then returns the window divided by it; events handed in after the call
+// are read at it. A layout of fixed size W by H fits the window, letterboxed, with zoom
+// min(window_w / W, window_h / H) on the window's own size in points (zoom 1), centred by
+// (area.w - W) / 2 and (area.h - H) / 2 on the area gs_ui_begin returns.
+void gs_ui_set_zoom(gs_ui *ui, float zoom);
+float gs_ui_zoom(const gs_ui *ui);
 
 // ---- Drawing ----
 
