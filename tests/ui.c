@@ -946,6 +946,11 @@ static void test_ui_text_spans(SDL_Renderer *r) {
     pointer(SDL_EVENT_MOUSE_MOTION, 370, 100 + lh / 2), pointer(SDL_EVENT_MOUSE_BUTTON_UP, 370, 100 + lh / 2);
     gs_ui_begin(ui), gs_ui_text_spans(ui, (gs_rect){ 10, 100, 380, 0 }, "spans", text, 14, gs_ui_style_of(ui)->text, fonts, 4, spans, 3, &from, &to, &clicked), gs_ui_end(ui);
     CHECK(from == 0 && to >= 24);
+    // One set that is not the interface's is wrapped in that set: monospace text breaks where it, not the interface's font, runs out.
+    gs_fontset *only_mono[1] = { mono };
+    float fits = gs_ui_text_width(ui, "iiiiiiii iiiiiiii", 14) + 2;
+    CHECK(gs_ui_text_spans_height(ui, "iiiiiiii iiiiiiii", 14, fits, NULL, 0, NULL, 0) == lh);
+    CHECK(gs_ui_text_spans_height(ui, "iiiiiiii iiiiiiii", 14, fits, only_mono, 1, NULL, 0) > lh);
     gs_fontset_free(bold), gs_fontset_free(mono), gs_fontset_free(italic);
 }
 

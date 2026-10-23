@@ -642,7 +642,7 @@ static void unit_of(const char *text, int at, int unit, int *lo, int *hi) {
 
 // A text in several fonts broken into lines, kept for the frames that draw it again.
 static const gs_wrap *rich_wrap(gs_ui *ui, const rich *t, float width) {
-    if (t->nfonts <= 1) return wrap_of(ui, t->text, t->size, width);
+    if (t->nfonts <= 1 && t->fonts[0] == ui->fonts) return wrap_of(ui, t->text, t->size, width);  // (one set of another's is measured in it, below)
     float s = ui->scale > 0 ? ui->scale : 1;
     uint32_t runs = 2166136261u;
     for (int i = 0; i < t->nspans; i++) runs = ((runs ^ (uint32_t)t->spans[i].start) * 16777619u ^ (uint32_t)t->spans[i].end * 40503u ^ (uint32_t)t->spans[i].font) * 16777619u;
