@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 #define STATES 128     // widgets with state between frames (ids hashed into a small table)
 #define FLOATING 64    // rows drawn in the floating layer per frame
@@ -208,6 +211,38 @@ static void place_window(gs_ui *ui) {
     if (ui->place && gs_window_state_load(ui->place, &ui->placed)) gs_window_state_apply(&ui->placed, ui->win);
 }
 
+#ifdef __EMSCRIPTEN__
+// The browser's own keys go to the browser: SDL's web port cancels every key it reports, function
+// keys and Ctrl combinations always, so F5 did not reload a page and Ctrl and + did not zoom it. A
+// listener in the capture phase, which runs before SDL's, stops these from reaching SDL: zoom (Ctrl
+// or Cmd with the wheel, +, -, 0), reload (F5, Ctrl+R), full screen (F11) and the developer tools
+// (F12). Every other key, Ctrl+A and Ctrl+C included, stays the page's.
+EM_JS(void, pass_browser_keys, (void), {
+    if (Module.gsBrowserKeys) return;
+    Module.gsBrowserKeys = true;
+    function pass(e) {
+        const mod = e.ctrlKey || e.metaKey;
+        const zoom = mod && (e.type === "wheel" || ["=", "+", "-", "_", "0"].includes(e.key));
+        const reload = e.key === "F5" || (mod && (e.key === "r" || e.key === "R"));
+        if (zoom || reload || e.key === "F11" || e.key === "F12") e.stopPropagation();
+    }
+    window.addEventListener("wheel", pass, { capture: true, passive: true });
+    window.addEventListener("keydown", pass, { capture: true });
+});
+
+// The browser's clipboard, which SDL's web port does not reach: its own clipboard stays inside the page.
+EM_JS(void, browser_clipboard, (const char *text), {
+    if (navigator.clipboard) navigator.clipboard.writeText(UTF8ToString(text)).catch(function () {});
+});
+#endif
+
+void gs_clipboard_set(const char *text) {
+    SDL_SetClipboardText(text);  // (and on the web, for a paste inside the page, which reads SDL's)
+#ifdef __EMSCRIPTEN__
+    browser_clipboard(text ? text : "");
+#endif
+}
+
 gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
     gs_ui *ui = calloc(1, sizeof *ui);
     if (!ui) return NULL;
@@ -222,6 +257,9 @@ gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
     ui->style.focus = ui->style.accent, ui->style.button_radius = -1;
     ui->opacity = 1, ui->zoom = 1;
     ui->pending.x = ui->pending.y = OUTSIDE;  // until the pointer is seen in the window
+#ifdef __EMSCRIPTEN__
+    pass_browser_keys();
+#endif
     place_window(ui);
     return ui;
 }
@@ -1168,7 +1206,7 @@ static bool edit(gs_ui *ui, widget *w, char *buf, size_t size, bool secret) {
         } else if (ctrl && k == SDLK_A) {
             w->all = true;
         } else if (ctrl && (k == SDLK_C || k == SDLK_X) && w->all && len && !secret) {  // (what is shown as dots is not copied out)
-            SDL_SetClipboardText(buf);  // (only when the user copies)
+            gs_clipboard_set(buf);  // (only when the user copies)
             if (k == SDLK_X) before_edit(ui, h, w, buf, EDIT_ONE, NULL), buf[0] = 0, len = 0, w->cursor = 0, w->all = false, changed = true;
         } else if (k == SDLK_BACKSPACE || k == SDLK_DELETE) {
             if (w->all) before_edit(ui, h, w, buf, EDIT_ONE, NULL), buf[0] = 0, len = 0, w->cursor = 0, w->all = false, changed = true;
@@ -1449,7 +1487,7 @@ static bool area_edit(gs_ui *ui, widget *w, char *buf, size_t size, gs_rect inne
             w->anchor = 0, w->cursor = len, w->anchored = true;
         } else if (ctrl && (k == SDLK_C || k == SDLK_X)) {
             if (has) {
-                SDL_SetClipboardText(piece(ui, buf, lo, hi));
+                gs_clipboard_set(piece(ui, buf, lo, hi));
                 if (k == SDLK_X) before_edit(ui, h, w, buf, EDIT_ONE, NULL), changed |= put(buf, size, w, "", 0);
             }
         } else if (k == SDLK_BACKSPACE || k == SDLK_DELETE) {

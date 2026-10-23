@@ -47,6 +47,9 @@ typedef struct {
 
 typedef struct gs_ui gs_ui;
 
+// On the web, gs_ui_new also leaves the browser's own keys to the browser: zoom (Ctrl or Cmd with the
+// wheel, +, - or 0), reload (F5, Ctrl+R), full screen (F11) and the developer tools (F12), which
+// SDL's web port would otherwise cancel.
 // The window comes back where it was and at its size: gs_ui_new moves it as it was left, gs_ui_event
 // follows its moves, and its place is saved when it has rested half a second and when the interface
 // is freed. Create the window hidden and show it after gs_ui_new, so it does not jump. The place is
@@ -57,6 +60,10 @@ typedef struct gs_ui gs_ui;
 // Windows under SDL's offscreen and dummy drivers are not placed unless the property names a file.
 #define GS_UI_PLACE "gesso.place"
 gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts);
+// Puts text on the clipboard: SDL's, and on the web the browser's as well, which SDL's web port does
+// not reach. gs_ui's fields and text areas copy and cut through it; use it for an app's own Copy.
+// (A paste on the web reads SDL's clipboard: what the page itself copied, not what other programs did.)
+void gs_clipboard_set(const char *text);
 void gs_ui_free(gs_ui *ui);
 gs_ui_style *gs_ui_style_of(gs_ui *ui);  // change its colours and sizes as wanted
 gs_glyphs *gs_ui_glyphs(gs_ui *ui);

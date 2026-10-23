@@ -106,6 +106,21 @@ tools/bundle-macos.sh -n Example -e zig-out/bin/example -i com.example.app -v 1.
 
 For the web, compile the files in `src/` together with the app with Emscripten and `-sUSE_SDL=3`, and use SDL's main callbacks (`SDL_MAIN_USE_CALLBACKS`) so the browser can run the loop.
 
+On the web, gs_ui leaves the browser's own keys to the browser: SDL's web port cancels every key it reports, so without this F5 would not reload the page and Ctrl and + would not zoom it. Zoom (Ctrl or Cmd with the wheel, +, - or 0), reload (F5, Ctrl+R), full screen (F11) and the developer tools (F12) reach the browser, and every other key, Ctrl+A and Ctrl+C included, stays the page's. SDL's web port also keeps its clipboard inside the page, so gs_ui's fields and text areas copy through `gs_clipboard_set`, which writes the browser's clipboard too; an app's own Copy should call it rather than `SDL_SetClipboardText`. Pasting reads SDL's clipboard, which holds only what the page itself copied: browsers give out what other programs copied only asynchronously or in a paste event, which gesso does not take yet.
+
+A page that changes size (the browser's zoom, or a window made smaller) flashes black unless it is drawn again at once: SDL resizes the canvas inside the browser's resize event, which clears it, and the next frame comes only with the browser's next animation frame. SDL sends `SDL_EVENT_WINDOW_RESIZED` and `SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED` from inside that event, so an event watch that draws the frame there closes the gap, with no JavaScript:
+
+```c
+static bool SDLCALL redraw(void *app, SDL_Event *e) {
+    if (e->type == SDL_EVENT_WINDOW_RESIZED || e->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) draw(app);  // draw only: no event polling here
+    return true;
+}
+// after creating the window:
+SDL_AddEventWatch(redraw, app);
+```
+
+`tests/web/build.sh` and `tests/web/check.py` check all three in Chromium and Firefox through [Playwright](https://playwright.dev/): the browser's keys reach the browser while Ctrl+A stays the page's, a field's Ctrl+C reaches the browser's clipboard, and a pixel read inside the resize event is the page's colour with the watch and cleared without it.
+
 ## Deferred
 
 Accessibility: gesso apps draw their own interface, so screen readers and other assistive technology see nothing in them. That is acceptable for games and personal tools but not for an app offered to the public. The likely route is [AccessKit](https://github.com/AccessKit/accesskit), which implements each platform's accessibility API and has C bindings: an app describes its interface as a tree of nodes, and AccessKit answers the screen reader. Revisit before a gesso app is offered as a general-purpose app, or as soon as someone who uses a screen reader wants to use one.
