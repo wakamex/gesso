@@ -61,7 +61,7 @@ typedef struct { fl_kind kind; gs_rect r; SDL_FColor c; char text[160]; float px
 #define PLACE_REST_MS 500  // how long a moved window rests before its place is saved
 #define PAUSE_MS 1000  // typing after a pause this long is a step of its own
 
-typedef struct { char *text; int size4, width4, max; gs_fontset *fonts; gs_wrap *wrap; } wrap_entry;
+typedef struct { char *text; int size4, width4, max; gs_fontset *fonts; gs_wrap *wrap; uint32_t runs; } wrap_entry;  // runs: the spans' fonts, for a text in several (0 for one)
 
 // A field's or text area's text, cursor and selection at one moment.
 typedef struct { char *text; int cursor, anchor; bool anchored, all; } snapshot;
@@ -494,7 +494,7 @@ static const gs_wrap *wrap_lines(gs_ui *ui, const char *text, float size, float 
     float s = ui->scale > 0 ? ui->scale : 1;
     int size4 = (int)lroundf(size * s * 4), width4 = (int)lroundf(width * s * 4);
     wrap_entry *e = &ui->wraps[(hash(text) ^ (uint32_t)size4 * 40503u ^ (uint32_t)width4 * 2654435761u ^ (uint32_t)(uintptr_t)ui->fonts ^ (uint32_t)max * 97u) % WRAPS];
-    if (e->wrap && e->size4 == size4 && e->width4 == width4 && e->max == max && e->fonts == ui->fonts && !strcmp(e->text, text)) return e->wrap;
+    if (e->wrap && e->size4 == size4 && e->width4 == width4 && e->max == max && e->fonts == ui->fonts && !e->runs && !strcmp(e->text, text)) return e->wrap;
     SDL_free(e->text), gs_wrap_free(e->wrap);
     *e = (wrap_entry){ SDL_strdup(text), size4, width4, max, ui->fonts, gs_fontset_wrap_lines(ui->fonts, size * s, text, width * s, max) };
     return e->wrap;
@@ -540,38 +540,96 @@ float gs_ui_text_wrapped(gs_ui *ui, gs_rect r, const char *text, float size, SDL
     return w->count * lh;
 }
 
-// A wrapped line shaped alone with its text put aside for gs_line_hit, and where it starts across in pixels.
-static const gs_line *shown_line(gs_ui *ui, const char *text, const gs_wrap_line *ln, float size, float x, float width, float *origin) {
-    piece(ui, text, ln->start, ln->end);
-    const gs_line *l = gs_fontset_line_part(ui->fonts, size * ui->scale, text, ln->start, ln->end, ln->rtl ? GS_DIR_RTL : GS_DIR_LTR);
-    *origin = roundf((x + (ln->rtl && l ? width - l->width / ui->scale : 0)) * ui->scale);
-    return l;
+// ---- Text the pointer selects in, in one font or several ----
+
+// What a selectable text is drawn with: its fonts (one, the interface's, or the app's several) and
+// the spans that give parts of it a font, a colour, a background or a link.
+typedef struct {
+    const char *text;
+    float size;
+    gs_fontset *const *fonts;
+    int nfonts;
+    const gs_ui_text_span *spans;
+    int nspans;
+} rich;
+
+// A stretch of a line in one font: its bytes, its font, and where it starts across, in pixels.
+typedef struct { int start, end, font; float origin, width; } part;
+enum { PARTS = 64 };
+
+static int span_font(const rich *t, int at) {
+    for (int i = 0; i < t->nspans; i++)
+        if (at >= t->spans[i].start && at < t->spans[i].end && t->spans[i].font) return SDL_clamp(t->spans[i].font, 0, t->nfonts - 1);
+    return 0;
 }
 
-// The range that byte `at` of the text is in: the first of them, or -1.
-static int range_of(const gs_ui_text_range *ranges, int count, int at, bool links) {
-    for (int i = 0; i < count; i++)
-        if (at >= ranges[i].start && at < ranges[i].end && (ranges[i].link || !links)) return i;
+// The shaped stretch, with its text put aside for gs_line_hit.
+static const gs_line *part_line(gs_ui *ui, const rich *t, const gs_wrap_line *ln, const part *p) {
+    piece(ui, t->text, p->start, p->end);
+    return gs_fontset_line_part(t->fonts[p->font], t->size * ui->scale, t->text, p->start, p->end, ln->rtl ? GS_DIR_RTL : GS_DIR_LTR);
+}
+
+// A line's stretches in the order they lie across, from x over `width` points: one for a text in one
+// font, laid out as its direction says; one per change of font otherwise, left to right, or right to
+// left in a right-to-left paragraph.
+static int line_parts(gs_ui *ui, const rich *t, const gs_wrap_line *ln, float x, float width, part *out) {
+    int n = 0;
+    for (int a = ln->start; a < ln->end && n < PARTS;) {
+        int f = t->nfonts > 1 ? span_font(t, a) : 0, b = a + 1;
+        while (b < ln->end && (t->nfonts <= 1 || span_font(t, b) == f || n == PARTS - 1)) b++;
+        out[n] = (part){ a, b, f, 0, 0 };
+        const gs_line *l = part_line(ui, t, ln, &out[n]);
+        out[n++].width = l ? l->width : 0;
+        a = b;
+    }
+    float total = 0;
+    for (int i = 0; i < n; i++) total += out[i].width;
+    float at = roundf((x + (ln->rtl ? width - total / ui->scale : 0)) * ui->scale);
+    if (ln->rtl && n > 1)  // (the stretches in reverse, as a right-to-left paragraph reads)
+        for (int i = 0; i < n / 2; i++) { part p = out[i]; out[i] = out[n - 1 - i], out[n - 1 - i] = p; }
+    for (int i = 0; i < n; i++) out[i].origin = at, at += out[i].width;
+    return n;
+}
+
+// The byte offset nearest to x (points) on a line.
+static int line_hit(gs_ui *ui, const rich *t, const gs_wrap_line *ln, float x, float rx, float rw) {
+    part parts[PARTS];
+    int n = line_parts(ui, t, ln, rx, rw, parts);
+    if (!n) return ln->start;
+    float px = x * ui->scale;
+    int k = 0;
+    while (k + 1 < n && px >= parts[k].origin + parts[k].width) k++;
+    if (px < parts[0].origin) k = 0;
+    const gs_line *l = part_line(ui, t, ln, &parts[k]);
+    return parts[k].start + (l ? SDL_min(gs_line_hit(l, px - parts[k].origin, ui->piece), parts[k].end - parts[k].start) : 0);
+}
+
+// The span that byte `at` of the text is in: the first of them (with a link, if `links`), or -1.
+static int span_of(const rich *t, int at, bool links) {
+    for (int i = 0; i < t->nspans; i++)
+        if (at >= t->spans[i].start && at < t->spans[i].end && (t->spans[i].link || !links)) return i;
     return -1;
 }
 
 // The byte of the text whose glyph is drawn at a point, or -1.
-static int glyph_at(gs_ui *ui, gs_rect r, const char *text, const gs_wrap *w, float size, float lh, float x, float y) {
+static int glyph_at(gs_ui *ui, const rich *t, gs_rect r, const gs_wrap *w, float lh, float x, float y) {
     int i = (int)floorf((y - r.y) / lh);
-    float origin;
     if (i < 0 || i >= w->count) return -1;
-    const gs_line *l = shown_line(ui, text, &w->lines[i], size, r.x, r.w, &origin);
-    for (int g = 0; l && g < l->count; g++) {
-        float gx = origin + l->glyphs[g].x;
-        if (x * ui->scale >= gx && x * ui->scale < gx + l->glyphs[g].advance) return w->lines[i].start + l->glyphs[g].cluster;
+    part parts[PARTS];
+    int n = line_parts(ui, t, &w->lines[i], r.x, r.w, parts);
+    for (int k = 0; k < n; k++) {
+        const gs_line *l = part_line(ui, t, &w->lines[i], &parts[k]);
+        for (int g = 0; l && g < l->count; g++) {
+            float gx = parts[k].origin + l->glyphs[g].x;
+            if (x * ui->scale >= gx && x * ui->scale < gx + l->glyphs[g].advance) return parts[k].start + l->glyphs[g].cluster;
+        }
     }
     return -1;
 }
 
-// The link drawn at a point of the text, or -1.
-static int link_at(gs_ui *ui, gs_rect r, const char *text, const gs_wrap *w, float size, float lh, float x, float y, const gs_ui_text_range *ranges, int count) {
-    int at = count ? glyph_at(ui, r, text, w, size, lh, x, y) : -1;
-    return at < 0 ? -1 : range_of(ranges, count, at, true);
+static int link_at(gs_ui *ui, const rich *t, gs_rect r, const gs_wrap *w, float lh, float x, float y) {
+    int at = t->nspans ? glyph_at(ui, t, r, w, lh, x, y) : -1;
+    return at < 0 ? -1 : span_of(t, at, true);
 }
 
 // The word or paragraph (unit 2 or 3) that byte `at` of the text is in, as [*lo, *hi).
@@ -582,15 +640,38 @@ static void unit_of(const char *text, int at, int unit, int *lo, int *hi) {
     for (*hi = SDL_min(at, len); *hi < len && text[*hi] != '\n';) ++*hi;
 }
 
+// A text in several fonts broken into lines, kept for the frames that draw it again.
+static const gs_wrap *rich_wrap(gs_ui *ui, const rich *t, float width) {
+    if (t->nfonts <= 1) return wrap_of(ui, t->text, t->size, width);
+    float s = ui->scale > 0 ? ui->scale : 1;
+    uint32_t runs = 2166136261u;
+    for (int i = 0; i < t->nspans; i++) runs = ((runs ^ (uint32_t)t->spans[i].start) * 16777619u ^ (uint32_t)t->spans[i].end * 40503u ^ (uint32_t)t->spans[i].font) * 16777619u;
+    for (int i = 0; i < t->nfonts; i++) runs = (runs ^ (uint32_t)(uintptr_t)t->fonts[i]) * 16777619u;
+    runs += !runs;
+    int size4 = (int)lroundf(t->size * s * 4), width4 = (int)lroundf(width * s * 4);
+    wrap_entry *e = &ui->wraps[(hash(t->text) ^ (uint32_t)size4 * 40503u ^ (uint32_t)width4 * 2654435761u ^ runs) % WRAPS];
+    if (e->wrap && e->size4 == size4 && e->width4 == width4 && e->max == 0 && e->runs == runs && !strcmp(e->text, t->text)) return e->wrap;
+    SDL_free(e->text), gs_wrap_free(e->wrap);
+    gs_text_run local[PARTS], *tr = t->nspans <= PARTS ? local : malloc(sizeof *tr * (size_t)t->nspans);
+    int nr = 0;
+    for (int i = 0; tr && i < t->nspans; i++)
+        if (t->spans[i].font) tr[nr++] = (gs_text_run){ t->spans[i].start, t->spans[i].end, SDL_clamp(t->spans[i].font, 0, t->nfonts - 1) };
+    *e = (wrap_entry){ SDL_strdup(t->text), size4, width4, 0, t->fonts[0], tr ? gs_fontsets_wrap(t->fonts, t->nfonts, tr, nr, t->size * s, t->text, width * s) : NULL, runs };
+    if (tr != local) free(tr);
+    return e->wrap;
+}
+
 void gs_ui_select_group(gs_ui *ui, const char *group) { ui->group = group ? hash(group) : 0; }
 bool gs_ui_select_began(gs_ui *ui, const char *group) { return ui->select_began && group && ui->select_group == hash(group); }
 
-float gs_ui_text_select(gs_ui *ui, gs_rect r, const char *id, const char *text, float size, SDL_FColor c, const gs_ui_text_range *ranges, int count, int *from, int *to, int *clicked) {
+static float rich_select(gs_ui *ui, gs_rect r, const char *id, const rich *t, SDL_FColor c, int *from, int *to, int *clicked) {
     if (clicked) *clicked = -1;
-    const gs_wrap *w = wrap_of(ui, text, size, r.w);
+    const char *text = t->text;
+    float size = t->size;
+    const gs_wrap *w = rich_wrap(ui, t, r.w);
     if (!w) return 0;
     uint32_t h = hash(id);
-    float lh = gs_ui_line_height(ui, size), s = ui->scale, origin;
+    float lh = gs_ui_line_height(ui, size), s = ui->scale;
     gs_rect box = { r.x, r.y, r.w, w->count * lh };
     bool over = gs_ui_hovered(ui, box), press = ui->in.pressed && over;
     if (press) {
@@ -605,10 +686,9 @@ float gs_ui_text_select(gs_ui *ui, gs_rect r, const char *id, const char *text, 
         int len = (int)strlen(text), side = py < box.y ? -1 : py >= box.y + box.h ? 1 : 0, p0 = side > 0 ? len : 0, p1 = p0;
         if (!side) {
             const gs_wrap_line *ln = &w->lines[SDL_clamp((int)floorf((py - r.y) / lh), 0, w->count - 1)];
-            const gs_line *l = shown_line(ui, text, ln, size, r.x, r.w, &origin);
-            p0 = p1 = ln->start + (l ? SDL_min(gs_line_hit(l, ui->in.x * s - origin, ui->piece), ln->end - ln->start) : 0);
+            p0 = p1 = line_hit(ui, t, ln, ui->in.x, r.x, r.w);
             if (ui->select_unit > 1) {  // by words or paragraphs, whole
-                int under = glyph_at(ui, r, text, w, size, lh, ui->in.x, ui->in.y);
+                int under = glyph_at(ui, t, r, w, lh, ui->in.x, ui->in.y);
                 unit_of(text, under >= 0 ? under : p0, ui->select_unit, &p0, &p1);
             }
         }
@@ -625,35 +705,71 @@ float gs_ui_text_select(gs_ui *ui, gs_rect r, const char *id, const char *text, 
         }
     }
     if (over) {
-        int link = link_at(ui, r, text, w, size, lh, ui->in.x, ui->in.y, ranges, count);
+        int link = link_at(ui, t, r, w, lh, ui->in.x, ui->in.y);
         ui->cursor_want = link >= 0 ? 1 : 2;
         // A link is clicked when the button goes down and up on it with nothing selected between.
-        if (clicked && link >= 0 && ui->in.released && *from == *to && link == link_at(ui, r, text, w, size, lh, ui->press_x, ui->press_y, ranges, count)) *clicked = link;
+        if (clicked && link >= 0 && ui->in.released && *from == *to && link == link_at(ui, t, r, w, lh, ui->press_x, ui->press_y)) *clicked = link;
     }
     int lo = SDL_min(*from, *to), hi = SDL_max(*from, *to);
     c = ink(ui, c);
     int first = r.y < 0 ? (int)(-r.y / lh) : 0;  // (only the lines on screen are drawn)
     for (int i = first; i < w->count && r.y + i * lh < ui->area.h; i++) {
         const gs_wrap_line *ln = &w->lines[i];
-        const gs_line *l = shown_line(ui, text, ln, size, r.x, r.w, &origin);
-        if (!l || !l->count) continue;
-        float top = r.y + i * lh, x0 = 0, x1 = -1;
-        // What is selected, glyph by glyph as they lie: a range of the text is not one stretch of a line that mixes directions.
-        for (int g = 0; hi > lo && g <= l->count; g++) {
-            const gs_glyph_pos *p = g < l->count ? &l->glyphs[g] : NULL;
-            bool in = p && ln->start + p->cluster >= lo && ln->start + p->cluster < hi;
-            if (in && x1 >= x0 && fabsf(p->x - x1) < 0.5f) { x1 = p->x + p->advance; continue; }
-            if (x1 > x0) gs_ui_fill(ui, (gs_rect){ (origin + x0) / s, top, (x1 - x0) / s, lh }, ui->style.border);
-            x0 = in ? p->x : 0, x1 = in ? p->x + p->advance : -1;
-        }
-        float y = roundf((top + lh / 2 + size * 0.36f) * s);
-        for (int g = 0; g < l->count; g++) {
-            const gs_glyph_pos *p = &l->glyphs[g];
-            int k = range_of(ranges, count, ln->start + p->cluster, false);
-            gs_glyphs_draw(ui->glyphs, p->font, p->glyph, l->px, origin + p->x, y + p->y, 0, k < 0 ? c : ink(ui, ranges[k].color), 1);
+        part parts[PARTS];
+        int n = line_parts(ui, t, ln, r.x, r.w, parts);
+        float top = r.y + i * lh, y = roundf((top + lh / 2 + size * 0.36f) * s);
+        for (int k = 0; k < n; k++) {
+            const gs_line *l = part_line(ui, t, ln, &parts[k]);
+            if (!l || !l->count) continue;
+            float origin = parts[k].origin;
+            // Backgrounds, then what is selected, glyph by glyph as they lie: a range of the text is not
+            // one stretch of a line that mixes directions.
+            for (int pass = 0; pass < 2; pass++) {
+                float x0 = 0, x1 = -1;
+                SDL_FColor fill = { 0 }, was = { 0 };
+                for (int g = 0; g <= l->count; g++) {
+                    const gs_glyph_pos *p = g < l->count ? &l->glyphs[g] : NULL;
+                    int at = p ? parts[k].start + p->cluster : -1, sp = p && !pass ? span_of(t, at, false) : -1;
+                    bool in = p && (pass ? hi > lo && at >= lo && at < hi : sp >= 0 && t->spans[sp].back.a > 0);
+                    if (in && !pass) fill = t->spans[sp].back;
+                    if (in && x1 >= x0 && fabsf(p->x - x1) < 0.5f && (pass || !memcmp(&fill, &was, sizeof fill))) { x1 = p->x + p->advance; continue; }
+                    if (x1 > x0) gs_ui_fill(ui, (gs_rect){ (origin + x0) / s, top + (pass ? 0 : 1), (x1 - x0) / s, lh - (pass ? 0 : 2) }, pass ? ui->style.border : ink(ui, was));
+                    x0 = in ? p->x : 0, x1 = in ? p->x + p->advance : -1, was = fill;
+                }
+            }
+            for (int g = 0; g < l->count; g++) {
+                const gs_glyph_pos *p = &l->glyphs[g];
+                int sp = span_of(t, parts[k].start + p->cluster, false);
+                SDL_FColor col = sp >= 0 && t->spans[sp].color.a > 0 ? ink(ui, t->spans[sp].color) : c;
+                gs_glyphs_draw(ui->glyphs, p->font, p->glyph, l->px, origin + p->x, y + p->y, 0, col, 1);
+            }
         }
     }
     return w->count * lh;
+}
+
+float gs_ui_text_select(gs_ui *ui, gs_rect r, const char *id, const char *text, float size, SDL_FColor c, const gs_ui_text_range *ranges, int count, int *from, int *to, int *clicked) {
+    gs_ui_text_span local[16], *spans = count <= 16 ? local : malloc(sizeof *spans * (size_t)count);
+    if (!spans) return 0;
+    for (int i = 0; i < count; i++) spans[i] = (gs_ui_text_span){ .start = ranges[i].start, .end = ranges[i].end, .color = ranges[i].color, .link = ranges[i].link };
+    rich t = { text, size, &ui->fonts, 1, spans, count };
+    float height = rich_select(ui, r, id, &t, c, from, to, clicked);
+    if (spans != local) free(spans);
+    return height;
+}
+
+float gs_ui_text_spans(gs_ui *ui, gs_rect r, const char *id, const char *text, float size, SDL_FColor c, gs_fontset *const *fonts, int nfonts,
+                       const gs_ui_text_span *spans, int count, int *from, int *to, int *clicked) {
+    gs_fontset *own[1] = { ui->fonts };
+    rich t = { text, size, fonts && nfonts > 0 ? fonts : own, fonts && nfonts > 0 ? nfonts : 1, spans, count };
+    return rich_select(ui, r, id, &t, c, from, to, clicked);
+}
+
+float gs_ui_text_spans_height(gs_ui *ui, const char *text, float size, float width, gs_fontset *const *fonts, int nfonts, const gs_ui_text_span *spans, int count) {
+    gs_fontset *own[1] = { ui->fonts };
+    rich t = { text, size, fonts && nfonts > 0 ? fonts : own, fonts && nfonts > 0 ? nfonts : 1, spans, count };
+    const gs_wrap *w = rich_wrap(ui, &t, width);
+    return w ? w->count * gs_ui_line_height(ui, size) : 0;
 }
 
 float gs_ui_text_lines(gs_ui *ui, gs_rect r, const char *text, float size, SDL_FColor c, int max_lines, bool *cut) {

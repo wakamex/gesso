@@ -151,6 +151,18 @@ void gs_ui_select_group(gs_ui *ui, const char *group);
 bool gs_ui_select_began(gs_ui *ui, const char *group);
 typedef struct { int start, end; SDL_FColor color; bool link; } gs_ui_text_range;
 float gs_ui_text_select(gs_ui *ui, gs_rect r, const char *id, const char *text, float px, SDL_FColor c, const gs_ui_text_range *ranges, int count, int *from, int *to, int *clicked);
+// The same for text whose parts are in different fonts at one size: bold, italic and code words in
+// a paragraph, as in a Markdown document. `fonts` are the sets the spans name by index (fonts[0] for
+// bytes in no span; NULL for the interface's own set alone); each span gives its bytes a font, a
+// colour (alpha 0 for the text's own), a background drawn behind them (alpha 0 for none, as for
+// inline code) and whether it is a link, whose index *clicked gives. Selection, groups, words and
+// links work as above. A line is laid out in stretches of one font, left to right, or right to
+// left in a right-to-left paragraph, each shaped by itself. gs_ui_text_spans_height gives the height
+// without drawing.
+typedef struct { int start, end, font; SDL_FColor color, back; bool link; } gs_ui_text_span;
+float gs_ui_text_spans(gs_ui *ui, gs_rect r, const char *id, const char *text, float px, SDL_FColor c, gs_fontset *const *fonts, int nfonts,
+                       const gs_ui_text_span *spans, int count, int *from, int *to, int *clicked);
+float gs_ui_text_spans_height(gs_ui *ui, const char *text, float px, float width, gs_fontset *const *fonts, int nfonts, const gs_ui_text_span *spans, int count);
 float gs_ui_text_height(gs_ui *ui, const char *text, float px, float width);
 // Wrapped text held to `max_lines` lines: when it has more, the last line shown ends with an
 // ellipsis and *cut (which may be NULL) is set, for showing the whole text some other way, in a

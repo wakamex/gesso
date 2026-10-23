@@ -823,6 +823,7 @@ static void test_ui_trailing_spaces(SDL_Window *w) {
     area[0] = 0;
 }
 
+static gs_fontset *fonts_of_ui;
 static const char *message = "see https://example.com/page for the notes and the rest of what was said about it yesterday";
 static int sel_from, sel_to, link_clicked;
 static SDL_Window *select_window;
@@ -911,6 +912,41 @@ static void test_ui_select_across(void) {
     CHECK(convo.first < was);
     CHECK(parts[convo.first][0] == (int)strlen(bodies[convo.first]) && parts[convo.first][1] == 0 && parts[first][0] == 7 && parts[first][1] == 0);
     pointer(SDL_EVENT_MOUSE_BUTTON_UP, mid, 80), convo_frame();
+}
+
+// A paragraph in three fonts: a bold word set wider than the same word plain, a code word on its own
+// background, a link in a bold run that is clicked, and a drag that selects across the changes of font.
+static void test_ui_text_spans(SDL_Renderer *r) {
+    if (gs_ui_text_width(ui, "see", 14) <= 0) return;  // (no font to shape with)
+    gs_fontset *bold = gs_fontset_system_weight(700), *mono = gs_fontset_system_mono(400), *italic = gs_fontset_system_italic(400, false);
+    gs_fontset *fonts[4] = { fonts_of_ui, bold, mono, italic };
+    const char *text = "WWWW bold WWWW plain code tilt";
+    const gs_ui_text_span spans[] = {
+        { 0, 4, 1, { 0 }, { 0 }, true },                       // bold, and a link
+        { 20, 24, 2, { 0 }, { 1, 0, 1, 1 }, false },           // code, on magenta
+        { 25, 29, 3, { 0 }, { 0 }, false },                    // italic
+    };
+    float plain = gs_ui_text_width(ui, "WWWW", 14), lh = gs_ui_line_height(ui, 14);
+    int from = 0, to = 0, clicked = -1;
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 255), SDL_RenderClear(r);
+    gs_ui_begin(ui);
+    float h = gs_ui_text_spans(ui, (gs_rect){ 10, 100, 380, 0 }, "spans", text, 14, gs_ui_style_of(ui)->text, fonts, 4, spans, 3, &from, &to, &clicked);
+    gs_ui_end(ui);
+    CHECK(h >= lh && h == gs_ui_text_spans_height(ui, text, 14, 380, fonts, 4, spans, 3));
+    CHECK(pixels_of(r, gs_rgba(0xff00ff, 1)) > 20);  // (the code word's background)
+    // The bold run is wider than the plain word: a click just past the plain width still lands on it.
+    click(10 + plain + 1, 100 + lh / 2);
+    gs_ui_begin(ui);
+    gs_ui_text_spans(ui, (gs_rect){ 10, 100, 380, 0 }, "spans", text, 14, gs_ui_style_of(ui)->text, fonts, 4, spans, 3, &from, &to, &clicked);
+    gs_ui_end(ui);
+    CHECK(clicked == 0);
+    // A drag from the start into the code word selects across the bold, plain and code fonts.
+    pointer(SDL_EVENT_MOUSE_MOTION, 10, 100 + lh / 2), pointer(SDL_EVENT_MOUSE_BUTTON_DOWN, 10, 100 + lh / 2);
+    gs_ui_begin(ui), gs_ui_text_spans(ui, (gs_rect){ 10, 100, 380, 0 }, "spans", text, 14, gs_ui_style_of(ui)->text, fonts, 4, spans, 3, &from, &to, &clicked), gs_ui_end(ui);
+    pointer(SDL_EVENT_MOUSE_MOTION, 370, 100 + lh / 2), pointer(SDL_EVENT_MOUSE_BUTTON_UP, 370, 100 + lh / 2);
+    gs_ui_begin(ui), gs_ui_text_spans(ui, (gs_rect){ 10, 100, 380, 0 }, "spans", text, 14, gs_ui_style_of(ui)->text, fonts, 4, spans, 3, &from, &to, &clicked), gs_ui_end(ui);
+    CHECK(from == 0 && to >= 24);
+    gs_fontset_free(bold), gs_fontset_free(mono), gs_fontset_free(italic);
 }
 
 // Wrapped text the pointer selects in: a drag reports the bytes from where it began to where it is
@@ -1137,6 +1173,7 @@ void test_ui(void) {
     test_ui_undo();
     test_ui_text_select(r);
     test_ui_select_across();
+    fonts_of_ui = fs, test_ui_text_spans(r);
     test_ui_cut();
     test_ui_text_weight(r, fs);
     gs_ui_free(ui);

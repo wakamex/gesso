@@ -72,6 +72,9 @@ gs_fontset *gs_fontset_system_weight(int weight);
 // for 600 and up), Noto Sans Mono or the first of Adwaita Mono, Liberation Mono and DejaVu Sans Mono.
 // Its digits are all one width, so a running timer does not shift.
 gs_fontset *gs_fontset_system_mono(int weight);
+// The same faces in italic (Segoe UI's and Consolas' italic files, San Francisco's italic, Noto's),
+// with the upright ones after them for what the italic face lacks.
+gs_fontset *gs_fontset_system_italic(int weight, bool mono);
 // Sets the weight a set's variable fonts are drawn at (those with a weight axis and TrueType
 // outlines), for an app's own fonts; other fonts are unchanged. Call it before the set is first used.
 void gs_fontset_weight(gs_fontset *fs, int weight);
@@ -150,4 +153,10 @@ gs_wrap *gs_fontset_wrap(gs_fontset *fs, float px, const char *utf8, float width
 // ends early enough for an ellipsis to follow it within the width: draw that line's range and then
 // "…". Its width counts the ellipsis.
 gs_wrap *gs_fontset_wrap_lines(gs_fontset *fs, float px, const char *utf8, float width, int max_lines);
+// Wrapped text whose parts are in different font sets, at one size: bold, italic or code words in a
+// paragraph. Each run gives the bytes [start, end) and the index into `fonts` they are drawn with;
+// bytes in no run are in fonts[0], and where runs overlap the first counts. Each stretch of one font
+// is shaped by itself, so shaping (ligatures, kerning) does not reach across a change of font.
+typedef struct { int start, end, font; } gs_text_run;
+gs_wrap *gs_fontsets_wrap(gs_fontset *const *fonts, int nfonts, const gs_text_run *runs, int nruns, float px, const char *utf8, float width);
 void gs_wrap_free(gs_wrap *w);

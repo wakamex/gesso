@@ -909,7 +909,7 @@ static void add_in(gs_fontset *fs, const char *dir, const char *name) {
 // The system's fonts: its interface face (or a monospace one) at a weight first, then its fonts for
 // other scripts and emoji. A face is a file of that weight where the system has one, and a variable
 // font set to it otherwise.
-static gs_fontset *system_fonts(int weight, bool mono) {
+static gs_fontset *system_fonts(int weight, bool mono, bool italic) {
     gs_fontset *fs = gs_fontset_new();
     if (!fs) return NULL;
     if (weight != 400) fs->weight = weight;
@@ -921,13 +921,17 @@ static gs_fontset *system_fonts(int weight, bool mono) {
     char dir[400];
     SDL_snprintf(dir, sizeof dir, "%s\\Fonts\\", root ? root : "C:\\Windows");
     // Segoe UI has no medium: 500 is drawn regular. Consolas has regular and bold.
+    if (mono && italic) add_in(fs, dir, bold || semi ? "consolaz.ttf" : "consolai.ttf");
     if (mono) add_in(fs, dir, bold || semi ? "consolab.ttf" : "consola.ttf"), add_in(fs, dir, "CascadiaMono.ttf"), add_in(fs, dir, "cour.ttf");
+    if (italic) add_in(fs, dir, bold ? "segoeuiz.ttf" : semi ? "seguisbi.ttf" : "segoeuii.ttf");
     add_in(fs, dir, bold ? "segoeuib.ttf" : semi ? "seguisb.ttf" : "segoeui.ttf");
     static const char *const names[] = { "segoeui.ttf", "seguiemj.ttf", "seguisym.ttf", "YuGothM.ttc", "msyh.ttc", "malgun.ttf", "Nirmala.ttc", "Nirmala.ttf", "tahoma.ttf", "arial.ttf" };
     for (size_t i = (bold || semi ? 0 : 1); i < sizeof names / sizeof *names; i++) add_in(fs, dir, names[i]);
 #elif defined(__APPLE__)
     (void)bold, (void)semi, (void)medium;  // (San Francisco is a variable font: any weight)
+    if (mono && italic) add_in(fs, "/System/Library/Fonts/", "SFNSMonoItalic.ttf");
     if (mono) add_in(fs, "/System/Library/Fonts/", "SFNSMono.ttf"), add_in(fs, "/System/Library/Fonts/", "Menlo.ttc");
+    if (italic) add_in(fs, "/System/Library/Fonts/", "SFNSItalic.ttf");
     static const char *const paths[] = { "/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/Apple Color Emoji.ttc",
                                          "/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/AppleSDGothicNeo.ttc",
                                          "/System/Library/Fonts/Supplemental/GeezaPro.ttc", "/System/Library/Fonts/Kohinoor.ttc",
@@ -937,6 +941,13 @@ static gs_fontset *system_fonts(int weight, bool mono) {
     // Noto's variable fonts take any weight (Fedora); elsewhere a file of the weight, where it is installed.
     const char *style = bold ? "Bold" : semi ? "SemiBold" : medium ? "Medium" : "Regular";
     char name[64];
+    if (italic && !mono) {
+        gs_fontset_add(fs, "/usr/share/fonts/google-noto-vf/NotoSans-Italic[wght].ttf");
+        SDL_snprintf(name, sizeof name, "NotoSans-%sItalic.ttf", weight == 400 ? "" : style);
+        add_in(fs, "/usr/share/fonts/truetype/noto/", name), add_in(fs, "/usr/share/fonts/noto/", name);
+        add_in(fs, "/usr/share/fonts/dejavu-sans-fonts/", bold || semi ? "DejaVuSans-BoldOblique.ttf" : "DejaVuSans-Oblique.ttf");
+        add_in(fs, "/usr/share/fonts/truetype/dejavu/", bold || semi ? "DejaVuSans-BoldOblique.ttf" : "DejaVuSans-Oblique.ttf");
+    }
     if (mono) {
         gs_fontset_add(fs, "/usr/share/fonts/google-noto-vf/NotoSansMono[wght].ttf");
         SDL_snprintf(name, sizeof name, "NotoSansMono-%s.ttf", style);
@@ -983,9 +994,10 @@ static gs_fontset *system_fonts(int weight, bool mono) {
     return fs;
 }
 
-gs_fontset *gs_fontset_system(void) { return system_fonts(400, false); }
-gs_fontset *gs_fontset_system_weight(int weight) { return system_fonts(weight, false); }
-gs_fontset *gs_fontset_system_mono(int weight) { return system_fonts(weight, true); }
+gs_fontset *gs_fontset_system(void) { return system_fonts(400, false, false); }
+gs_fontset *gs_fontset_system_weight(int weight) { return system_fonts(weight, false, false); }
+gs_fontset *gs_fontset_system_mono(int weight) { return system_fonts(weight, true, false); }
+gs_fontset *gs_fontset_system_italic(int weight, bool mono) { return system_fonts(weight, mono, true); }
 
 static void forget_lines(gs_fontset *fs) {
     for (int i = 0; i < LINE_CACHE; i++) {
@@ -1449,7 +1461,22 @@ static void wrap_add(gs_wrap *w, int *cap, int start, int end, float width, bool
     w->lines[w->count++] = (gs_wrap_line){ start, end, width, rtl };
 }
 
-gs_wrap *gs_fontset_wrap(gs_fontset *fs, float px, const char *utf8, float width) {
+// The font a byte of the text is drawn in: that of the first run holding it, else the first.
+static int run_font(const gs_text_run *runs, int nruns, int at) {
+    for (int i = 0; i < nruns; i++)
+        if (at >= runs[i].start && at < runs[i].end) return runs[i].font;
+    return 0;
+}
+
+static gs_wrap *wrap_runs(gs_fontset *const *fonts, int nfonts, const gs_text_run *runs, int nruns, float px, const char *utf8, float width);
+
+gs_wrap *gs_fontset_wrap(gs_fontset *fs, float px, const char *utf8, float width) { return wrap_runs(&fs, 1, NULL, 0, px, utf8, width); }
+gs_wrap *gs_fontsets_wrap(gs_fontset *const *fonts, int nfonts, const gs_text_run *runs, int nruns, float px, const char *utf8, float width) {
+    return wrap_runs(fonts, nfonts, runs, nruns, px, utf8, width);
+}
+
+static gs_wrap *wrap_runs(gs_fontset *const *fonts, int nfonts, const gs_text_run *runs, int nruns, float px, const char *utf8, float width) {
+    gs_fontset *fs = fonts[0];
     int len = (int)strlen(utf8), cap = 0;
     gs_wrap *w = calloc(1, sizeof *w);
     uint8_t *flags = break_flags(utf8, len);
@@ -1466,11 +1493,24 @@ gs_wrap *gs_fontset_wrap(gs_fontset *fs, float px, const char *utf8, float width
         char *text = malloc((size_t)ve + 1);
         memcpy(text, utf8 + ps, (size_t)ve), text[ve] = 0;
         bool rtl = paragraph_direction(text) == KBTS_DIRECTION_RTL;
-        gs_line *shaped = ve ? gs_fontset_shape_dir(fs, px, text, rtl ? GS_DIR_RTL : GS_DIR_LTR) : NULL;
-        for (int i = 0; shaped && i < shaped->count; i++)
-            if (shaped->glyphs[i].cluster >= 0 && shaped->glyphs[i].cluster < plen) cum[shaped->glyphs[i].cluster + 1] += shaped->glyphs[i].advance;
+        if (!nruns) {
+            gs_line *shaped = ve ? gs_fontset_shape_dir(fs, px, text, rtl ? GS_DIR_RTL : GS_DIR_LTR) : NULL;
+            for (int i = 0; shaped && i < shaped->count; i++)
+                if (shaped->glyphs[i].cluster >= 0 && shaped->glyphs[i].cluster < plen) cum[shaped->glyphs[i].cluster + 1] += shaped->glyphs[i].advance;
+            gs_line_free(shaped);
+        }
+        // With runs, each stretch of one font is shaped by itself, within its paragraph.
+        for (int a = ps; nruns && a < ps + ve;) {
+            int f = run_font(runs, nruns, a), b = a + 1;
+            while (b < ps + ve && run_font(runs, nruns, b) == f) b++;
+            gs_line *piece = gs_fontset_shape_part(fonts[SDL_clamp(f, 0, nfonts - 1)], px, utf8, a, b, rtl ? GS_DIR_RTL : GS_DIR_LTR);
+            for (int i = 0; piece && i < piece->count; i++)
+                if (piece->glyphs[i].cluster >= 0 && a - ps + piece->glyphs[i].cluster < plen) cum[a - ps + piece->glyphs[i].cluster + 1] += piece->glyphs[i].advance;
+            gs_line_free(piece);
+            a = b;
+        }
         for (int i = 1; i <= plen; i++) cum[i] += cum[i - 1];
-        gs_line_free(shaped), free(text);
+        free(text);
         #define SPAN(a, b) (cum[(b) - ps] - cum[(a) - ps])
         int s = ps;
         do {
