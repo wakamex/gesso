@@ -12,6 +12,7 @@
 #include "gs_aac.h"
 #endif
 #include "gs_media.h"
+#include "gs_mp4.h"
 
 typedef enum { MP3, AAC, OPUS } codec;
 typedef struct { uint32_t at, len; } packet;  // a frame's bytes, from the start of the file (or of `copy`)
@@ -131,7 +132,8 @@ static const uint8_t *box(const uint8_t *p, const uint8_t *end, const char *type
     return NULL;
 }
 
-// A plain MP4: the sound track's sample table says where each AAC frame lies in the file.
+// An MP4: the sound track's sample table says where each AAC frame lies in the file, or in a
+// fragmented one the moof boxes do (gs_mp4_samples).
 static bool open_mp4(gs_sound *s, const uint8_t *d, size_t len) {
     const uint8_t *end = d + len, *moov_end, *moov = box(d, end, "moov", &moov_end);
     for (const uint8_t *p = moov, *trak, *trak_end; p && (trak = box(p, moov_end, "trak", &trak_end)); p = trak_end) {
@@ -174,7 +176,22 @@ static bool open_mp4(gs_sound *s, const uint8_t *d, size_t len) {
         const uint8_t *stco_end, *stco = box(stbl, stbl_end, "stco", &stco_end), *stts_end, *stts = box(stbl, stbl_end, "stts", &stts_end);
         bool wide = !stco;
         if (wide) stco = box(stbl, stbl_end, "co64", &stco_end);
-        if (!configured || !stsz || !stsc || !stco || stsz_end - stsz < 12 || stsc_end - stsc < 8 || stco_end - stco < 8) continue;
+        if (!configured) continue;
+        // A fragmented file's sample table is empty: its frames are in the moof boxes after the moov.
+        if (!stsz || stsz_end - stsz < 12 || !be32(stsz + 8)) {
+            const uint8_t *tkhd_end, *tkhd = box(trak, trak_end, "tkhd", &tkhd_end);
+            gs_mp4_sample *f = NULL;
+            const int n = tkhd && tkhd_end - tkhd >= (tkhd[0] == 1 ? 24 : 16) ? gs_mp4_samples(d, len, be32(tkhd + (tkhd[0] == 1 ? 20 : 12)), &f) : 0;
+            for (int i = 0; i < n; i++)
+                if (!add_packet(s, (size_t)f[i].at, f[i].size)) { free(f); return false; }
+            const uint32_t each = n && f[0].duration ? f[0].duration : 1024;
+            free(f);
+            if (s->npackets < 1) continue;
+            s->kind = AAC, s->channels = s->aac_config.channels, s->packet_seconds = (double)each / timescale, s->preroll = 1;
+            s->length = s->npackets * s->packet_seconds;
+            return true;
+        }
+        if (!stsc || !stco || stsc_end - stsc < 8 || stco_end - stco < 8) continue;
         uint32_t fixed = be32(stsz + 4), count = be32(stsz + 8), runs = be32(stsc + 4), chunks = be32(stco + 4), delta = stts && stts_end - stts >= 16 ? be32(stts + 12) : 1024;
         if ((!fixed && (uint64_t)(stsz_end - stsz - 12) < 4ull * count) || (uint64_t)(stsc_end - stsc - 8) < 12ull * runs || (uint64_t)(stco_end - stco - 8) < (wide ? 8ull : 4ull) * chunks) continue;
         uint32_t sample = 0;

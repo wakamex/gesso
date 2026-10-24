@@ -2,8 +2,9 @@
 // as a still of its first frame holding little memory, and decodes only once it is played, on a
 // thread of its own, with its picture following its sound. Needs gesso built with -Dvideo.
 //
-// It plays plain MP4 files (the sample table in a moov box, as phones and messengers make them; a
-// fragmented one is gs_mp4's) with H.264 video and, if there is sound, AAC. Other video (H.265, as
+// It plays MP4 files, plain (the sample table in a moov box, as phones and messengers make them) or
+// fragmented (an empty moov, then moof and mdat pairs, as web downloads and screen recorders write
+// them), with H.264 video and, if there is sound, AAC. Other video (H.265, as
 // iPhones can record) is not something gesso decodes, and gs_movie_open returns NULL for it.
 //
 // Call these on the thread that renders, except gs_movie_render, which the mixer calls. For hardware

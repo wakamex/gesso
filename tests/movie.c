@@ -102,7 +102,11 @@ void test_movie(void) {
         // first frame drawn after the wait is the one its clock says.
         gs_movie_seek(m, 1.3);
         CHECK(gs_movie_playing(m) && gs_movie_position(m) == 1.3);
-        for (Uint64 start = SDL_GetTicks(); gs_movie_waiting(m) && SDL_GetTicks() - start < 3000; SDL_Delay(5)) { CHECK(gs_movie_position(m) == 1.3); seen(m); }
+        for (Uint64 start = SDL_GetTicks(); gs_movie_waiting(m) && SDL_GetTicks() - start < 3000; SDL_Delay(5)) {
+            // (held at the place until the frame for it has been shown; from then on it runs)
+            CHECK(gs_movie_position(m) == 1.3 || gs_movie_get_info(m).shown_pts >= 1.3 - 1.5 / 30);
+            seen(m);
+        }
         CHECK(seen(m) == 'b' && gs_movie_position(m) >= 1.3 && gs_movie_position(m) < 1.45);
         CHECK_NEAR(gs_movie_get_info(m).shown_pts, gs_movie_position(m), 0.1);
         // Looping, it is red again after its length has passed.
@@ -131,6 +135,39 @@ void test_movie(void) {
         CHECK(until(m, 'b', 1));
         gs_movie_free(m);
     }
+
+    // Fragmented, as web downloads are (an empty moov, then a moof and mdat for each half second):
+    // the same size and length known at opening, the same frames, seeking to a place, and the sound
+    // track heard where there is one.
+    size_t frag_len = 0, silent_len = 0;
+    void *frag = load("frag.mp4", &frag_len), *silent = load("frag-silent.mp4", &silent_len);
+    CHECK(frag && silent);
+    for (int k = 0; frag && silent && k < 2; k++) {
+        m = gs_movie_open(k ? frag : silent, k ? frag_len : silent_len, r, 48000);
+        CHECK(m != NULL);
+        if (!m) continue;
+        int width = 0, height = 0;
+        gs_movie_size(m, &width, &height);
+        CHECK(width == 320 && height == 240 && gs_movie_has_sound(m) == (k == 1));
+        CHECK_NEAR(gs_movie_length(m), 2.0, 0.04);
+        CHECK(until(m, 'r', 3));
+        gs_movie_play(m, true);
+        CHECK(until(m, 'b', 2));
+        gs_movie_seek(m, 0.7);  // (into the second fragment, between key frames)
+        for (Uint64 start = SDL_GetTicks(); gs_movie_waiting(m) && SDL_GetTicks() - start < 3000; SDL_Delay(5)) seen(m);
+        CHECK(seen(m) == 'r' && gs_movie_position(m) < 1);
+        if (k) {  // its sound plays: what the mixer takes is not silence
+            static float lr[2 * 4800];
+            float loud = 0;
+            for (int i = 0; i < 4; i++) {
+                SDL_memset(lr, 0, sizeof lr), gs_movie_render(m, lr, 4800);
+                for (int j = 0; j < 2 * 4800; j++) loud = SDL_max(loud, SDL_fabsf(lr[j]));
+            }
+            CHECK(loud > 0.05f);
+        }
+        gs_movie_free(m);
+    }
+    SDL_free(frag), SDL_free(silent);
 
     // A recording marked as turned is as tall as it is stored wide, and is drawn turned.
     m = gs_movie_open(turned, turned_len, r, 48000);

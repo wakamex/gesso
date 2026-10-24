@@ -2,8 +2,10 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "gs_mp4.h"
 #include "gs_sound.h"
 #include "gs_video.h"
 
@@ -59,6 +61,41 @@ static const uint8_t *box(const uint8_t *p, const uint8_t *end, const char *type
     return NULL;
 }
 
+// Times from decoding times and presentation offsets: the earliest showing time is the movie's start,
+// and its length runs to the latest showing time plus that sample's duration.
+static bool set_times(gs_movie *m, const int64_t *shows, const uint32_t *durations, uint32_t scale) {
+    int64_t earliest = INT64_MAX, last = INT64_MIN;
+    for (int i = 0; i < m->count; i++) {
+        if (shows[i] < earliest) earliest = shows[i];
+        if (shows[i] + (int64_t)durations[i] > last) last = shows[i] + (int64_t)durations[i];
+    }
+    for (int i = 0; i < m->count; i++) m->samples[i].time = (double)(shows[i] - earliest) / scale;
+    m->length = m->count ? (double)(last - earliest) / scale : 0;
+    return m->length > 0;
+}
+
+// A fragmented MP4's track `id`: its samples from the moof boxes (gs_mp4_samples).
+static bool read_fragments(gs_movie *m, uint32_t id, uint32_t scale) {
+    gs_mp4_sample *f;
+    const int n = gs_mp4_samples(m->data, m->len, id, &f);
+    m->samples = n ? SDL_calloc((size_t)n, sizeof *m->samples) : NULL;
+    int64_t *shows = n ? SDL_malloc(sizeof *shows * (size_t)n) : NULL;
+    uint32_t *durations = n ? SDL_malloc(sizeof *durations * (size_t)n) : NULL;
+    bool ok = m->samples && shows && durations;
+    for (int i = 0; ok && i < n; i++) {
+        m->samples[i] = (sample){ f[i].at, f[i].size, 0, f[i].sync };
+        shows[i] = (int64_t)f[i].decode + f[i].offset, durations[i] = f[i].duration;
+    }
+    free(f);
+    if (ok) {
+        m->count = n;
+        m->samples[0].sync = true;
+        ok = set_times(m, shows, durations, scale);
+    }
+    SDL_free(shows), SDL_free(durations);
+    return ok;
+}
+
 // The H.264 track of a plain MP4: its parameter sets from the avcC box, and from its sample table
 // where each access unit lies, when it shows and whether decoding can start at it.
 static bool read_track(gs_movie *m) {
@@ -102,7 +139,14 @@ static bool read_track(gs_movie *m) {
         const uint8_t *ctts_end, *ctts = box(stbl, stbl_end, "ctts", &ctts_end), *stss_end, *stss = box(stbl, stbl_end, "stss", &stss_end);
         const bool wide = !stco;
         if (wide) stco = box(stbl, stbl_end, "co64", &stco_end);
-        if (!m->sets_len || !stsz || !stsc || !stco || !stts || stsz_end - stsz < 12 || stsc_end - stsc < 8 || stco_end - stco < 8 || stts_end - stts < 8) continue;
+        if (!m->sets_len) continue;
+        // A fragmented file's sample table is empty: its samples are in the moof boxes after the moov.
+        if (!stsz || stsz_end - stsz < 12 || !be32(stsz + 8)) {
+            const uint32_t id = tkhd && tkhd_end - tkhd >= (tkhd[0] == 1 ? 24 : 16) ? be32(tkhd + (tkhd[0] == 1 ? 20 : 12)) : 0;
+            if (id && read_fragments(m, id, scale)) return true;
+            continue;
+        }
+        if (!stsc || !stco || !stts || stsc_end - stsc < 8 || stco_end - stco < 8 || stts_end - stts < 8) continue;
         const uint32_t fixed = be32(stsz + 4), count = be32(stsz + 8), runs = be32(stsc + 4), chunks = be32(stco + 4);
         if (!count || count > 10000000 || (!fixed && (uint64_t)(stsz_end - stsz - 12) < 4ull * count) || (uint64_t)(stsc_end - stsc - 8) < 12ull * runs ||
             (uint64_t)(stco_end - stco - 8) < (wide ? 8ull : 4ull) * chunks) continue;
@@ -123,32 +167,29 @@ static bool read_track(gs_movie *m) {
         m->count = (int)count;
         // Times: decoding times run on from zero; showing times add each sample's offset, and the
         // earliest of them is the movie's start.
-        uint64_t decode = 0, last = 0;
-        int64_t earliest = INT64_MAX;
+        uint64_t decode = 0;
         const uint32_t durations = be32(stts + 4), offsets = ctts && ctts_end - ctts >= 8 ? be32(ctts + 4) : 0;
         uint32_t d = 0, d_left = 0, d_each = 0, o = 0, o_left = 0;
         int32_t o_each = 0;
         int64_t *shows = SDL_malloc(sizeof *shows * count);
-        if (!shows) return false;
+        uint32_t *each = SDL_malloc(sizeof *each * count);
+        if (!shows || !each) return SDL_free(shows), SDL_free(each), false;
         for (uint32_t i = 0; i < count; i++) {
             while (!d_left && d < durations && (uint64_t)(stts_end - stts - 8) >= 8ull * (d + 1)) d_left = be32(stts + 8 + 8 * d), d_each = be32(stts + 12 + 8 * d), d++;
             while (!o_left && o < offsets && (uint64_t)(ctts_end - ctts - 8) >= 8ull * (o + 1)) o_left = be32(ctts + 8 + 8 * o), o_each = (int32_t)be32(ctts + 12 + 8 * o), o++;
-            shows[i] = (int64_t)decode + (o_left ? o_each : 0);
-            if (shows[i] < earliest) earliest = shows[i];
-            if ((uint64_t)shows[i] + d_each > last) last = (uint64_t)shows[i] + d_each;
+            shows[i] = (int64_t)decode + (o_left ? o_each : 0), each[i] = d_each;
             decode += d_each;
             if (d_left) d_left--;
             if (o_left) o_left--;
         }
-        for (uint32_t i = 0; i < count; i++) m->samples[i].time = (double)(shows[i] - earliest) / scale;
-        SDL_free(shows);
-        m->length = (double)((int64_t)last - earliest) / scale;
+        const bool timed = set_times(m, shows, each, scale);
+        SDL_free(shows), SDL_free(each);
         for (uint32_t i = 0, n = stss && stss_end - stss >= 8 ? be32(stss + 4) : 0; i < n && (uint64_t)(stss_end - stss - 8) >= 4ull * (i + 1); i++) {
             const uint32_t key = be32(stss + 8 + 4 * i);
             if (key >= 1 && key <= count) m->samples[key - 1].sync = true;
         }
         m->samples[0].sync = true;
-        return m->length > 0;
+        return timed;
     }
     return false;
 }

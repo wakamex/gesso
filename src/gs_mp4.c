@@ -13,7 +13,7 @@ typedef struct {
     size_t params_len;
     int length_size;
     gs_aac_config aac;
-    uint32_t default_duration, default_size;  // from trex
+    uint32_t default_duration, default_size, default_flags;  // from trex
     int64_t edit;  // the edit list's media time: where presentation starts, in the track's timescale
 } mp4_track;
 
@@ -130,7 +130,7 @@ bool gs_mp4_init(gs_mp4 *m, const uint8_t *data, size_t len) {
             char tt[5];
             while (next_box(&q, be, tt, &tb, &tbe))
                 for (int i = 0; !strcmp(tt, "trex") && tbe - tb >= 24 && i < m->ntracks; i++)
-                    if (m->tracks[i].id == u32(tb + 4)) m->tracks[i].default_duration = u32(tb + 12), m->tracks[i].default_size = u32(tb + 16);
+                    if (m->tracks[i].id == u32(tb + 4)) m->tracks[i].default_duration = u32(tb + 12), m->tracks[i].default_size = u32(tb + 16), m->tracks[i].default_flags = u32(tb + 20);
             continue;
         }
         if (strcmp(type, "trak") || m->ntracks == TRACKS) continue;
@@ -202,24 +202,23 @@ static const uint8_t *annex_b(gs_mp4 *m, const mp4_track *k, const uint8_t *p, s
     return m->out;
 }
 
-// One track fragment: tfhd, tfdt and trun, with the samples' data in the segment.
-static void fragment(gs_mp4 *m, const uint8_t *moof, const uint8_t *traf, const uint8_t *traf_end, const uint8_t *data, size_t len) {
+// The samples of one track fragment (tfhd, tfdt and trun) of track `id` added to *out, given the
+// track's defaults from trex; the moof's body starts at `moof`, in `data` of `len` bytes. A sample's
+// flags are its own, else the first sample's in the run, else the fragment's or the track's default.
+static void collect(const uint8_t *moof, const uint8_t *traf, const uint8_t *traf_end, const uint8_t *data, size_t len, uint32_t id,
+                    uint32_t def_duration, uint32_t def_size, uint32_t def_flags, gs_mp4_sample **out, int *n, int *cap) {
     const uint8_t *tfhd_end, *tfhd = child(traf, traf_end, "tfhd", &tfhd_end);
-    if (!tfhd || tfhd_end - tfhd < 8) return;
-    uint32_t flags = u32(tfhd) & 0xFFFFFF, id = u32(tfhd + 4);
-    mp4_track *k = NULL;
-    for (int i = 0; i < m->ntracks; i++)
-        if (m->tracks[i].id == id) k = &m->tracks[i];
-    if (!k) return;
+    if (!tfhd || tfhd_end - tfhd < 8 || u32(tfhd + 4) != id) return;
+    uint32_t flags = u32(tfhd) & 0xFFFFFF;
     const uint8_t *q = tfhd + 8;
     uint64_t base = (uint64_t)(moof - 8 - data);  // the moof's start, by default (default-base-is-moof)
-    uint32_t def_duration = k->default_duration, def_size = k->default_size;
-    if (flags & 0x01) base = u64(q), q += 8;
+    if ((flags & 0x01) && tfhd_end - q >= 8) base = u64(q), q += 8;
     if (flags & 0x02) q += 4;
-    if (flags & 0x08) def_duration = u32(q), q += 4;
-    if (flags & 0x10) def_size = u32(q), q += 4;
+    if ((flags & 0x08) && tfhd_end - q >= 4) def_duration = u32(q), q += 4;
+    if ((flags & 0x10) && tfhd_end - q >= 4) def_size = u32(q), q += 4;
+    if ((flags & 0x20) && tfhd_end - q >= 4) def_flags = u32(q), q += 4;
     const uint8_t *tfdt_end, *tfdt = child(traf, traf_end, "tfdt", &tfdt_end);
-    uint64_t dts = tfdt ? (tfdt[0] == 1 ? u64(tfdt + 4) : u32(tfdt + 4)) : 0;
+    uint64_t dts = tfdt && tfdt_end - tfdt >= 8 ? (tfdt[0] == 1 && tfdt_end - tfdt >= 12 ? u64(tfdt + 4) : u32(tfdt + 4)) : 0;
     const uint8_t *p = traf, *b, *be;
     char type[5];
     while (next_box(&p, traf_end, type, &b, &be)) {
@@ -233,44 +232,75 @@ static void fragment(gs_mp4 *m, const uint8_t *moof, const uint8_t *traf, const 
         bool has_first = tf & 0x004;
         if (has_first) first_flags = u32(r), r += 4;
         for (uint32_t i = 0; i < count; i++) {
-            uint32_t duration = def_duration, size = def_size, sflags = 0;
+            uint32_t duration = def_duration, size = def_size, sflags = def_flags;
             int64_t cts = 0;
             if (tf & 0x100) duration = u32(r), r += 4;
             if (tf & 0x200) size = u32(r), r += 4;
             if (tf & 0x400) sflags = u32(r), r += 4;
             if (tf & 0x800) cts = v1 ? (int32_t)u32(r) : (int64_t)u32(r), r += 4;
-            if (r > be) return;
+            if (r > be || offset > len || size > len - offset) return;
             if (i == 0 && has_first) sflags = first_flags;
-            if (offset + size > len) return;
-            bool key = !(sflags & 0x10000);  // sample_is_non_sync_sample clear
-            double pts = ((double)(dts + (uint64_t)cts) - (double)k->edit) / k->timescale;
-            if (k->kind == GS_MEDIA_H264) {
-                size_t n;
-                const uint8_t *au = annex_b(m, k, data + offset, size, key, &n);
-                if (au) {
-                    gs_media_frame f = { GS_MEDIA_H264, au, n, pts, key, NULL };
-                    m->fn(m->user, &f);
-                }
-            } else {
-                gs_media_frame f = { GS_MEDIA_AAC, data + offset, size, pts, true, &k->aac };
-                m->fn(m->user, &f);
+            if (*n == *cap) {
+                gs_mp4_sample *grown = realloc(*out, sizeof **out * (size_t)(*cap = *cap ? *cap * 2 : 256));
+                if (!grown) return;
+                *out = grown;
             }
+            (*out)[(*n)++] = (gs_mp4_sample){ offset, dts, size, duration, cts, !(sflags & 0x10000) };  // (sample_is_non_sync_sample clear)
             offset += size, dts += duration;
         }
         base = offset;  // (a second trun continues where the first ended)
     }
 }
 
-bool gs_mp4_segment(gs_mp4 *m, const uint8_t *data, size_t len) {
+// Every sample of track `id` in the moof boxes among the top-level boxes of `data`, in order.
+static int collect_all(const uint8_t *data, size_t len, uint32_t id, uint32_t def_duration, uint32_t def_size, uint32_t def_flags, gs_mp4_sample **out) {
     const uint8_t *p = data, *end = data + len, *b, *be;
     char type[5];
-    bool any = false;
+    int n = 0, cap = 0;
+    *out = NULL;
     while (next_box(&p, end, type, &b, &be)) {
         if (strcmp(type, "moof")) continue;
         const uint8_t *q = b, *tb, *tbe;
         char tt[5];
         while (next_box(&q, be, tt, &tb, &tbe))
-            if (!strcmp(tt, "traf")) fragment(m, b, tb, tbe, data, len), any = true;
+            if (!strcmp(tt, "traf")) collect(b, tb, tbe, data, len, id, def_duration, def_size, def_flags, out, &n, &cap);
+    }
+    return n;
+}
+
+int gs_mp4_samples(const uint8_t *data, size_t len, uint32_t track, gs_mp4_sample **out) {
+    uint32_t duration = 0, size = 0, flags = 0;
+    const uint8_t *moov_end, *moov = child(data, data + len, "moov", &moov_end), *mvex_end, *mvex = moov ? child(moov, moov_end, "mvex", &mvex_end) : NULL;
+    const uint8_t *q = mvex, *b, *be;
+    char type[5];
+    while (q && next_box(&q, mvex_end, type, &b, &be))
+        if (!strcmp(type, "trex") && be - b >= 24 && u32(b + 4) == track) duration = u32(b + 12), size = u32(b + 16), flags = u32(b + 20);
+    return collect_all(data, len, track, duration, size, flags, out);
+}
+
+bool gs_mp4_segment(gs_mp4 *m, const uint8_t *data, size_t len) {
+    bool any = false;
+    for (int t = 0; t < m->ntracks; t++) {
+        mp4_track *k = &m->tracks[t];
+        gs_mp4_sample *samples;
+        int n = collect_all(data, len, k->id, k->default_duration, k->default_size, k->default_flags, &samples);
+        for (int i = 0; i < n; i++) {
+            const gs_mp4_sample *x = &samples[i];
+            double pts = ((double)(x->decode + (uint64_t)x->offset) - (double)k->edit) / k->timescale;
+            if (k->kind == GS_MEDIA_H264) {
+                size_t size;
+                const uint8_t *au = annex_b(m, k, data + x->at, x->size, x->sync, &size);
+                if (au) {
+                    gs_media_frame f = { GS_MEDIA_H264, au, size, pts, x->sync, NULL };
+                    m->fn(m->user, &f);
+                }
+            } else {
+                gs_media_frame f = { GS_MEDIA_AAC, data + x->at, x->size, pts, true, &k->aac };
+                m->fn(m->user, &f);
+            }
+        }
+        any |= n > 0;
+        free(samples);
     }
     return any;
 }
