@@ -1097,6 +1097,63 @@ static void test_ui_undo(void) {
     key(SDLK_ESCAPE, 0), frame(), key(SDLK_ESCAPE, 0), frame();
 }
 
+static void clicks_at(float x, float y, int n) {  // the n-th click of a run, as SDL counts double and triple clicks
+    SDL_Event m = { .motion = { .type = SDL_EVENT_MOUSE_MOTION, .x = x, .y = y } };
+    SDL_Event d = { .button = { .type = SDL_EVENT_MOUSE_BUTTON_DOWN, .button = SDL_BUTTON_LEFT, .down = true, .clicks = (Uint8)n, .x = x, .y = y } };
+    SDL_Event u = { .button = { .type = SDL_EVENT_MOUSE_BUTTON_UP, .button = SDL_BUTTON_LEFT, .clicks = (Uint8)n, .x = x, .y = y } };
+    gs_ui_event(ui, &m), gs_ui_event(ui, &d), gs_ui_event(ui, &u);
+}
+
+// Editable text picks words and paragraphs as an editor does: a double click selects the word under
+// the pointer, a triple click its paragraph (a field's whole text), typing replaces the selection and
+// Ctrl+C copies it; Alt+Backspace and Alt+Delete delete a word, as Ctrl with them does.
+static void test_ui_edit_words(void) {
+    if (gs_ui_text_width(ui, "a b", 14) <= gs_ui_text_width(ui, "ab", 14)) return;  // (no font to shape with)
+    float fy = 215, ay = 120 + 5 + gs_ui_line_height(ui, 14) / 2;
+    // The field: the word under a double click, by its middle and by the right half of its last letter.
+    SDL_strlcpy(spaced, "alpha beta gamma", sizeof spaced), area[0] = 0;
+    clicks_at(8 + gs_ui_text_width(ui, "alpha be", 14), fy, 1), spaces_frame();
+    clicks_at(8 + gs_ui_text_width(ui, "alpha be", 14), fy, 2), spaces_frame();
+    key(SDLK_C, SDL_KMOD_CTRL), spaces_frame();
+    char *copied = SDL_GetClipboardText();
+    CHECK(copied && !strcmp(copied, "beta"));
+    SDL_free(copied);
+    text("delta"), spaces_frame();
+    CHECK(!strcmp(spaced, "alpha delta gamma"));
+    float last = gs_ui_text_width(ui, "alpha delt", 14) + gs_ui_text_width(ui, "a", 14) * 0.8f;
+    clicks_at(8 + last, fy, 1), spaces_frame(), clicks_at(8 + last, fy, 2), spaces_frame();
+    text("X"), spaces_frame();
+    CHECK(!strcmp(spaced, "alpha X gamma"));
+    // A triple click takes the whole field.
+    clicks_at(30, fy, 1), spaces_frame(), clicks_at(30, fy, 2), spaces_frame(), clicks_at(30, fy, 3), spaces_frame();
+    text("new"), spaces_frame();
+    CHECK(!strcmp(spaced, "new"));
+    // Alt+Backspace deletes the word before the caret, Alt+Delete the one after.
+    SDL_strlcpy(spaced, "one two three", sizeof spaced);
+    clicks_at(290, fy, 1), spaces_frame();
+    key(SDLK_BACKSPACE, SDL_KMOD_ALT), spaces_frame();
+    CHECK(!strcmp(spaced, "one two "));
+    key(SDLK_HOME, 0), key(SDLK_DELETE, SDL_KMOD_ALT), spaces_frame();
+    CHECK(!strcmp(spaced, " two "));
+    // The text area: a double click and a drag from it grow by words; a triple click is the paragraph.
+    SDL_strlcpy(area, "first line here\nsecond line", sizeof area);
+    clicks_at(8 + gs_ui_text_width(ui, "fir", 14), ay, 1), spaces_frame();
+    SDL_Event down = { .button = { .type = SDL_EVENT_MOUSE_BUTTON_DOWN, .button = SDL_BUTTON_LEFT, .down = true, .clicks = 2, .x = 8 + gs_ui_text_width(ui, "fir", 14), .y = ay } };
+    gs_ui_event(ui, &down), spaces_frame();
+    int from = -1, to = -1;
+    CHECK(gs_ui_textarea_selection(ui, "area", &from, &to) && from == 0 && to == 5);  // "first"
+    SDL_Event drag = { .motion = { .type = SDL_EVENT_MOUSE_MOTION, .x = 8 + gs_ui_text_width(ui, "first li", 14), .y = ay } };
+    SDL_Event up = { .button = { .type = SDL_EVENT_MOUSE_BUTTON_UP, .button = SDL_BUTTON_LEFT, .clicks = 2, .x = drag.motion.x, .y = ay } };
+    gs_ui_event(ui, &drag), spaces_frame(), gs_ui_event(ui, &up), spaces_frame();
+    CHECK(gs_ui_textarea_selection(ui, "area", &from, &to) && from == 0 && to == 10);  // "first line", whole words
+    clicks_at(30, ay, 3), spaces_frame();
+    CHECK(gs_ui_textarea_selection(ui, "area", &from, &to) && from == 0 && to == 15);  // the first paragraph
+    key(SDLK_END, SDL_KMOD_CTRL), key(SDLK_BACKSPACE, SDL_KMOD_ALT), spaces_frame();
+    CHECK(!strcmp(area, "first line here\nsecond "));
+    area[0] = 0, spaced[0] = 0;
+    key(SDLK_ESCAPE, 0), spaces_frame();
+}
+
 void test_ui(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "software");
@@ -1175,6 +1232,7 @@ void test_ui(void) {
     ui = gs_ui_new(w, r, fs), fonts = fs;
     test_ui_multiline();
     test_ui_trailing_spaces(w);
+    test_ui_edit_words();
     test_ui_undo();
     test_ui_text_select(r);
     test_ui_select_across();

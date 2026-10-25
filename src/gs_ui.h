@@ -252,6 +252,12 @@ bool gs_ui_link(gs_ui *ui, gs_rect r, const char *label);
 bool gs_ui_slider(gs_ui *ui, gs_rect r, const char *id, float *value, float min, float max);  // true while it changes
 // A single-line text field editing buf (UTF-8). True when the text changed this frame.
 //
+// In a field and a text area a double click selects the word under the pointer (gs_utf8_word) and a
+// triple click its paragraph (a field's whole text), and a drag that begins with either grows by
+// whole words or paragraphs; Shift with a click extends the selection. Typing replaces what is
+// selected, and Ctrl+C, Ctrl+X and Backspace act on it. Alt+Backspace and Alt+Delete delete a word,
+// as Ctrl with them does.
+//
 // A field and a text area undo their own edits with Ctrl+Z (Cmd+Z on macOS) and redo them with
 // Ctrl+Shift+Z or Ctrl+Y (Cmd+Shift+Z): typing a word at a time, or after a pause of a second; a run
 // of Backspace or Delete as one; a paste, a cut, a selection deleted or typed over and Esc's clearing
@@ -276,7 +282,7 @@ bool gs_ui_number(gs_ui *ui, gs_rect r, const char *id, double *value, double mi
 // A text field of several lines, editing buf (UTF-8) with the keys of gs_ui_field and more: the text
 // wraps to r; Shift+Enter inserts a newline and Enter is left to the app (query it after drawing the
 // field, which takes Shift+Enter first); Up and Down keep their column; Home and End go to the
-// line's ends, with Ctrl to the text's; Ctrl+Left, Ctrl+Right and Ctrl+Backspace/Delete go by word;
+// line's ends, with Ctrl to the text's; Ctrl+Left, Ctrl+Right and Ctrl or Alt with Backspace/Delete go by word;
 // Shift extends a selection, as does dragging with the mouse; Ctrl+A, C, X and V work on the
 // selection (a paste keeps its newlines); Page Up and Page Down are the app's. It scrolls to keep the
 // cursor in view when its text is taller than r, and gs_ui_textarea_height gives the height that

@@ -1182,20 +1182,66 @@ static int undo_key(SDL_Keycode k, SDL_Keymod mods) {
     return k == SDLK_Y ? 2 : 0;
 }
 
+static bool is_gap(char ch) { return ch == ' ' || ch == '\n' || ch == '\t' || ch == '\r'; }
+static int word_prev(const char *b, int p) {
+    while (p > 0 && is_gap(b[p - 1])) p--;
+    while (p > 0 && !is_gap(b[p - 1])) p--;
+    return p;
+}
+static int word_next(const char *b, int len, int p) {
+    while (p < len && is_gap(b[p])) p++;
+    while (p < len && !is_gap(b[p])) p++;
+    return p;
+}
+
+static void select_to(widget *w, int offset, bool extend) {
+    if (extend && !w->anchored) w->anchor = w->cursor, w->anchored = true;
+    if (!extend) w->anchored = false;
+    w->cursor = offset;
+}
+
+// A selection the pointer makes in an editable text: on a press, by the unit its clicks give (1 a
+// place, 2 the word under the pointer, 3 its paragraph, the whole text in a field), and on a drag,
+// growing by that unit from the one first pressed, as in any editor. `at` is the place nearest the
+// pointer and `under` the byte under it. Shift with a press extends the selection there.
+static void pointer_select(gs_ui *ui, widget *w, const char *buf, int at, int under, bool press, bool shift, bool hide_words) {
+    if (press && shift) {
+        if (!w->anchored) w->anchor = w->cursor, w->anchored = true;
+        w->cursor = at, ui->select_unit = 1;
+        return;
+    }
+    if (press) ui->select_unit = SDL_clamp(ui->in.clicks, 1, 3);
+    int unit = hide_words && ui->select_unit > 1 ? 3 : ui->select_unit;  // (a masked field's words are not shown, so not picked out)
+    if (unit == 1) {
+        if (press) w->anchor = at, w->anchored = true;
+        w->cursor = at;
+        return;
+    }
+    int lo, hi;
+    unit_of(buf, under, unit, &lo, &hi);
+    if (press) ui->select_lo = lo, ui->select_hi = hi;
+    if (lo < ui->select_lo) w->anchor = ui->select_hi, w->cursor = lo;
+    else w->anchor = ui->select_lo, w->cursor = SDL_max(hi, ui->select_hi);
+    w->anchored = true;
+}
+
 // The field's edits: typed text, and the keys that move the cursor or change the text.
 static bool edit(gs_ui *ui, widget *w, char *buf, size_t size, bool secret) {
     bool changed = false, pasted = false;
     size_t len = strlen(buf);
-    if (w->cursor > (int)len) w->cursor = (int)len;
+    w->cursor = SDL_clamp(w->cursor, 0, (int)len), w->anchor = SDL_clamp(w->anchor, 0, (int)len);
     history *h = history_of(ui, w, buf, secret);
     char clean[512];
     const char *typed = ui->in.text;
     for (int i = 0; i < ui->in.nkeys; i++) {
         SDL_Keycode k = ui->in.keys[i];
-        bool ctrl = ui->in.mods[i] & (SDL_KMOD_CTRL | SDL_KMOD_GUI);
+        SDL_Keymod mods = ui->in.mods[i];
+        bool ctrl = mods & (SDL_KMOD_CTRL | SDL_KMOD_GUI), shift = mods & SDL_KMOD_SHIFT;
         if (ui->taken[i]) continue;
-        if (undo_key(k, ui->in.mods[i])) {
-            if (h && undo(h, w, buf, size, undo_key(k, ui->in.mods[i]) == 2)) len = strlen(buf), changed = true;
+        bool has = w->anchored && w->anchor != w->cursor;
+        int lo = SDL_min(w->anchor, w->cursor), hi = SDL_max(w->anchor, w->cursor);
+        if (undo_key(k, mods)) {
+            if (h && undo(h, w, buf, size, undo_key(k, mods) == 2)) len = strlen(buf), changed = true;
         } else if (ctrl && k == SDLK_V) {
             char *paste = SDL_GetClipboardText();
             size_t n = 0;
@@ -1204,42 +1250,46 @@ static bool edit(gs_ui *ui, widget *w, char *buf, size_t size, bool secret) {
             SDL_free(paste);
             typed = clean, pasted = true;
         } else if (ctrl && k == SDLK_A) {
-            w->all = true;
-        } else if (ctrl && (k == SDLK_C || k == SDLK_X) && w->all && len && !secret) {  // (what is shown as dots is not copied out)
-            gs_clipboard_set(buf);  // (only when the user copies)
-            if (k == SDLK_X) before_edit(ui, h, w, buf, EDIT_ONE, NULL), buf[0] = 0, len = 0, w->cursor = 0, w->all = false, changed = true;
-        } else if (k == SDLK_BACKSPACE || k == SDLK_DELETE) {
-            if (w->all) before_edit(ui, h, w, buf, EDIT_ONE, NULL), buf[0] = 0, len = 0, w->cursor = 0, w->all = false, changed = true;
-            else {
-                int from = k == SDLK_BACKSPACE ? gs_utf8_grapheme_prev(buf, w->cursor) : w->cursor;
-                int to = k == SDLK_BACKSPACE ? w->cursor : gs_utf8_grapheme_next(buf, w->cursor);
-                if (to > from) before_edit(ui, h, w, buf, EDIT_DELETE, NULL), memmove(buf + from, buf + to, len - to + 1), len -= to - from, w->cursor = from, changed = true;
+            w->anchor = 0, w->cursor = (int)len, w->anchored = true;
+        } else if (ctrl && (k == SDLK_C || k == SDLK_X)) {
+            if (has && !secret) {  // (what is shown as dots is not copied out)
+                gs_clipboard_set(piece(ui, buf, lo, hi));
+                if (k == SDLK_X) before_edit(ui, h, w, buf, EDIT_ONE, NULL), memmove(buf + lo, buf + hi, len - (size_t)hi + 1), len -= (size_t)(hi - lo), w->cursor = lo, w->anchored = false, changed = true;
             }
-        } else if (k == SDLK_LEFT) {
-            w->cursor = w->all ? 0 : gs_utf8_grapheme_prev(buf, w->cursor), w->all = false;
-        } else if (k == SDLK_RIGHT) {
-            w->cursor = w->all ? (int)len : gs_utf8_grapheme_next(buf, w->cursor), w->all = false;
-        } else if (k == SDLK_HOME) {
-            w->cursor = 0, w->all = false;
-        } else if (k == SDLK_END) {
-            w->cursor = (int)len, w->all = false;
+        } else if (k == SDLK_BACKSPACE || k == SDLK_DELETE) {
+            // A selection goes; else a character, or with Ctrl or Alt a word (Alt+Backspace as macOS and terminals have it).
+            bool word = ctrl || (mods & SDL_KMOD_ALT), back = k == SDLK_BACKSPACE;
+            int from = has ? lo : back ? (word ? word_prev(buf, w->cursor) : gs_utf8_grapheme_prev(buf, w->cursor)) : w->cursor;
+            int to = has ? hi : back ? w->cursor : (word ? word_next(buf, (int)len, w->cursor) : gs_utf8_grapheme_next(buf, w->cursor));
+            if (to > from) {
+                before_edit(ui, h, w, buf, has || word ? EDIT_ONE : EDIT_DELETE, NULL);
+                memmove(buf + from, buf + to, len - (size_t)to + 1), len -= (size_t)(to - from), w->cursor = from, changed = true;
+            }
+            w->anchored = false;
+        } else if (k == SDLK_LEFT || k == SDLK_RIGHT) {
+            bool left = k == SDLK_LEFT;
+            if (has && !shift) select_to(w, left ? lo : hi, false);
+            else select_to(w, left ? (ctrl ? word_prev(buf, w->cursor) : gs_utf8_grapheme_prev(buf, w->cursor)) : (ctrl ? word_next(buf, (int)len, w->cursor) : gs_utf8_grapheme_next(buf, w->cursor)), shift);
+        } else if (k == SDLK_HOME || k == SDLK_END) {
+            select_to(w, k == SDLK_HOME ? 0 : (int)len, shift);
         } else if (k == SDLK_ESCAPE && len) {
-            before_edit(ui, h, w, buf, EDIT_ONE, NULL), buf[0] = 0, len = 0, w->cursor = 0, changed = true;  // Esc clears the field; a second Esc goes to the app
-        } else if (!ctrl && !(ui->in.mods[i] & SDL_KMOD_ALT) && k >= 32 && k < 127) {
+            before_edit(ui, h, w, buf, EDIT_ONE, NULL), buf[0] = 0, len = 0, w->cursor = 0, w->anchored = false, changed = true;  // Esc clears the field; a second Esc goes to the app
+        } else if (!ctrl && !(mods & SDL_KMOD_ALT) && k >= 32 && k < 127) {
             // A printable key arrives as typed text too: it is the field's, not a shortcut's.
         } else {
             continue;
         }
         ui->taken[i] = true, ui->caret_since = ui->now;
     }
-    if (typed[0]) {
+    if (typed[0]) {  // typed text takes the selection's place
         size_t n = strlen(typed);
-        if ((w->all ? 0 : len) + n < size) before_edit(ui, h, w, buf, pasted || w->all ? EDIT_ONE : EDIT_TYPE, typed);
-        if (w->all) buf[0] = 0, len = 0, w->cursor = 0, w->all = false;
-        if (len + n < size) {
-            memmove(buf + w->cursor + n, buf + w->cursor, len - w->cursor + 1);
-            memcpy(buf + w->cursor, typed, n);
-            w->cursor += (int)n, changed = true, ui->caret_since = ui->now;
+        bool has = w->anchored && w->anchor != w->cursor;
+        int lo = has ? SDL_min(w->anchor, w->cursor) : w->cursor, hi = has ? SDL_max(w->anchor, w->cursor) : w->cursor;
+        if (len - (size_t)(hi - lo) + n < size) {
+            before_edit(ui, h, w, buf, pasted || has ? EDIT_ONE : EDIT_TYPE, typed);
+            memmove(buf + lo + n, buf + hi, len - (size_t)hi + 1);
+            memcpy(buf + lo, typed, n);
+            len = len - (size_t)(hi - lo) + n, w->cursor = lo + (int)n, w->anchored = false, changed = true, ui->caret_since = ui->now;
         }
     }
     after_edits(h, w, buf);
@@ -1260,28 +1310,31 @@ static int bullets(const char *buf, int cursor, char *out, size_t size) {
 static bool field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, const char *placeholder, int flags) {
     uint32_t h = hash(id);
     widget *w = state(ui, h);
-    if (w->anchored) {  // a range set from outside (gs_ui_textarea_select): a field's selection is all of its text or none
-        int len = (int)strlen(buf), lo = SDL_min(w->anchor, w->cursor), hi = SDL_max(w->anchor, w->cursor);
-        w->all = len > 0 && lo <= 0 && hi >= len;
-        w->cursor = SDL_clamp(hi, 0, len), w->anchored = false;
-    }
+    if (w->all) w->anchor = 0, w->cursor = (int)strlen(buf), w->anchored = true, w->all = false;  // (the whole text, as a number field asks)
     float s = ui->scale, pad = 8, text_px = ui->style.text_px;
     gs_rect inner = gs_inset(r, pad);
     inner.y = r.y, inner.h = r.h;
     char dots[768];
     bool was = stop_at(ui, h, r), masked = (flags & GS_UI_MASKED) && !((flags & GS_UI_REVEAL) && was);
     if (gs_ui_hovered(ui, r)) ui->cursor_want = 2;
-    if (pressed(ui, r)) {
+    bool press = pressed(ui, r);
+    if (press) {
         if (ui->focus != h) gs_ui_focus(ui, id);
+        ui->drag = h;
+    }
+    if (ui->drag == h && (ui->in.down || press)) {  // a press places the cursor or picks a word or the whole; a drag selects
         if (masked) bullets(buf, 0, dots, sizeof dots);
-        const gs_line *l = gs_fontset_line(ui->fonts, text_px * s, masked ? dots : buf);
-        int at = l ? gs_line_hit(l, (ui->in.x - inner.x) * s, masked ? dots : buf) : 0;
+        const char *text = masked ? dots : buf;
+        const gs_line *l = gs_fontset_line(ui->fonts, text_px * s, text);
+        float x = (ui->in.x - inner.x) * s;
+        int at = l ? gs_line_hit(l, x, text) : 0;
+        int under = l && at > 0 && gs_line_caret(l, at) > x ? gs_utf8_grapheme_prev(text, at) : at;  // (the character under the pointer, not the next)
         if (masked) {  // (the bullet's place, as the character's)
             int to = 0;
             for (int n = at / 3; n > 0 && buf[to]; n--) to = gs_utf8_grapheme_next(buf, to);
-            at = to;
+            at = under = to;
         }
-        w->cursor = at, w->all = false;
+        pointer_select(ui, w, buf, at, under, press, press && (SDL_GetModState() & SDL_KMOD_SHIFT), masked);
         ui->caret_since = ui->now;
     }
     if (ui->focus == h && ui->in.pressed && !gs_rect_contains(r, ui->in.x, ui->in.y)) gs_ui_focus(ui, NULL);  // a click elsewhere leaves it
@@ -1292,13 +1345,19 @@ static bool field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, 
         if (!SDL_TextInputActive(ui->win)) SDL_StartTextInput(ui->win);
         changed = edit(ui, w, buf, size, masked);
     }
-    if (!focused) w->all = false;  // (a selection is the focused field's)
+    if (!focused) w->anchored = false;  // (a selection is the focused field's)
     int cursor = masked ? bullets(buf, w->cursor, dots, sizeof dots) : w->cursor;
+    int other = w->anchored ? (masked ? bullets(buf, w->anchor, dots, sizeof dots) : w->anchor) : cursor;
+    if (masked) bullets(buf, (int)strlen(buf), dots, sizeof dots);  // (the dots for all of it, to draw)
     const char *shown = masked ? dots : buf;
     gs_ui_round(ui, r, ui->style.radius, ui->style.raised);
     gs_ui_outline(ui, r, ui->style.radius, 1, focused ? ui->style.accent : gs_ui_hovered(ui, r) ? ui->style.muted : ui->style.border);
     clip_state outer = clip_push(ui, r);
-    if (w->all && buf[0]) gs_ui_fill(ui, (gs_rect){ inner.x, r.y + 5, fminf(gs_ui_text_width(ui, shown, text_px), inner.w), r.h - 10 }, ui->style.border);
+    if (other != cursor) {  // what is selected
+        const gs_line *l = gs_fontset_line(ui->fonts, text_px * s, shown);
+        float x0 = l ? gs_line_caret(l, SDL_min(other, cursor)) / s : 0, x1 = l ? gs_line_caret(l, SDL_max(other, cursor)) / s : 0;
+        gs_ui_fill(ui, (gs_rect){ inner.x + x0, r.y + 5, fminf(x1 - x0, inner.w - x0), r.h - 10 }, ui->style.border);
+    }
     if (buf[0] || ui->composition[0]) gs_ui_text(ui, (gs_rect){ inner.x, r.y, 1e6f, r.h }, shown, text_px, ui->style.text, -1);
     else if (placeholder) gs_ui_text(ui, inner, placeholder, text_px, ui->style.muted, -1);
     if (focused) {
@@ -1413,18 +1472,6 @@ static int offset_at(gs_ui *ui, const char *buf, const gs_wrap_line *ln, float x
     return ln->start + SDL_min(gs_line_hit(l, (x - origin) * ui->scale, ui->piece), ln->end - ln->start);
 }
 
-static bool is_gap(char ch) { return ch == ' ' || ch == '\n' || ch == '\t' || ch == '\r'; }
-static int word_prev(const char *b, int p) {
-    while (p > 0 && is_gap(b[p - 1])) p--;
-    while (p > 0 && !is_gap(b[p - 1])) p--;
-    return p;
-}
-static int word_next(const char *b, int len, int p) {
-    while (p < len && is_gap(b[p])) p++;
-    while (p < len && !is_gap(b[p])) p++;
-    return p;
-}
-
 // Replaces the selection (or nothing, at the cursor) with n bytes of text, as many as fit.
 static bool put(char *buf, size_t size, widget *w, const char *text, size_t n) {
     size_t len = strlen(buf);
@@ -1442,11 +1489,6 @@ static bool put(char *buf, size_t size, widget *w, const char *text, size_t n) {
     return true;
 }
 
-static void select_to(widget *w, int offset, bool extend) {
-    if (extend && !w->anchored) w->anchor = w->cursor, w->anchored = true;
-    if (!extend) w->anchored = false;
-    w->cursor = offset;
-}
 
 // The clipboard's text as it is put in a text area: line ends as \n, tabs as spaces.
 static char *clipboard_lines(void) {
@@ -1492,8 +1534,9 @@ static bool area_edit(gs_ui *ui, widget *w, char *buf, size_t size, gs_rect inne
             }
         } else if (k == SDLK_BACKSPACE || k == SDLK_DELETE) {
             if (!has) {
-                int back = k == SDLK_BACKSPACE, at = w->cursor;
-                int to = back ? (ctrl ? word_prev(buf, at) : gs_utf8_grapheme_prev(buf, at)) : (ctrl ? word_next(buf, len, at) : gs_utf8_grapheme_next(buf, at));
+                // A character, or with Ctrl or Alt a word (Alt+Backspace as macOS and terminals have it).
+                int back = k == SDLK_BACKSPACE, at = w->cursor, word = ctrl || (mods & SDL_KMOD_ALT);
+                int to = back ? (word ? word_prev(buf, at) : gs_utf8_grapheme_prev(buf, at)) : (word ? word_next(buf, len, at) : gs_utf8_grapheme_next(buf, at));
                 if (to != at) before_edit(ui, h, w, buf, EDIT_DELETE, NULL);
                 w->anchor = to, w->anchored = true;
             } else before_edit(ui, h, w, buf, EDIT_ONE, NULL);
@@ -1551,12 +1594,11 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
         const gs_wrap *wr = wrap_of(ui, buf, px, inner.w);
         if (wr) {
             int line = SDL_clamp((int)floorf((ui->in.y - inner.y + w->scroll) / lh), 0, wr->count - 1);
-            bool extend = !ui->in.pressed || (SDL_GetModState() & SDL_KMOD_SHIFT);
             gs_wrap_line under = edit_line(wr, line, buf);
             int at = offset_at(ui, buf, &under, ui->in.x, inner.x, inner.w);
-            if (ui->in.pressed && !extend) w->anchor = at;
-            else if (ui->in.pressed) w->anchor = w->anchored ? w->anchor : w->cursor;
-            w->cursor = at, w->want = false, ui->caret_since = ui->now;
+            int below = at > under.start && caret_x(ui, buf, &under, at, inner.x, inner.w) > ui->in.x ? gs_utf8_grapheme_prev(buf, at) : at;  // (the character under the pointer)
+            pointer_select(ui, w, buf, at, below, ui->in.pressed, ui->in.pressed && (SDL_GetModState() & SDL_KMOD_SHIFT), false);
+            w->want = false, ui->caret_since = ui->now;
         }
     }
     bool focused = stop_at(ui, h, r), changed = false;
