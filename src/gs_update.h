@@ -48,10 +48,14 @@ typedef struct gs_update gs_update;
 // is kept in the state file, and until it is yes the build does not look for updates. Show the same
 // warning where the build is downloaded, and in the app say that it is a test build (its window title
 // or an About line, with gs_update_config.build) and let the user turn updating off again.
-#define GS_UPDATE_NOTICE                                                                                   \
-    "This is a test build. It can keep itself up to date with every new version: it downloads each one " \
-    "and restarts when you have left it alone for a couple of minutes, coming back as it was. You can turn " \
-    "this off again in its settings."
+// (One sentence or part to a line, so that a message box, which Windows sizes to its longest line and
+// does not wrap, comes out at an ordinary width.)
+#define GS_UPDATE_NOTICE \
+    "This is a test build.\n" \
+    "It can keep itself up to date with every new version:\n" \
+    "it downloads each one and restarts when you have left it\n" \
+    "alone for a couple of minutes, coming back as it was.\n" \
+    "You can turn this off again in its settings."
 enum { GS_UPDATE_ASK, GS_UPDATE_YES, GS_UPDATE_NO };
 
 // Starts looking on a thread of its own, the first time at once; NULL for a build that does not
