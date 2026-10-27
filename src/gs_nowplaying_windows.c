@@ -2,7 +2,10 @@
 // combase.dll is opened at run time and the interfaces used are declared as their tables of
 // functions, in the order windows.media.h (Windows SDK 10.0.26100) gives them.
 #include <SDL3/SDL.h>
+#define COBJMACROS
 #include <windows.h>
+#include <shlobj.h>
+#include <shobjidl.h>
 
 #include "gs_nowplaying.h"
 
@@ -70,6 +73,79 @@ static hstring string(const char *utf8) {
     return s;
 }
 
+// ---- Who is playing ----
+// The system's media card names the app by its app ID, which it looks up among the Start menu's
+// shortcuts, as it finds Google Chrome by the shortcut whose app ID is "Chrome"; a program with no
+// such shortcut shows as an unknown app with no icon. So the process and its window take `id` as
+// their app ID, and the current user's Start menu holds a shortcut named `name` to this program,
+// with that app ID and the program's icon, written again when the program has moved.
+
+static const PROPERTYKEY KEY_APP_ID = { { 0x9f4c2855, 0x9f79, 0x4b39, { 0xa8, 0xd0, 0xe1, 0xd4, 0x2d, 0xe1, 0xd5, 0xf3 } }, 5 };  // PKEY_AppUserModel_ID
+static const GUID CLSID_LINK = { 0x00021401, 0x0000, 0x0000, { 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };       // CLSID_ShellLink
+static const GUID IID_LINK = { 0x000214f9, 0x0000, 0x0000, { 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };         // IShellLinkW
+static const GUID IID_FILE = { 0x0000010b, 0x0000, 0x0000, { 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };         // IPersistFile
+static const GUID IID_STORE = { 0x886d8eeb, 0x8cf2, 0x4446, { 0x8d, 0x02, 0xcd, 0xba, 0x1d, 0xbd, 0xcf, 0x99 } };        // IPropertyStore
+static const GUID FOLDER_PROGRAMS = { 0xa77f5d77, 0x2e2b, 0x44c3, { 0xa6, 0xa2, 0xab, 0xa6, 0x01, 0x05, 0x4a, 0x51 } };   // FOLDERID_Programs
+
+static void set_app_id(IPropertyStore *store, WCHAR *id) {
+    PROPVARIANT v = { 0 };
+    v.vt = VT_LPWSTR, v.pwszVal = id;
+    IPropertyStore_SetValue(store, &KEY_APP_ID, &v);
+    IPropertyStore_Commit(store);
+}
+
+// Whether the shortcut at `path` already leads to `exe` with app ID `id`.
+static bool shortcut_holds(const WCHAR *path, const WCHAR *exe, const WCHAR *id) {
+    IShellLinkW *link = NULL;
+    IPersistFile *file = NULL;
+    IPropertyStore *store = NULL;
+    bool same = false;
+    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES || FAILED(CoCreateInstance(&CLSID_LINK, NULL, CLSCTX_INPROC_SERVER, &IID_LINK, (void **)&link))) return false;
+    if (SUCCEEDED(IShellLinkW_QueryInterface(link, &IID_FILE, (void **)&file)) && SUCCEEDED(IPersistFile_Load(file, path, STGM_READ))) {
+        WCHAR target[MAX_PATH] = L"";
+        PROPVARIANT v = { 0 };
+        IShellLinkW_GetPath(link, target, MAX_PATH, NULL, 0);
+        if (SUCCEEDED(IShellLinkW_QueryInterface(link, &IID_STORE, (void **)&store)) && SUCCEEDED(IPropertyStore_GetValue(store, &KEY_APP_ID, &v)))
+            same = !_wcsicmp(target, exe) && v.vt == VT_LPWSTR && v.pwszVal && !wcscmp(v.pwszVal, id), PropVariantClear(&v);
+    }
+    if (store) IPropertyStore_Release(store);
+    if (file) IPersistFile_Release(file);
+    IShellLinkW_Release(link);
+    return same;
+}
+
+static void identify(HWND hwnd, const char *name, const char *id) {
+    WCHAR *wid = (WCHAR *)SDL_iconv_string("UTF-16LE", "UTF-8", id, SDL_strlen(id) + 1), exe[MAX_PATH], *programs = NULL, path[MAX_PATH + 300];
+    if (!wid || !wid[0] || !GetModuleFileNameW(NULL, exe, MAX_PATH)) { SDL_free(wid); return; }
+    SetCurrentProcessExplicitAppUserModelID(wid);
+    IPropertyStore *store = NULL;
+    if (SUCCEEDED(SHGetPropertyStoreForWindow(hwnd, &IID_STORE, (void **)&store))) set_app_id(store, wid), IPropertyStore_Release(store), store = NULL;
+    // The shortcut's file name: the app's name, without what a file name cannot hold.
+    char file_name[200];
+    size_t n = 0;
+    for (const char *c = name && *name ? name : id; *c && n + 1 < sizeof file_name; c++)
+        if (!strchr("\\/:*?\"<>|", *c) && (unsigned char)*c >= 32) file_name[n++] = *c;
+    file_name[n] = 0;
+    WCHAR *wname = (WCHAR *)SDL_iconv_string("UTF-16LE", "UTF-8", file_name, n + 1);
+    if (wname && wname[0] && SUCCEEDED(SHGetKnownFolderPath(&FOLDER_PROGRAMS, 0, NULL, &programs)) && _snwprintf(path, MAX_PATH + 300, L"%ls\\%ls.lnk", programs, wname) > 0 &&
+        !shortcut_holds(path, exe, wid)) {
+        IShellLinkW *link = NULL;
+        IPersistFile *file = NULL;
+        if (SUCCEEDED(CoCreateInstance(&CLSID_LINK, NULL, CLSCTX_INPROC_SERVER, &IID_LINK, (void **)&link))) {
+            WCHAR dir[MAX_PATH];
+            wcscpy(dir, exe);
+            WCHAR *slash = wcsrchr(dir, L'\\');
+            if (slash) *slash = 0;
+            IShellLinkW_SetPath(link, exe), IShellLinkW_SetWorkingDirectory(link, dir), IShellLinkW_SetIconLocation(link, exe, 0);
+            if (SUCCEEDED(IShellLinkW_QueryInterface(link, &IID_STORE, (void **)&store))) set_app_id(store, wid), IPropertyStore_Release(store);
+            if (SUCCEEDED(IShellLinkW_QueryInterface(link, &IID_FILE, (void **)&file))) IPersistFile_Save(file, path, TRUE), IPersistFile_Release(file);
+            IShellLinkW_Release(link);
+        }
+    }
+    CoTaskMemFree(programs);
+    SDL_free(wname), SDL_free(wid);
+}
+
 Uint32 gs_nowplaying_init(SDL_Window *win, const char *name, const char *id) {
     if (W.smtc) return W.event;
     HWND hwnd = win ? (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL) : NULL;
@@ -80,6 +156,7 @@ Uint32 gs_nowplaying_init(SDL_Window *win, const char *name, const char *id) {
     W.delete_string = W.combase ? (HRESULT (WINAPI *)(hstring))(void *)GetProcAddress(W.combase, "WindowsDeleteString") : NULL;
     if (!initialize || !get_factory || !W.create_string || !W.delete_string) return 0;
     initialize(1 /* multithreaded; a thread already set up another way keeps its own */);
+    identify(hwnd, name, id);
     hstring cls = string("Windows.Media.SystemMediaTransportControls");
     void *interop = NULL;
     if (cls && SUCCEEDED(get_factory(cls, &IID_INTEROP, &interop)))

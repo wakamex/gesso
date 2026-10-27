@@ -213,7 +213,7 @@ pub fn build(b: *std.Build) void {
     mod.linkLibrary(sdl);
     mod.linkLibrary(opus);
     mod.addIncludePath(opus_src.path("include"));
-    if (target.result.os.tag == .windows) for ([_][]const u8{ "winhttp", "crypt32" }) |l| mod.linkSystemLibrary(l, .{});
+    if (target.result.os.tag == .windows) for ([_][]const u8{ "winhttp", "crypt32", "shell32", "ole32" }) |l| mod.linkSystemLibrary(l, .{});
     // gs_desk, one implementation per system.
     mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{"gs_desk.c"}, .flags = flags });
     switch (target.result.os.tag) {
