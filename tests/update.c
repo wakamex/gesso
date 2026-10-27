@@ -129,6 +129,18 @@ void test_update(void) {
     CHECK(ready_within(u, 3000));  // (build 2 once more, now that nothing is skipped)
     CHECK(gs_update_due(u, false, 0));
     CHECK(gs_update_restart_as(u, 2, args) && !gs_update_due(u, false, 0));
+    const char *next_run = "consent yes\ntrial 2\nfailures 0\nrunning 2\nskip \nrestarted 0\n";  // (as the next build writes it at its start)
+    SDL_SaveFile(state, next_run, strlen(next_run));
+    gs_update_free(u);
+    kept = SDL_LoadFile(state, NULL);
+    CHECK(kept && !strcmp(kept, next_run));  // (the run that handed over leaves it alone)
+    SDL_free(kept);
+    // A state file with Windows' line ends reads the same.
+    const char *crlf = "consent yes\r\ntrial \r\nfailures 0\r\nrunning \r\nskip \r\nrestarted 0\r\n";
+    SDL_SaveFile(state, crlf, strlen(crlf));
+    c.build = "2", c.trial_ms = 0;
+    u = gs_update_start(&c);
+    CHECK(gs_update_consent(u) == GS_UPDATE_YES);
     gs_update_free(u);
     // Its trial passes after trial_ms, and the files it replaced go.
     c.build = "2", c.trial_ms = 100;

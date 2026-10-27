@@ -32,6 +32,7 @@ struct gs_update {
     int idle_ms, gap_ms, trial_ms;
     kept k;
     bool rolled_back;
+    bool handed_over;  // gs_update_restart_as started the next build: the state file is its now
     uint8_t key[32];
     int every_ms;
     void (*ready_fn)(void *user);
@@ -142,6 +143,7 @@ static bool fetch(gs_update *u, const file *f, const char *to, char *error, size
 }
 
 static void save(const gs_update *u) {
+    if (u->handed_over) return;  // (the next run may already have written its own)
     char text[700];
     int n = SDL_snprintf(text, sizeof text, "consent %s\ntrial %s\nfailures %d\nrunning %s\nskip %s\nrestarted %lld\n",
                          u->k.consent == GS_UPDATE_YES ? "yes" : u->k.consent == GS_UPDATE_NO ? "no" : "ask", u->k.trial, u->k.failures, u->k.running, u->k.skip, u->k.restarted);
@@ -157,6 +159,7 @@ static void load(gs_update *u) {
         char *value = strchr(line, ' ');
         if (!value) continue;
         *value++ = 0;
+        value[strcspn(value, "\r")] = 0;  // (a file whose lines end as Windows' do)
         if (!strcmp(line, "consent")) u->k.consent = !strcmp(value, "yes") ? GS_UPDATE_YES : !strcmp(value, "no") ? GS_UPDATE_NO : GS_UPDATE_ASK;
         else if (!strcmp(line, "trial")) SDL_strlcpy(u->k.trial, value, sizeof u->k.trial);
         else if (!strcmp(line, "running")) SDL_strlcpy(u->k.running, value, sizeof u->k.running);
@@ -374,9 +377,12 @@ bool gs_update_restart_as(gs_update *u, int argc, char **argv) {
     SDL_GetCurrentTime(&now);
     SDL_LockMutex(u->lock);
     u->k.restarted = (long long)(now / SDL_NS_PER_SECOND);
+    u->k.running[0] = 0;  // (this run ends cleanly)
     save(u);
+    bool started = gs_update_restart(u->folder, u->program, n, (char **)args);
+    u->handed_over = started;
     SDL_UnlockMutex(u->lock);
-    return gs_update_restart(u->folder, u->program, n, (char **)args);
+    return started;
 }
 
 bool gs_update_restarted(int argc, char **argv) {

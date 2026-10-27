@@ -82,5 +82,6 @@ bool gs_update_restart(const char *folder, const char *program, int argc, char *
 // The same for the update's own program, adding --restarted to the arguments and counting the restart
 // for gap_ms. The new run passes its arguments to gs_update_restarted first, which tells whether it was
 // started so and then keeps its window from taking the keyboard (the app's parser must accept the flag).
+// From then on this run leaves the state file to the new one, gs_update_free included.
 bool gs_update_restart_as(gs_update *u, int argc, char **argv);
 bool gs_update_restarted(int argc, char **argv);
