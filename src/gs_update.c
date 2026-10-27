@@ -17,8 +17,21 @@ typedef struct {
     long long size;
 } file;
 
+// What is kept between runs, in the state file: the user's answer, the build on trial and how often it
+// ended uncleanly, the build running now (cleared on a clean exit), a build gone back from, and when
+// the last update restarted the program.
+typedef struct {
+    int consent;
+    char trial[128], running[128], skip[128];
+    int failures;
+    long long restarted;  // seconds since 1970
+} kept;
+
 struct gs_update {
-    char build[128], manifest[512], folder[1024], program[64], agent[64];
+    char build[128], manifest[512], folder[1024], program[64], agent[64], state[1100];
+    int idle_ms, gap_ms, trial_ms;
+    kept k;
+    bool rolled_back;
     uint8_t key[32];
     int every_ms;
     void (*ready_fn)(void *user);
@@ -128,6 +141,65 @@ static bool fetch(gs_update *u, const file *f, const char *to, char *error, size
     return false;
 }
 
+static void save(const gs_update *u) {
+    char text[700];
+    int n = SDL_snprintf(text, sizeof text, "consent %s\ntrial %s\nfailures %d\nrunning %s\nskip %s\nrestarted %lld\n",
+                         u->k.consent == GS_UPDATE_YES ? "yes" : u->k.consent == GS_UPDATE_NO ? "no" : "ask", u->k.trial, u->k.failures, u->k.running, u->k.skip, u->k.restarted);
+    if (u->state[0]) SDL_SaveFile(u->state, text, (size_t)n);
+}
+
+static void load(gs_update *u) {
+    char *text = u->state[0] ? SDL_LoadFile(u->state, NULL) : NULL;
+    for (char *line = text, *next; line && *line; line = next) {
+        next = strchr(line, '\n');
+        if (next) *next++ = 0;
+        else next = line + strlen(line);
+        char *value = strchr(line, ' ');
+        if (!value) continue;
+        *value++ = 0;
+        if (!strcmp(line, "consent")) u->k.consent = !strcmp(value, "yes") ? GS_UPDATE_YES : !strcmp(value, "no") ? GS_UPDATE_NO : GS_UPDATE_ASK;
+        else if (!strcmp(line, "trial")) SDL_strlcpy(u->k.trial, value, sizeof u->k.trial);
+        else if (!strcmp(line, "running")) SDL_strlcpy(u->k.running, value, sizeof u->k.running);
+        else if (!strcmp(line, "skip")) SDL_strlcpy(u->k.skip, value, sizeof u->k.skip);
+        else if (!strcmp(line, "failures")) u->k.failures = SDL_atoi(value);
+        else if (!strcmp(line, "restarted")) u->k.restarted = SDL_strtoll(value, NULL, 10);
+    }
+    SDL_free(text);
+}
+
+// The files in the program's folder ending in `suffix`, removed.
+static void sweep(const gs_update *u, const char *suffix) {
+    int count = 0;
+    char pattern[16], **found;
+    SDL_snprintf(pattern, sizeof pattern, "*%s", suffix);
+    found = SDL_GlobDirectory(u->folder, pattern, 0, &count);
+    for (int i = 0; found && i < count; i++) {
+        char path[1200];
+        SDL_snprintf(path, sizeof path, "%s%s", u->folder, found[i]);
+        SDL_RemovePath(path);
+    }
+    SDL_free(found);
+}
+
+// Back to the build before this one: each file the update replaced is put aside as NAME.bad and the
+// one it replaced (NAME.old) put back, and the build is not taken again.
+static void roll_back(gs_update *u) {
+    int count = 0;
+    char **old = SDL_GlobDirectory(u->folder, "*.old", 0, &count);
+    for (int i = 0; old && i < count; i++) {
+        char from[1200], here[1200], bad[1210];
+        SDL_snprintf(from, sizeof from, "%s%s", u->folder, old[i]);
+        SDL_snprintf(here, sizeof here, "%s%.*s", u->folder, (int)strlen(old[i]) - 4, old[i]);
+        SDL_snprintf(bad, sizeof bad, "%s.bad", here);
+        SDL_RemovePath(bad);
+        SDL_RenamePath(here, bad), SDL_RenamePath(from, here);
+    }
+    SDL_free(old);
+    SDL_Log("%s: build %s ended uncleanly %d times on trial; the build before it is back", u->agent, u->build, u->k.failures);
+    SDL_strlcpy(u->k.skip, u->build, sizeof u->k.skip), u->k.trial[0] = 0, u->k.failures = 0;
+    u->rolled_back = true;
+}
+
 // Looks once. True when a newer build has been put in place.
 static bool look(gs_update *u, char *error, size_t error_size) {
     char url[600], *text = NULL, *signature = NULL;
@@ -146,6 +218,7 @@ static bool look(gs_update *u, char *error, size_t error_size) {
     else ok = read_manifest(u, text, len, signature, build, sizeof build, files, &count, error, error_size);
     SDL_free(text), SDL_free(signature);
     if (!ok || !SDL_strcmp(build, u->build)) return false;
+    if (!SDL_strcmp(build, u->k.skip)) return SDL_snprintf(error, error_size, "build %s was gone back from; waiting for a newer one", build), false;
     // Every file that differs is fetched and checked before any is put in place.
     bool fetched[MAX_FILES] = { 0 }, any = false;
     char here[1200], next[1210], old[1210];
@@ -175,13 +248,26 @@ static bool look(gs_update *u, char *error, size_t error_size) {
         if (!SDL_RenamePath(next, here)) return SDL_snprintf(error, error_size, "%s: %s", here, SDL_GetError()), false;
     }
     SDL_Log("%s: updated to build %s", u->agent, build);
+    SDL_LockMutex(u->lock);
+    SDL_strlcpy(u->k.trial, build, sizeof u->k.trial), u->k.failures = 0;
+    save(u);
+    SDL_UnlockMutex(u->lock);
     return true;
 }
 
 static int run(void *user) {
     gs_update *u = user;
     char said[300] = "";
+    const Uint64 began = SDL_GetTicks();
     do {
+        // On trial, this build is not replaced; once it has run its trial time, it has passed, and the
+        // build it replaced goes.
+        SDL_LockMutex(u->lock);
+        bool trial = !SDL_strcmp(u->k.trial, u->build);
+        if (trial && SDL_GetTicks() - began >= (Uint64)u->trial_ms) u->k.trial[0] = 0, u->k.failures = 0, save(u), sweep(u, ".old"), trial = false;
+        bool asked = u->k.consent == GS_UPDATE_YES;
+        SDL_UnlockMutex(u->lock);
+        if (trial || !asked) continue;  // (and wait to look again)
         char error[300] = "";
         bool done = look(u, error, sizeof error);
         SDL_LockMutex(u->lock), SDL_strlcpy(u->error, error, sizeof u->error), SDL_UnlockMutex(u->lock);
@@ -192,7 +278,7 @@ static int run(void *user) {
         }
         if (error[0] && SDL_strcmp(error, said)) SDL_Log("%s: looking for an update: %s", u->agent, error);  // (when it first happens, not every look)
         SDL_strlcpy(said, error, sizeof said);
-    } while (!SDL_GetAtomicInt(&u->stopping) && !SDL_WaitSemaphoreTimeout(u->wake, u->every_ms));
+    } while (!SDL_GetAtomicInt(&u->stopping) && !SDL_WaitSemaphoreTimeout(u->wake, SDL_min(u->every_ms, u->trial_ms)));
     return 0;
 }
 
@@ -206,16 +292,26 @@ gs_update *gs_update_start(const gs_update_config *c) {
     memcpy(u->key, c->key, 32);
     u->every_ms = c->every_ms > 0 ? c->every_ms : 60000;
     u->ready_fn = c->ready, u->ready_user = c->ready_user;
-    // (what the last update renamed aside is no longer running, and goes)
-    int count = 0;
-    char **old = SDL_GlobDirectory(u->folder, "*.old", 0, &count);
-    for (int i = 0; old && i < count; i++) {
-        char path[1200];
-        SDL_snprintf(path, sizeof path, "%s%s", u->folder, old[i]);
-        SDL_RemovePath(path);
+    u->idle_ms = c->idle_ms > 0 ? c->idle_ms : 120000, u->gap_ms = c->gap_ms > 0 ? c->gap_ms : 15 * 60000, u->trial_ms = c->trial_ms > 0 ? c->trial_ms : 3 * 60000;
+    if (c->state) SDL_strlcpy(u->state, c->state, sizeof u->state);
+    else {  // update.txt in the app's data folder
+        char app[256];
+        SDL_strlcpy(app, SDL_GetAppMetadataProperty(SDL_PROP_APP_METADATA_NAME_STRING), sizeof app);
+        char *dot = SDL_strrchr(app, '.');
+        if (dot && !SDL_strcasecmp(dot, ".exe")) *dot = 0;
+        char *dir = SDL_GetPrefPath(SDL_GetAppMetadataProperty(SDL_PROP_APP_METADATA_CREATOR_STRING), app);
+        if (dir) SDL_snprintf(u->state, sizeof u->state, "%supdate.txt", dir), SDL_free(dir);
     }
-    SDL_free(old);
+    load(u);
+    sweep(u, ".bad");  // (what an earlier going-back put aside)
+    // A build on trial that last ended without gs_update_free has failed once more; at three it is given up.
+    if (!SDL_strcmp(u->k.trial, u->build) && !SDL_strcmp(u->k.running, u->build)) u->k.failures++;
+    if (!SDL_strcmp(u->k.trial, u->build) && u->k.failures >= 3) roll_back(u);
+    SDL_strlcpy(u->k.running, u->build, sizeof u->k.running);
+    save(u);
+    if (SDL_strcmp(u->k.trial, u->build)) sweep(u, ".old");  // (what a passed update renamed aside is no longer wanted)
     u->wake = SDL_CreateSemaphore(0), u->lock = SDL_CreateMutex();
+    if (u->rolled_back) SDL_SetAtomicInt(&u->ready, 1);
     u->thread = SDL_CreateThread(run, "gs-update", u);
     return u;
 }
@@ -232,8 +328,64 @@ void gs_update_free(gs_update *u) {
     SDL_SetAtomicInt(&u->stopping, 1);
     SDL_SignalSemaphore(u->wake);
     SDL_WaitThread(u->thread, NULL);
+    if (!u->rolled_back) u->k.running[0] = 0, save(u);  // (a clean exit: this run is not counted against the build)
     SDL_DestroySemaphore(u->wake), SDL_DestroyMutex(u->lock);
     SDL_free(u);
+}
+
+int gs_update_consent(gs_update *u) {
+    if (!u) return GS_UPDATE_NO;
+    SDL_LockMutex(u->lock);
+    int consent = u->k.consent;
+    SDL_UnlockMutex(u->lock);
+    return consent;
+}
+
+void gs_update_set_consent(gs_update *u, bool yes) {
+    if (!u) return;
+    SDL_LockMutex(u->lock);
+    u->k.consent = yes ? GS_UPDATE_YES : GS_UPDATE_NO;
+    save(u);
+    SDL_UnlockMutex(u->lock);
+    if (yes) SDL_SignalSemaphore(u->wake);  // (look now)
+}
+
+bool gs_update_rolled_back(gs_update *u) { return u && u->rolled_back; }
+
+bool gs_update_due(gs_update *u, bool busy, Uint64 input_at) {
+    if (!gs_update_ready(u) || busy || SDL_GetTicks() - input_at < (Uint64)u->idle_ms) return false;
+    SDL_Time now = 0;
+    SDL_GetCurrentTime(&now);
+    SDL_LockMutex(u->lock);
+    bool soon = (long long)(now / SDL_NS_PER_SECOND) - u->k.restarted < u->gap_ms / 1000;
+    SDL_UnlockMutex(u->lock);
+    return u->rolled_back || !soon;  // (going back from a failing build waits for no gap)
+}
+
+bool gs_update_restart_as(gs_update *u, int argc, char **argv) {
+    if (!u) return false;
+    const char *args[72];
+    int n = 0;
+    args[n++] = argv && argc ? argv[0] : u->program;
+    bool flagged = false;
+    for (int i = 1; argv && i < argc && n < 70; i++) args[n++] = argv[i], flagged |= !strcmp(argv[i], "--restarted");
+    if (!flagged) args[n++] = "--restarted";
+    SDL_Time now = 0;
+    SDL_GetCurrentTime(&now);
+    SDL_LockMutex(u->lock);
+    u->k.restarted = (long long)(now / SDL_NS_PER_SECOND);
+    save(u);
+    SDL_UnlockMutex(u->lock);
+    return gs_update_restart(u->folder, u->program, n, (char **)args);
+}
+
+bool gs_update_restarted(int argc, char **argv) {
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "--restarted")) {
+            SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");  // (the new build does not take the keyboard from what has it)
+            return true;
+        }
+    return false;
 }
 
 bool gs_update_restart(const char *folder, const char *program, int argc, char **argv) {

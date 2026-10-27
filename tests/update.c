@@ -55,11 +55,25 @@ void test_update(void) {
     SDL_snprintf(prog, sizeof prog, "%sprog", dir);
     chmod(prog, 0750);
 
-    // A forged manifest is refused, and nothing changes.
-    c = (gs_update_config){ .build = "1", .manifest = forged, .key = key, .folder = dir, .program = "prog", .agent = "test", .every_ms = 50 };
-    gs_update *u = gs_update_start(&c);
-    CHECK(!ready_within(u, 300) && holds(dir, "data.txt", "data of build 1\n") && holds(dir, "left.old", NULL));  // (the .old file went at the start)
+    char state[1200];
+    SDL_snprintf(state, sizeof state, "%supdate.txt", dir);
     char error[300];
+
+    // Until its user has said yes, a test build does not look.
+    c = (gs_update_config){ .build = "1", .manifest = url, .key = key, .folder = dir, .program = "prog", .agent = "test", .every_ms = 50, .state = state, .idle_ms = 50 };
+    gs_update *u = gs_update_start(&c);
+    CHECK(gs_update_consent(u) == GS_UPDATE_ASK && !ready_within(u, 300) && holds(dir, "data.txt", "data of build 1\n") && holds(dir, "left.old", NULL));  // (the .old file went at the start)
+    gs_update_set_consent(u, false);
+    gs_update_free(u);
+    u = gs_update_start(&c);
+    CHECK(gs_update_consent(u) == GS_UPDATE_NO && !ready_within(u, 300));  // (the answer is kept)
+    gs_update_set_consent(u, true);
+    gs_update_free(u);
+
+    // A forged manifest is refused, and nothing changes.
+    c.manifest = forged;
+    u = gs_update_start(&c);
+    CHECK(gs_update_consent(u) == GS_UPDATE_YES && !ready_within(u, 300) && holds(dir, "data.txt", "data of build 1\n"));
     gs_update_error(u, error, sizeof error);
     CHECK(strstr(error, "signature"));
     gs_update_free(u);
@@ -73,6 +87,9 @@ void test_update(void) {
     c.build = "1", c.ready = tell, c.ready_user = &told;
     u = gs_update_start(&c);
     CHECK(ready_within(u, 3000));
+    // It is due only when the app is not busy, input has stopped for idle_ms, and no restart was lately.
+    SDL_Delay(60);
+    CHECK(!gs_update_due(u, true, 0) && !gs_update_due(u, false, SDL_GetTicks()) && gs_update_due(u, false, 0));
     gs_update_free(u);
     CHECK(SDL_GetAtomicInt(&told) == 1);  // (the app was told, once)
     CHECK(holds(dir, "prog", "#!/bin/sh\necho build 2\n") && holds(dir, "prog.old", "#!/bin/sh\necho build 1\n"));
@@ -80,12 +97,50 @@ void test_update(void) {
     CHECK(holds(dir, "same.txt", "the same in both builds\n") && holds(dir, "same.txt.old", NULL));
     struct stat st;
     CHECK(!stat(prog, &st) && (st.st_mode & 0777) == 0750);
-    // Its files all match build 2 now: whatever this build calls itself, nothing is started again.
+
+    // Build 2 on trial: it keeps the files it replaced, and a clean exit does not count against it.
+    c.build = "2", c.ready = NULL, c.trial_ms = 60000;
     u = gs_update_start(&c);
-    CHECK(!ready_within(u, 300) && holds(dir, "prog.old", NULL) && SDL_GetAtomicInt(&told) == 1);
+    CHECK(!gs_update_ready(u) && holds(dir, "prog.old", "#!/bin/sh\necho build 1\n"));
     gs_update_free(u);
-    const char *names[] = { "prog", "data.txt", "same.txt", "prog.old", "data.txt.old" };
-    for (int i = 0; i < 5; i++) {
+    char *kept = SDL_LoadFile(state, NULL);
+    CHECK(kept && strstr(kept, "trial 2\n") && strstr(kept, "failures 0\n") && strstr(kept, "running \n"));
+    SDL_free(kept);
+    // Ended uncleanly twice already, and a third time: the next start goes back to build 1.
+    const char *crashed = "consent yes\ntrial 2\nfailures 2\nrunning 2\nskip \nrestarted 0\n";
+    SDL_SaveFile(state, crashed, strlen(crashed));
+    u = gs_update_start(&c);
+    CHECK(gs_update_rolled_back(u) && gs_update_ready(u) && gs_update_due(u, false, 0));
+    CHECK(holds(dir, "prog", "#!/bin/sh\necho build 1\n") && holds(dir, "prog.bad", "#!/bin/sh\necho build 2\n") && holds(dir, "data.txt", "data of build 1\n"));
+    gs_update_free(u);
+    // Build 1 again, which does not take build 2 again until a newer one is published.
+    c.build = "1", c.trial_ms = 0;
+    u = gs_update_start(&c);
+    CHECK(!ready_within(u, 400) && holds(dir, "prog", "#!/bin/sh\necho build 1\n") && holds(dir, "prog.bad", NULL));
+    gs_update_error(u, error, sizeof error);
+    CHECK(strstr(error, "gone back from"));
+    // A restart for an update starts the program with --restarted, and the next is not due within gap_ms.
+    char *args[] = { "prog", "--keep", NULL };
+    CHECK(gs_update_restart_as(u, 2, args));
+    gs_update_free(u);
+    const char *cleared = "consent yes\ntrial \nfailures 0\nrunning \nskip \nrestarted 0\n";
+    SDL_SaveFile(state, cleared, strlen(cleared));
+    u = gs_update_start(&c);
+    CHECK(ready_within(u, 3000));  // (build 2 once more, now that nothing is skipped)
+    CHECK(gs_update_due(u, false, 0));
+    CHECK(gs_update_restart_as(u, 2, args) && !gs_update_due(u, false, 0));
+    gs_update_free(u);
+    // Its trial passes after trial_ms, and the files it replaced go.
+    c.build = "2", c.trial_ms = 100;
+    u = gs_update_start(&c);
+    for (Uint64 t = SDL_GetTicks(); SDL_GetTicks() - t < 2000 && !holds(dir, "prog.old", NULL);) SDL_Delay(20);
+    CHECK(holds(dir, "prog.old", NULL) && holds(dir, "data.txt.old", NULL));
+    gs_update_free(u);
+    char *restarted_args[] = { "prog", "--restarted", NULL }, *plain_args[] = { "prog", NULL };
+    CHECK(gs_update_restarted(2, restarted_args) && !gs_update_restarted(1, plain_args));
+    SDL_RemovePath(state);
+    const char *names[] = { "prog", "data.txt", "same.txt", "prog.old", "data.txt.old", "prog.bad", "data.txt.bad" };
+    for (int i = 0; i < 7; i++) {
         char path[1200];
         SDL_snprintf(path, sizeof path, "%s%s", dir, names[i]);
         SDL_RemovePath(path);
