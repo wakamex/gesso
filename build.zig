@@ -194,7 +194,7 @@ pub fn build(b: *std.Build) void {
     const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
     mod.addCSourceFiles(.{
         .root = b.path("src"),
-        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_draw.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c", "gs_eta.c", "gs_ed25519.c", "gs_update.c", "gs_gif.c" },
+        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_draw.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c", "gs_eta.c", "gs_ed25519.c", "gs_update.c", "gs_gif.c", "gs_loopback.c" },
         .flags = flags,
     });
     mod.addIncludePath(b.path("src"));
@@ -355,7 +355,20 @@ pub fn build(b: *std.Build) void {
     nowplaying_run.step.dependOn(&nowplaying_install.step);
     nowplaying_run.addPassthruArgs();
     b.step("bench-nowplaying", "Turn the system's media controls on and print the commands that come").dependOn(&nowplaying_run.step);
+    // zig build bench-loopback -- [SECONDS] [tone] [SINK]: what the speakers play, recorded, with its level.
+    const loopback_bench = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    loopback_bench.addCSourceFile(.{ .file = b.path("bench/loopback.c"), .flags = flags });
+    loopback_bench.addIncludePath(b.path("src"));
+    useSdk(loopback_bench, macos_sdk);
+    loopback_bench.linkLibrary(lib);
+    const loopback_exe = b.addExecutable(.{ .name = "bench-loopback", .root_module = loopback_bench });
+    const loopback_install = b.addInstallArtifact(loopback_exe, .{});
+    const loopback_run = b.addRunArtifact(loopback_exe);
+    loopback_run.step.dependOn(&loopback_install.step);
+    loopback_run.addPassthruArgs();
+    b.step("bench-loopback", "Record what the speakers play and print its level").dependOn(&loopback_run.step);
     const benches = b.step("benches", "Build the benches without running them");
+    benches.dependOn(&loopback_install.step);
     benches.dependOn(&notify_install.step);
     benches.dependOn(&nowplaying_install.step);
     benches.dependOn(&gif_install.step);

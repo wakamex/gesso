@@ -92,6 +92,46 @@ static void check_echo(const Sint16 *pcm, int samples) {
     gs_voice_free(v);
 }
 
+// The echo canceller given what the speakers play as its reference (gs_loopback's use): a podcast
+// from another app comes back through the microphone 100 ms later, louder than the talker, and
+// nobody talks for four seconds; then someone does. How many frames the voice detector takes for
+// speech while only the podcast plays, with the reference and without it.
+static int podcast_speech(const Sint16 *pcm, int samples, bool reference, double *talker) {
+    gs_voice *v = gs_voice_new(16000, GS_VOICE_ECHO | GS_VOICE_SPEECH);
+    enum { DELAY = 1600, SECOND = 16000 };
+    unsigned seed = 7;
+    int speech = 0;
+    *talker = 0;
+    for (int at = 0; at + 160 <= 7 * SECOND; at += 160) {
+        const bool talking = at >= 5 * SECOND;
+        float played[160], frame[160];
+        for (int i = 0; i < 160; i++) {
+            const int t = at + i;
+            seed = seed * 1664525u + 1013904223u;
+            const float noise = ((float)(seed >> 8) / 8388608.f - 1.f) * 0.0003f;
+            const float podcast = t < DELAY ? 0 : 0.7f * 3.f * (float)pcm[(t - DELAY) % samples] / 32768.f;
+            played[i] = 3.f * (float)pcm[t % samples] / 32768.f;
+            frame[i] = podcast + (talking ? 3.f * (float)pcm[samples - 1 - t % samples] / 32768.f : 0) + noise;
+        }
+        gs_voice_played(v, reference ? played : (float[160]){ 0 });
+        gs_voice_frame(v, frame);
+        if (at >= 2 * SECOND && at < 5 * SECOND) speech += gs_voice_speech(v) > 0.5f;
+        if (at >= 5 * SECOND + SECOND / 2) *talker = SDL_max(*talker, gs_voice_speech(v));
+    }
+    gs_voice_free(v);
+    return speech;
+}
+
+static void check_podcast(const Sint16 *pcm, int samples) {
+    if (!gs_voice_has_echo()) return;
+    double talker_with, talker_without;
+    const int with = podcast_speech(pcm, samples, true, &talker_with), without = podcast_speech(pcm, samples, false, &talker_without);
+    fprintf(stderr, "  podcast frames taken for speech, of 300: %d without the reference, %d with it\n", without, with);
+    CHECK(without > 100);    // (the podcast alone sets the detector off)
+    CHECK(with < 15);        // (with what the speakers play, hardly ever)
+    CHECK(talker_with > 0.95);  // (and the talker is still heard)
+}
+
 void test_voice(void) {
     CHECK(gs_voice_new(48000, GS_VOICE_ALL) == NULL);  // (16 kHz only)
     char path[1200];
@@ -112,5 +152,6 @@ void test_voice(void) {
     check_levels(pcm, GS_VOICE_ALL, all);
     check_speech(pcm);
     check_echo(pcm, (int)(len - 44) / 2);
+    check_podcast(pcm, (int)(len - 44) / 2);
     SDL_free(pcm), SDL_free(data);
 }
