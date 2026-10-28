@@ -281,7 +281,8 @@ static int run(void *user) {
         }
         if (error[0] && SDL_strcmp(error, said)) SDL_Log("%s: looking for an update: %s", u->agent, error);  // (when it first happens, not every look)
         SDL_strlcpy(said, error, sizeof said);
-    } while (!SDL_GetAtomicInt(&u->stopping) && !SDL_WaitSemaphoreTimeout(u->wake, SDL_min(u->every_ms, u->trial_ms)));
+        // (a signal wakes it early: to stop, from gs_update_free, or to look now, from a yes)
+    } while (!SDL_GetAtomicInt(&u->stopping) && (SDL_WaitSemaphoreTimeout(u->wake, SDL_min(u->every_ms, u->trial_ms)), !SDL_GetAtomicInt(&u->stopping)));
     return 0;
 }
 

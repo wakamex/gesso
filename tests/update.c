@@ -67,11 +67,21 @@ void test_update(void) {
     gs_update_free(u);
     u = gs_update_start(&c);
     CHECK(gs_update_consent(u) == GS_UPDATE_NO && !ready_within(u, 300));  // (the answer is kept)
+    gs_update_free(u);
+
+    // A yes in the run that asked starts that run looking, here to a forged manifest, which it refuses.
+    c.manifest = forged;
+    u = gs_update_start(&c);
+    SDL_Delay(200);  // (the thread has seen no answer and is waiting, as while the question is on screen)
     gs_update_set_consent(u, true);
+    for (Uint64 t = SDL_GetTicks(); SDL_GetTicks() - t < 3000; SDL_Delay(10)) {
+        gs_update_error(u, error, sizeof error);
+        if (error[0]) break;
+    }
+    CHECK(strstr(error, "signature"));
     gs_update_free(u);
 
     // A forged manifest is refused, and nothing changes.
-    c.manifest = forged;
     u = gs_update_start(&c);
     CHECK(gs_update_consent(u) == GS_UPDATE_YES && !ready_within(u, 300) && holds(dir, "data.txt", "data of build 1\n"));
     gs_update_error(u, error, sizeof error);
