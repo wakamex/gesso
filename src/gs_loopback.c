@@ -185,7 +185,7 @@ static void stop_system(gs_loopback *l) {
     SDL_free(w);
 }
 
-#elif defined(__linux__)
+#elif defined(__linux__) && !defined(__ANDROID__)
 // ---- Linux: the default sink's monitor, through libpulse-simple ----
 typedef struct { int format; unsigned rate; unsigned char channels; } pa_spec;
 typedef struct { unsigned maxlength, tlength, prebuf, minreq, fragsize; } pa_attr;

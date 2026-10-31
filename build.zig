@@ -5,6 +5,7 @@
 //   zig build -Dtarget=x86_64-windows-gnu  Windows build from any host
 //   zig build -Dvideo                      also the video modules, on a trimmed FFmpeg libavcodec
 //   zig build -Dtarget=aarch64-macos -Dmacos_sdk=PATH   macOS build from another system, with an Xcode SDK copied from a Mac
+//   zig build -Dtarget=aarch64-linux-android -Dandroid_ndk=PATH   Android build, with the NDK; an app's libmain.so calls useNdk too
 //   zig build test                         run the tests
 const std = @import("std");
 
@@ -18,6 +19,13 @@ fn useSdk(mod: *std.Build.Module, sdk: ?std.Build.LazyPath) void {
     mod.addLibraryPath(dir.path(mod.owner, "usr/lib"));
 }
 
+// Gives an Android build the NDK's C library and system libraries, as SDL's build found them. An
+// app's own native library (libmain.so) needs the same.
+pub fn useNdk(compile: *std.Build.Step.Compile, sdl_dep: *std.Build.Dependency) void {
+    compile.setLibCFile(sdl_dep.namedLazyPath("android_libc_file"));
+    compile.root_module.addLibraryPath(sdl_dep.namedLazyPath("android_lib_dir"));
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -26,8 +34,11 @@ pub fn build(b: *std.Build) void {
 
     // A macOS SDK (the MacOSX.sdk folder from Xcode) lets a macOS build run on any host.
     const macos_sdk = b.option(std.Build.LazyPath, "macos_sdk", "Path of a macOS SDK, for building for macOS on another system");
+    // Android takes the NDK's C library and system libraries, through SDL's build (see `useNdk`).
+    const android = target.result.abi.isAndroid();
+    const android_ndk = b.option([]const u8, "android_ndk", "Android NDK root, for building for Android");
 
-    const sdl = (if (macos_sdk) |sdk| b.dependency("sdl", .{
+    const sdl_dep = (if (macos_sdk) |sdk| b.dependency("sdl", .{
         .target = target,
         .optimize = optimize,
         .preferred_linkage = .static,
@@ -40,11 +51,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .preferred_linkage = .static,
         .strip = optimize != .debug,
-    })).artifact("SDL3");
+        .android_ndk = android_ndk,
+    }));
+    const sdl = sdl_dep.artifact("SDL3");
 
     // libopus (BSD), for Opus-compressed SoundFont samples. Only its decoder is used; the linker drops the rest.
     const opus_src = b.dependency("opus", .{});
-    const opus_mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    const opus_mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true, .pic = if (android) true else null });
     opus_mod.addCSourceFiles(.{
         .root = opus_src.path(""),
         .files = &.{
@@ -190,8 +203,9 @@ pub fn build(b: *std.Build) void {
     });
     for ([_][]const u8{ "include", "celt", "silk", "silk/float", "." }) |dir| opus_mod.addIncludePath(opus_src.path(dir));
     const opus = b.addLibrary(.{ .name = "opus", .linkage = .static, .root_module = opus_mod });
+    if (android) useNdk(opus, sdl_dep);
 
-    const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true, .pic = if (android) true else null });
     mod.addCSourceFiles(.{
         .root = b.path("src"),
         .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_draw.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c", "gs_eta.c", "gs_ed25519.c", "gs_update.c", "gs_gif.c", "gs_loopback.c" },
@@ -223,7 +237,7 @@ pub fn build(b: *std.Build) void {
             for ([_][]const u8{ "gs_desk_macos.m", "gs_notify_macos.m", "gs_nowplaying_macos.m" }) |f| mod.addCSourceFile(.{ .file = b.path(b.fmt("src/{s}", .{f})), .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra", "-Wno-unused-parameter" } });
             for ([_][]const u8{ "AppKit", "Carbon", "ApplicationServices", "UserNotifications", "Security", "MediaPlayer" }) |f| mod.linkFramework(f, .{});
         },
-        .linux => mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_linux.c", "gs_desk_unix.c", "gs_notify_linux.c", "gs_nowplaying_linux.c" }, .flags = flags }),
+        .linux => if (!android) mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_linux.c", "gs_desk_unix.c", "gs_notify_linux.c", "gs_nowplaying_linux.c" }, .flags = flags }),
         else => {},
     }
     if (target.result.isGnuLibC() and target.result.os.versionRange().gnuLibCVersion().?.order(.{ .major = 2, .minor = 29, .patch = 0 }) == .lt)
@@ -251,6 +265,7 @@ pub fn build(b: *std.Build) void {
     mod.addCSourceFile(.{ .file = b.path("src/gs_voice.c"), .flags = if (aec != null) flags ++ &[_][]const u8{"-DGS_HAVE_ECHO"} else flags });
 
     const lib = b.addLibrary(.{ .name = "gesso", .linkage = .static, .root_module = mod });
+    if (android) useNdk(lib, sdl_dep);
     lib.installHeadersDirectory(b.path("src"), "", .{ .include_extensions = &.{".h"} });
     lib.installHeadersDirectory(b.path("vendor/stb"), "", .{ .include_extensions = &.{".h"} });
     lib.installLibraryHeaders(sdl);
