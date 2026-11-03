@@ -1,6 +1,6 @@
 // What gesso's Android parts share: gesso's Java classes, found through the app's class loader so any
 // thread can use them. An app compiles them beside SDL's: the android_java path of the gesso
-// dependency, as of the sdl one. gs_notify and gs_secret's Keystore need them.
+// dependency, as of the sdl one. gs_notify, gs_secret's Keystore and gs_background need them.
 #pragma once
 #include <jni.h>
 #include <stdbool.h>

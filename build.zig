@@ -208,7 +208,7 @@ pub fn build(b: *std.Build) void {
     const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true, .pic = if (android) true else null });
     mod.addCSourceFiles(.{
         .root = b.path("src"),
-        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_draw.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c", "gs_eta.c", "gs_ed25519.c", "gs_update.c", "gs_gif.c", "gs_loopback.c" },
+        .files = &.{ "gs_pix.c", "gs_text.c", "gs_mix.c", "gs_synth.c", "gs_midi.c", "gs_stats.c", "gs_pace.c", "gs_seq.c", "gs_jobs.c", "gs_dsp.c", "gs_sha256.c", "gs_json.c", "gs_webm.c", "gs_stream.c", "gs_opus.c", "gs_http.c", "gs_secret.c", "gs_oauth.c", "gs_hls.c", "gs_ui.c", "gs_draw.c", "gs_image.c", "gs_ts.c", "gs_mp4.c", "gs_abr.c", "gs_eta.c", "gs_ed25519.c", "gs_update.c", "gs_gif.c", "gs_loopback.c", "gs_background.c" },
         .flags = flags,
     });
     mod.addIncludePath(b.path("src"));
