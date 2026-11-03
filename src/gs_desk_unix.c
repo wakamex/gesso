@@ -1,4 +1,4 @@
-// Linux and macOS: one running instance, found through a socket in the app's data folder.
+// Linux, macOS and Android: one running instance, found through a socket in the app's data folder.
 #define _DEFAULT_SOURCE
 #include <SDL3/SDL.h>
 #include <errno.h>

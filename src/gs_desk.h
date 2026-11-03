@@ -3,8 +3,10 @@
 // over everything without taking the keyboard, and being the one running instance. For a tray app that acts on other apps (a dictation tool, a clipboard manager,
 // a launcher). Windows, macOS and Linux each have an implementation (gs_desk_windows.c,
 // gs_desk_macos.c and gs_desk_macos.m, gs_desk_linux.c; the instance socket of the last two is in
-// gs_desk_unix.c). On Linux the hotkeys need an X server (X11, or XWayland): under Wayland alone
-// gs_hotkeys_init says so, and the app can offer a command for the desktop's own shortcuts instead.
+// gs_desk_unix.c). On Android (gs_desk_android.c, with the same instance socket) only the clipboard's
+// text and the one instance work: hotkeys and the paste keystroke fail with a reason. On Linux the
+// hotkeys need an X server (X11, or XWayland): under Wayland alone gs_hotkeys_init says so, and the
+// app can offer a command for the desktop's own shortcuts instead.
 #pragma once
 #include <SDL3/SDL.h>
 #include <stdbool.h>

@@ -238,7 +238,7 @@ pub fn build(b: *std.Build) void {
             for ([_][]const u8{ "AppKit", "Carbon", "ApplicationServices", "UserNotifications", "Security", "MediaPlayer" }) |f| mod.linkFramework(f, .{});
         },
         .linux => if (android)
-            mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{"gs_notify_none.c"}, .flags = flags })
+            mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_android.c", "gs_desk_unix.c", "gs_notify_none.c" }, .flags = flags })
         else
             mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_linux.c", "gs_desk_unix.c", "gs_notify_linux.c", "gs_nowplaying_linux.c" }, .flags = flags }),
         else => {},
