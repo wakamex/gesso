@@ -4,12 +4,15 @@
 //
 // Android stops a background app's network within seconds and may stop the app. There the app is
 // kept by a foreground service with an ongoing notification of `title` and `text` (a tap opens the
-// app), through gesso's Java (gs_android.h). Call gs_background_keep while the app is in front:
+// app), through gesso's Java (gs_android.h), and a partial wake lock keeps the CPU running with the
+// screen off, so the app's timers (a keep-alive every minute, say) fire on time; it costs battery
+// for as long as it is held. Call gs_background_keep while the app is in front:
 // Android 12 and later refuse to start the service from the background. Calling it again changes the
 // notification's text. The manifest declares the service with the foreground service type that fits
 // what the app does, and the permissions for it; for a messaging app:
 //     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 //     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+//     <uses-permission android:name="android.permission.WAKE_LOCK" />
 //     <service android:name="dev.wakamex.gesso.Background" android:exported="false"
 //              android:foregroundServiceType="remoteMessaging" />
 // (dataSync is limited to six hours a day from Android 15; specialUse needs a reason given to Google

@@ -10,14 +10,17 @@ import android.content.ComponentName;
 import android.content.Intent;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.util.Log;
 
 // gs_background on Android (src/gs_background.c): a foreground service with an ongoing notification,
-// which keeps the app's process running and online while another app is in front. Its type is the one
-// the app's manifest declares for it (see gs_background.h).
+// which keeps the app's process running and online while another app is in front, and a partial wake
+// lock held with it, which keeps the CPU running with the screen off so the app's timers fire on
+// time. Its type is the one the app's manifest declares for it (see gs_background.h).
 public final class Background extends Service {
     private static final String CHANNEL = "dev.wakamex.gesso.background";
     private static volatile String title = "", text = "";
+    private PowerManager.WakeLock awake;
 
     public static boolean start(Activity activity, String title, String text) {
         Background.title = title;
@@ -56,11 +59,27 @@ public final class Background extends Service {
             } else {
                 startForeground(1, b.build());
             }
+            if (awake == null) {
+                try {
+                    awake = getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "gesso:background");
+                    awake.acquire();
+                } catch (Exception e) {  // (no WAKE_LOCK permission: kept, but asleep with the screen off)
+                    Log.w("gesso", "the background service holds no wake lock", e);
+                    awake = null;
+                }
+            }
         } catch (Exception e) {
             Log.w("gesso", "the background service could not come to the foreground", e);
             stopSelf();
         }
         return START_NOT_STICKY;
+    }
+
+    @Override
+    public void onDestroy() {
+        if (awake != null && awake.isHeld()) awake.release();
+        awake = null;
+        super.onDestroy();
     }
 
     @Override
