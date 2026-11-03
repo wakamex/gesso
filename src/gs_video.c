@@ -7,7 +7,7 @@
 #include <libavutil/pixdesc.h>
 #include <math.h>
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 #define SDL_USE_BUILTIN_OPENGL_DEFINITIONS 1  // SDL's copies of the Khronos headers, not the build host's
 #include <SDL3/SDL_egl.h>
 #include <SDL3/SDL_opengles2.h>
@@ -28,7 +28,7 @@ static const char *path_names[] = { "software", "vaapi", "d3d11va", "videotoolbo
 
 // What gs_video_prepare chose, for the renderer created after it.
 static path prepared = SOFTWARE;
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 static char va_device[32];  // the render node whose VAAPI driver decodes H.264
 #endif
 
@@ -59,7 +59,7 @@ struct gs_video {
     double last_shown_pts, error_sum, error_max, jitter_sum;
     int timed;
     double error_ms, error_max_ms, jitter_ms;
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
     PFNEGLCREATEIMAGEPROC egl_create_image;
     PFNEGLDESTROYIMAGEPROC egl_destroy_image;
     PFNGLEGLIMAGETARGETTEXTURE2DOESPROC gl_image_target;
@@ -73,7 +73,7 @@ struct gs_video {
 
 // ---- Choosing the path ----
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 // True when the render node's VAAPI driver decodes H.264 High profile. Fedora's Mesa, for one, ships
 // VAAPI drivers built without H.264.
 static bool vaapi_decodes_h264(const char *node) {
@@ -98,7 +98,7 @@ static bool vaapi_decodes_h264(const char *node) {
 const char *gs_video_prepare(bool hardware) {
     prepared = SOFTWARE;
     if (!hardware) return NULL;
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
     if (!SDL_getenv("LIBVA_MESSAGING_LEVEL")) SDL_setenv_unsafe("LIBVA_MESSAGING_LEVEL", "1", 0);  // errors only, not libva's "info" lines
     for (int i = 128; i < 136 && prepared == SOFTWARE; i++) {
         SDL_snprintf(va_device, sizeof va_device, "/dev/dri/renderD%d", i);
@@ -131,7 +131,7 @@ static bool open_hardware(gs_video *v) {
     const char *name = SDL_GetRendererName(v->renderer);
     SDL_PropertiesID props = SDL_GetRendererProperties(v->renderer);
     (void)props;
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
     if (prepared != VAAPI || SDL_strcmp(name, "opengles2") != 0) return false;
     const char *ext = NULL;
     EGLDisplay display = SDL_EGL_GetCurrentDisplay();
@@ -341,7 +341,7 @@ static void hw_size(const AVFrame *f, int *w, int *h) {
     *w = frames->width, *h = frames->height;
 }
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 // Imports a VAAPI surface's planes, exported as dma-bufs, into the two OpenGL ES textures of an NV12 texture.
 static bool show_vaapi(gs_video *v, const AVFrame *f) {
     const AVHWDeviceContext *dev = (const AVHWDeviceContext *)((const AVHWFramesContext *)f->hw_frames_ctx->data)->device_ref->data;
@@ -407,7 +407,7 @@ static bool show_d3d11(gs_video *v, const AVFrame *f) {
 
 static bool show(gs_video *v, const AVFrame *f) {
     switch (f->format) {
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
     case AV_PIX_FMT_VAAPI: return show_vaapi(v, f);
 #endif
 #if defined(_WIN32)

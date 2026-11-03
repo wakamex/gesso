@@ -238,21 +238,19 @@ pub fn build(b: *std.Build) void {
             for ([_][]const u8{ "AppKit", "Carbon", "ApplicationServices", "UserNotifications", "Security", "MediaPlayer" }) |f| mod.linkFramework(f, .{});
         },
         .linux => if (android)
-            mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_android.c", "gs_desk_unix.c", "gs_notify_none.c" }, .flags = flags })
+            mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_android.c", "gs_desk_android.c", "gs_desk_unix.c", "gs_notify_android.c" }, .flags = flags })
         else
             mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_linux.c", "gs_desk_unix.c", "gs_notify_linux.c", "gs_nowplaying_linux.c" }, .flags = flags }),
         else => {},
     }
     if (target.result.isGnuLibC() and target.result.os.versionRange().gnuLibCVersion().?.order(.{ .major = 2, .minor = 29, .patch = 0 }) == .lt)
         mod.addCSourceFile(.{ .file = b.path("src/gs_glibc_compat.c"), .flags = flags });
-    // FFmpeg is not configured for Android yet: there the video modules link, with no decoder.
-    const av = if (video and !android) addFfmpeg(b, target, macos_sdk) else null;
+    const av = if (video) addFfmpeg(b, target, macos_sdk, if (android) sdl_dep else null) else null;
     if (av) |a| {
         mod.linkLibrary(a.lib);
         for (a.include) |dir| mod.addIncludePath(dir);
         mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_video.c", "gs_aac.c", "gs_live.c", "gs_movie.c" }, .flags = flags });
     }
-    if (video and android) mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_video_none.c", "gs_live.c", "gs_movie.c" }, .flags = flags });
     // gs_sound plays AAC through gs_aac, where gesso has it.
     mod.addCSourceFile(.{ .file = b.path("src/gs_sound.c"), .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_HAVE_AAC"} else flags });
 
@@ -270,7 +268,17 @@ pub fn build(b: *std.Build) void {
     mod.addCSourceFile(.{ .file = b.path("src/gs_voice.c"), .flags = if (aec != null) flags ++ &[_][]const u8{"-DGS_HAVE_ECHO"} else flags });
 
     const lib = b.addLibrary(.{ .name = "gesso", .linkage = .static, .root_module = mod });
-    if (android) useNdk(lib, sdl_dep);
+    if (android) {
+        useNdk(lib, sdl_dep);
+        // What an app's Android build takes from gesso: the NDK's libc and libraries for its
+        // libmain.so, and the Java classes it compiles, SDL's and gesso's together.
+        b.addNamedLazyPath("android_libc_file", sdl_dep.namedLazyPath("android_libc_file"));
+        b.addNamedLazyPath("android_lib_dir", sdl_dep.namedLazyPath("android_lib_dir"));
+        const java = b.addWriteFiles();
+        _ = java.addCopyDirectory(sdl_dep.namedLazyPath("android_java"), "", .{});
+        _ = java.addCopyDirectory(b.path("android/java"), "", .{});
+        b.addNamedLazyPath("android_java", java.getDirectory());
+    }
     lib.installHeadersDirectory(b.path("src"), "", .{ .include_extensions = &.{".h"} });
     lib.installHeadersDirectory(b.path("vendor/stb"), "", .{ .include_extensions = &.{".h"} });
     lib.installLibraryHeaders(sdl);
@@ -520,15 +528,20 @@ fn addEchoCanceller(b: *std.Build, target: std.Build.ResolvedTarget, sdk: ?std.B
 // (ffmpeg/<target>/, made by ffmpeg/tools/import.sh). LGPL 2.1 or later, linked statically.
 const Ffmpeg = struct { lib: *std.Build.Step.Compile, include: []const std.Build.LazyPath };
 
-fn addFfmpeg(b: *std.Build, target: std.Build.ResolvedTarget, sdk: ?std.Build.LazyPath) ?Ffmpeg {
+fn addFfmpeg(b: *std.Build, target: std.Build.ResolvedTarget, sdk: ?std.Build.LazyPath, ndk: ?*std.Build.Dependency) ?Ffmpeg {
     const t = target.result;
+    const android = t.abi.isAndroid();
     const name, const sources = switch (t.os.tag) {
-        .linux => .{ "linux-x86_64", @embedFile("ffmpeg/linux-x86_64/sources.txt") },
+        .linux => if (!android) .{ "linux-x86_64", @embedFile("ffmpeg/linux-x86_64/sources.txt") } else switch (t.cpu.arch) {
+            .aarch64 => .{ "android-aarch64", @embedFile("ffmpeg/android-aarch64/sources.txt") },
+            .x86_64 => .{ "android-x86_64", @embedFile("ffmpeg/android-x86_64/sources.txt") },
+            else => @panic("-Dvideo: FFmpeg is configured for aarch64 and x86-64 Android"),
+        },
         .windows => .{ "windows-x86_64", @embedFile("ffmpeg/windows-x86_64/sources.txt") },
         .macos => .{ "macos-aarch64", @embedFile("ffmpeg/macos-aarch64/sources.txt") },
-        else => @panic("-Dvideo: FFmpeg is configured for Linux, Windows and macOS only"),
+        else => @panic("-Dvideo: FFmpeg is configured for Linux, Windows, macOS and Android only"),
     };
-    if ((t.os.tag == .macos) != (t.cpu.arch == .aarch64) or (t.os.tag != .macos and t.cpu.arch != .x86_64))
+    if (!android and ((t.os.tag == .macos) != (t.cpu.arch == .aarch64) or (t.os.tag != .macos and t.cpu.arch != .x86_64)))
         @panic("-Dvideo: FFmpeg is configured for x86-64 Linux and Windows and aarch64 macOS");
     const src = (b.lazyDependency("ffmpeg", .{}) orelse return null).path("");
     const gen = b.path(b.fmt("ffmpeg/{s}", .{name}));
@@ -541,14 +554,17 @@ fn addFfmpeg(b: *std.Build, target: std.Build.ResolvedTarget, sdk: ?std.Build.La
     mod.addIncludePath(src);
     var av_flags: std.ArrayList([]const u8) = .empty;
     av_flags.appendSlice(b.allocator, &.{ "-std=c17", "-DHAVE_AV_CONFIG_H", "-D_ISOC11_SOURCE", "-D_FILE_OFFSET_BITS=64", "-D_LARGEFILE_SOURCE", "-DPIC", "-fomit-frame-pointer", "-fno-math-errno", "-fno-signed-zeros", "-w" }) catch @panic("OOM");
+    // Hidden, as nothing outside the app uses them: the x86 assembly reaches FFmpeg's constant tables
+    // PC-relative, which a shared library (an Android app's libmain.so) allows only for hidden symbols.
+    av_flags.append(b.allocator, "-fvisibility=hidden") catch @panic("OOM");
     switch (t.os.tag) {
         .linux => av_flags.appendSlice(b.allocator, &.{ "-D_POSIX_C_SOURCE=200112", "-D_XOPEN_SOURCE=600" }) catch @panic("OOM"),
         .windows => av_flags.appendSlice(b.allocator, &.{ "-D_POSIX_C_SOURCE=200112", "-D_XOPEN_SOURCE=600", "-DWIN32_LEAN_AND_MEAN", "-U__STRICT_ANSI__" }) catch @panic("OOM"),
         else => av_flags.append(b.allocator, "-fno-common") catch @panic("OOM"),
     }
-    if (t.os.tag != .linux) mod.addIncludePath(src.path(b, "compat/stdbit"));
+    if (t.os.tag != .linux or android) mod.addIncludePath(src.path(b, "compat/stdbit"));
     if (t.os.tag == .macos) mod.addIncludePath(src.path(b, "compat/dispatch_semaphore"));
-    if (t.os.tag == .linux) {
+    if (t.os.tag == .linux and !android) {
         mod.addIncludePath(b.path("vendor"));
         mod.addCSourceFile(.{ .file = b.path("ffmpeg/va_loader.c"), .flags = &.{"-std=c11"} });
     }
@@ -580,5 +596,7 @@ fn addFfmpeg(b: *std.Build, target: std.Build.ResolvedTarget, sdk: ?std.Build.La
     }
     // Apps reach libavcodec's headers through gesso: the release's, its generated avconfig.h, and libva's.
     const include = b.allocator.dupe(std.Build.LazyPath, &.{ gen, src, b.path("vendor") }) catch @panic("OOM");
-    return .{ .lib = b.addLibrary(.{ .name = "avcodec", .linkage = .static, .root_module = mod }), .include = include };
+    const lib = b.addLibrary(.{ .name = "avcodec", .linkage = .static, .root_module = mod });
+    if (ndk) |d| useNdk(lib, d);
+    return .{ .lib = lib, .include = include };
 }

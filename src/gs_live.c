@@ -454,7 +454,6 @@ static int decode_video(void *user) {
 // ---- The player ----
 
 gs_live *gs_live_start(const gs_live_config *c) {
-    if (!gs_video_library()) return NULL;  // (no decoder on this system)
     gs_live *l = calloc(1, sizeof *l);
     if (!l) return NULL;
     l->c = *c;

@@ -146,6 +146,31 @@ static void *store_get(const char *path, size_t *len) { return NULL; }
 static void store_remove(const char *path) {}
 #endif
 
+#ifdef __ANDROID__
+#include "gs_android.h"
+
+// Android: the file holds the secret sealed with a Keystore key (android/java/dev/wakamex/gesso/Secret.java),
+// after these four bytes. Calls Secret.seal or Secret.open; NULL when the Keystore cannot be used.
+static const char SEALED[4] = "GSK1";
+
+static void *keystore(const char *method, const void *data, size_t len, size_t *out_len) {
+    static jclass secret;
+    JNIEnv *env = SDL_GetAndroidJNIEnv();
+    if (!secret && !(secret = gs_android_class(env, "dev.wakamex.gesso.Secret"))) return NULL;
+    jbyteArray in = (*env)->NewByteArray(env, (jsize)len);
+    if (!in) return gs_android_threw(env), NULL;
+    (*env)->SetByteArrayRegion(env, in, 0, (jsize)len, data);
+    jbyteArray out = (*env)->CallStaticObjectMethod(env, secret, (*env)->GetStaticMethodID(env, secret, method, "([B)[B"), in);
+    char *result = NULL;
+    if (!gs_android_threw(env) && out) {
+        *out_len = (size_t)(*env)->GetArrayLength(env, out);
+        if ((result = SDL_malloc(*out_len + 1))) (*env)->GetByteArrayRegion(env, out, 0, (jsize)*out_len, (jbyte *)result), result[*out_len] = 0;
+    }
+    (*env)->DeleteLocalRef(env, in), (*env)->DeleteLocalRef(env, out);
+    return result;
+}
+#endif
+
 // Writes to a sibling file and renames it over the target, creating it readable only by the owner.
 static bool replace_file(const char *path, const void *data, size_t len) {
     char tmp[4096];
@@ -180,6 +205,14 @@ bool gs_secret_save(const char *path, const void *data, size_t len) {
     LocalFree(out.pbData);
     protected_last = ok;
     return ok;
+#elif defined(__ANDROID__)
+    size_t n = 0;
+    char *body = keystore("seal", data, len, &n), *file = body ? SDL_malloc(sizeof SEALED + n) : NULL;
+    if (file) memcpy(file, SEALED, sizeof SEALED), memcpy(file + sizeof SEALED, body, n);
+    SDL_free(body);
+    protected_last = file && replace_file(path, file, sizeof SEALED + n);
+    SDL_free(file);
+    return protected_last || replace_file(path, data, len);  // (a Keystore that cannot be used: a plain file)
 #else
     if ((protected_last = store_put(path, data, len))) return SDL_RemovePath(path), true;  // (no file holds it now)
     return replace_file(path, data, len);
@@ -210,6 +243,14 @@ void *gs_secret_load(const char *path, size_t *len) {
     protected_last = text != NULL;
     return text;
 #else
+#ifdef __ANDROID__
+    if (n >= sizeof SEALED && !memcmp(data, SEALED, sizeof SEALED)) {
+        char *plain = keystore("open", (char *)data + sizeof SEALED, n - sizeof SEALED, &n);
+        SDL_free(data);
+        if (plain && len) *len = n;
+        return protected_last = plain != NULL, plain;
+    }
+#endif
     if (len) *len = n;
     return data;  // (SDL_LoadFile adds a terminating zero)
 #endif

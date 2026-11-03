@@ -25,8 +25,7 @@ typedef struct gs_movie gs_movie;
 
 // Opens a movie from its file's bytes, to be drawn with `r` and heard at the mix's rate
 // (gs_mix_rate()). The bytes are read as it plays and must stay as they are until gs_movie_free.
-// NULL when they are not a file it plays, or where gesso has no decoder (Android, for now). It opens
-// paused at its start, with nothing decoded.
+// NULL when they are not a file it plays. It opens paused at its start, with nothing decoded.
 gs_movie *gs_movie_open(const void *data, size_t len, SDL_Renderer *r, int rate);
 void gs_movie_free(gs_movie *m);  // remove it from the mix first
 

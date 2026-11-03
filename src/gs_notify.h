@@ -15,7 +15,15 @@
 //   dropped. An ad hoc signature is enough.
 // - Linux: a session D-Bus and a notification service on it, which every desktop has and a bare
 //   session may not. libdbus is opened at run time, so nothing is needed to build.
-// - Android: not yet; gs_notify_init returns false.
+// - Android: the NotificationManager, through gesso's Java (gs_android.h), on a channel named for the
+//   app. The manifest declares the permission, which Android 13 and later ask the user for once,
+//   at gs_notify_init (notifications shown before the answer are dropped), and the activity a
+//   click opens, which hands the tag over and brings the app forward:
+//     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+//     <activity android:name="dev.wakamex.gesso.NotifyActivity" android:exported="false"
+//               android:theme="@android:style/Theme.Translucent.NoTitleBar"
+//               android:excludeFromRecents="true" android:noHistory="true" android:taskAffinity="" />
+//   Without the activity a click opens the app and the tag is lost. The small icon is the app's.
 #pragma once
 #include <stdbool.h>
 

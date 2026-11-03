@@ -1,10 +1,10 @@
 // H.264 video: access units in, decoded frames shown on an SDL texture when a clock reaches them.
 // Hardware decoding is used where the system offers it, with frames handed to the renderer without a
 // copy through the CPU: VAAPI through EGL on Linux (SDL's opengles2 renderer), Direct3D 11 on Windows
-// (direct3d11), VideoToolbox on macOS (metal). Elsewhere, or when the device refuses the stream,
-// libavcodec decodes in software. Needs gesso built with -Dvideo. One case is found only once frames
-// arrive: a renderer that cannot take the hardware's frames (one drawing in software). gs_video_info
-// then says so, and decoders made afterwards decode in software.
+// (direct3d11), VideoToolbox on macOS (metal). Elsewhere (Android, for now), or when the device
+// refuses the stream, libavcodec decodes in software. Needs gesso built with -Dvideo. One case is
+// found only once frames arrive: a renderer that cannot take the hardware's frames (one drawing in
+// software). gs_video_info then says so, and decoders made afterwards decode in software.
 //
 // One thread decodes (gs_video_decode, gs_video_flush) while the rendering thread shows frames
 // (gs_video_frame); decoded frames wait in a short queue between them, and the decoder blocks while it is full.
@@ -59,6 +59,4 @@ typedef struct {
 
 gs_video_info gs_video_get_info(gs_video *v);
 
-// The FFmpeg release decoding video, such as "9.0.2", for an about screen. NULL where gesso has no
-// decoder for the system (Android, for now): there gs_video_new, gs_movie_open and gs_live_start return NULL.
-const char *gs_video_library(void);
+const char *gs_video_library(void);  // the FFmpeg release decoding video, such as "9.0.2", for an about screen

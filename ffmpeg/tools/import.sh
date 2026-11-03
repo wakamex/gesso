@@ -1,13 +1,17 @@
 #!/bin/sh
 # Regenerates gesso's FFmpeg build files from an FFmpeg release tarball:
-#   ffmpeg/tools/import.sh ffmpeg-9.0.2.tar.xz
+#   ffmpeg/tools/import.sh ffmpeg-9.0.2.tar.xz [TARGET...]
 # For each target it runs FFmpeg's configure with zig cc, builds once with make to learn which
 # sources the trimmed configuration compiles, and copies the generated files and that source list
 # into ffmpeg/<target>/. build.zig then compiles the release's sources with those files and no
 # configure step. Needs zig, make, nasm and llvm-nm on a Linux host, and libva for configure's
-# link checks.
+# link checks. The Android targets need ANDROID_NDK set to an NDK, whose clang runs configure. Naming
+# targets (linux-x86_64, android-aarch64, ...) imports only those.
 set -eu
 tarball=$(realpath "$1")
+shift
+targets=" $* "
+wanted() { [ "$targets" = "  " ] || case $targets in *" $1 "*) true;; *) false;; esac; }
 gesso=$(cd "$(dirname "$0")/../.." && pwd)
 tools=$gesso/ffmpeg/tools
 work=$(mktemp -d)
@@ -45,17 +49,22 @@ build_and_copy() {  # name
     done) > "$out/sources.txt"
 }
 
+if wanted linux-x86_64; then
 configure_target linux-x86_64 --arch=x86_64 --target-os=linux --cc="zig cc -target x86_64-linux-gnu.2.27" \
     --nm=nm --x86asmexe=nasm --enable-pic --enable-pthreads --enable-vaapi --enable-hwaccel=h264_vaapi
 build_and_copy linux-x86_64
+fi
 
+if wanted windows-x86_64; then
 configure_target windows-x86_64 --arch=x86_64 --target-os=mingw32 --cc="$tools/zigcc-windows" \
     --nm=nm --x86asmexe=nasm --enable-w32threads --enable-d3d11va --enable-hwaccel=h264_d3d11va,h264_d3d11va2
 build_and_copy windows-x86_64
+fi
 
 # VideoToolbox's configure checks need the macOS SDK, which only a Mac has, so the macOS
 # configuration is generated without it and VideoToolbox is switched on afterwards, as
 # --enable-videotoolbox would with a current SDK.
+if wanted macos-aarch64; then
 configure_target macos-aarch64 --arch=aarch64 --target-os=darwin --cc="$tools/zigcc-macos" \
     --nm=llvm-nm --enable-pic --enable-pthreads
 build_and_copy macos-aarch64
@@ -63,5 +72,18 @@ out=$gesso/ffmpeg/macos-aarch64
 sed -i -E 's/#define (CONFIG_VIDEOTOOLBOX|HAVE_KCMVIDEOCODECTYPE_[A-Z0-9_]+|HAVE_KCVPIXELFORMATTYPE_[A-Z0-9_]+|HAVE_KCVIMAGEBUFFER[A-Z0-9_]+) 0/#define \1 1/' "$out/config.h"
 sed -i 's/#define CONFIG_H264_VIDEOTOOLBOX_HWACCEL 0/#define CONFIG_H264_VIDEOTOOLBOX_HWACCEL 1/' "$out/config_components.h"
 printf '%s\n' libavcodec/videotoolbox.c libavutil/hwcontext_videotoolbox.c >> "$out/sources.txt"
+fi
+
+# Android at API level 24, the lowest gesso's video modules run on: software decoding, which any
+# renderer shows.
+ndk_bin=${ANDROID_NDK:-/nonexistent}/toolchains/llvm/prebuilt/linux-x86_64/bin
+for arch in aarch64 x86_64; do
+    wanted android-$arch || continue
+    [ -d "$ndk_bin" ] || { echo "android-$arch: set ANDROID_NDK"; exit 1; }
+    asm=; [ $arch = x86_64 ] && asm=--x86asmexe=nasm
+    configure_target android-$arch --arch=$arch --target-os=android --cc="$ndk_bin/$arch-linux-android24-clang" \
+        --nm="$ndk_bin/llvm-nm" $asm --enable-pic --enable-pthreads
+    build_and_copy android-$arch
+done
 
 echo "$(basename "$tarball") imported into $gesso/ffmpeg"

@@ -36,5 +36,5 @@
             .lazy = true,
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "src", "vendor", "ffmpeg", "tools", "LICENSE", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "android", "src", "vendor", "ffmpeg", "tools", "LICENSE", "README.md" },
 }
