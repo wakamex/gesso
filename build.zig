@@ -237,17 +237,22 @@ pub fn build(b: *std.Build) void {
             for ([_][]const u8{ "gs_desk_macos.m", "gs_notify_macos.m", "gs_nowplaying_macos.m" }) |f| mod.addCSourceFile(.{ .file = b.path(b.fmt("src/{s}", .{f})), .flags = &.{ "-fobjc-arc", "-Wall", "-Wextra", "-Wno-unused-parameter" } });
             for ([_][]const u8{ "AppKit", "Carbon", "ApplicationServices", "UserNotifications", "Security", "MediaPlayer" }) |f| mod.linkFramework(f, .{});
         },
-        .linux => if (!android) mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_linux.c", "gs_desk_unix.c", "gs_notify_linux.c", "gs_nowplaying_linux.c" }, .flags = flags }),
+        .linux => if (android)
+            mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{"gs_notify_none.c"}, .flags = flags })
+        else
+            mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_desk_linux.c", "gs_desk_unix.c", "gs_notify_linux.c", "gs_nowplaying_linux.c" }, .flags = flags }),
         else => {},
     }
     if (target.result.isGnuLibC() and target.result.os.versionRange().gnuLibCVersion().?.order(.{ .major = 2, .minor = 29, .patch = 0 }) == .lt)
         mod.addCSourceFile(.{ .file = b.path("src/gs_glibc_compat.c"), .flags = flags });
-    const av = if (video) addFfmpeg(b, target, macos_sdk) else null;
+    // FFmpeg is not configured for Android yet: there the video modules link, with no decoder.
+    const av = if (video and !android) addFfmpeg(b, target, macos_sdk) else null;
     if (av) |a| {
         mod.linkLibrary(a.lib);
         for (a.include) |dir| mod.addIncludePath(dir);
         mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_video.c", "gs_aac.c", "gs_live.c", "gs_movie.c" }, .flags = flags });
     }
+    if (video and android) mod.addCSourceFiles(.{ .root = b.path("src"), .files = &.{ "gs_video_none.c", "gs_live.c", "gs_movie.c" }, .flags = flags });
     // gs_sound plays AAC through gs_aac, where gesso has it.
     mod.addCSourceFile(.{ .file = b.path("src/gs_sound.c"), .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_HAVE_AAC"} else flags });
 

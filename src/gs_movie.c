@@ -198,7 +198,7 @@ gs_movie *gs_movie_open(const void *data, size_t len, SDL_Renderer *r, int rate)
     gs_movie *m = SDL_calloc(1, sizeof *m);
     if (!m) return NULL;
     m->data = data, m->len = len, m->r = r;
-    if (!data || !read_track(m)) return gs_movie_free(m), NULL;
+    if (!data || !gs_video_library() || !read_track(m)) return gs_movie_free(m), NULL;
     m->sound = gs_sound_open(data, len, rate);  // (its AAC track, if it has one)
     return m;
 }

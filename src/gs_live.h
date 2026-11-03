@@ -49,7 +49,7 @@ typedef struct {
     gs_video_info video;      // with video
 } gs_live_info;
 
-gs_live *gs_live_start(const gs_live_config *c);  // NULL if it cannot start (no mixer, no decoder)
+gs_live *gs_live_start(const gs_live_config *c);  // NULL if it cannot start (no mixer, no decoder, as on Android for now)
 void gs_live_stop(gs_live *l);                     // stops and frees; waits for its threads
 gs_live_info gs_live_get_info(gs_live *l);
 // The rendition playing (adaptive): false for a media playlist, or before the master is read.

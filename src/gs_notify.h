@@ -15,6 +15,7 @@
 //   dropped. An ad hoc signature is enough.
 // - Linux: a session D-Bus and a notification service on it, which every desktop has and a bare
 //   session may not. libdbus is opened at run time, so nothing is needed to build.
+// - Android: not yet; gs_notify_init returns false.
 #pragma once
 #include <stdbool.h>
 

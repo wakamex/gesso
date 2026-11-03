@@ -7,9 +7,10 @@
 // - Linux: the desktop's Secret Service (GNOME Keyring, KDE's wallet, KeePassXC), through libsecret
 //   opened at run time. It may ask the user to unlock or create a keyring the first time.
 // Where there is no such place (a Linux session without a Secret Service, a Mac's keychain locked
-// from a remote shell), the secret is a plain file readable only by its owner (mode 0600), as SSH
-// keys are. A secret saved that way before is still read, and moves to the system's place the next
-// time it is saved. Writes replace the secret whole, so a crash leaves the old one or the new.
+// from a remote shell, Android for now), the secret is a plain file readable only by its owner
+// (mode 0600), as SSH keys are. A secret saved that way before is still read, and moves to the
+// system's place the next time it is saved. Writes replace the secret whole, so a crash leaves the
+// old one or the new.
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>

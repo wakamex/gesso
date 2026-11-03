@@ -73,7 +73,7 @@ static void store_remove(const char *path) {
     CFRelease(q);
 }
 
-#elif !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#elif !defined(_WIN32) && !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
 
 // libsecret's simple calls, which take a schema and the attributes that name an item.
 typedef struct { const char *name; int flags; struct { const char *name; int type; } attributes[32]; int reserved; void *more[7]; } secret_schema;

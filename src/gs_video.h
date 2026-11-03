@@ -59,4 +59,6 @@ typedef struct {
 
 gs_video_info gs_video_get_info(gs_video *v);
 
-const char *gs_video_library(void);  // the FFmpeg release decoding video, such as "9.0.2", for an about screen
+// The FFmpeg release decoding video, such as "9.0.2", for an about screen. NULL where gesso has no
+// decoder for the system (Android, for now): there gs_video_new, gs_movie_open and gs_live_start return NULL.
+const char *gs_video_library(void);
