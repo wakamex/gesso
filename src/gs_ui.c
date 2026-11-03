@@ -287,9 +287,17 @@ float gs_ui_scale(const gs_ui *ui) { return ui->scale; }
 void gs_ui_set_zoom(gs_ui *ui, float zoom) { ui->zoom = zoom > 0.01f ? zoom : 1; }
 float gs_ui_zoom(const gs_ui *ui) { return ui->zoom; }
 
+// Window coordinates per point: the display's content scale (SDL_GetWindowDisplayScale over the
+// window's pixel density, such as 1.5 on Windows at 150% and the screen's density on Android) times
+// the app's zoom. Read as each event arrives, so a window moved to another display follows at once.
+static float window_units(const gs_ui *ui) {
+    float display = SDL_GetWindowDisplayScale(ui->win), density = SDL_GetWindowPixelDensity(ui->win);
+    return (display > 0 && density > 0 ? display / density : 1) * ui->zoom;
+}
+
 // Where the input method's candidates go, told in window coordinates.
 static void text_input_area(gs_ui *ui, gs_rect r, float cursor) {
-    float z = ui->zoom;
+    float z = window_units(ui);
     SDL_Rect area = { (int)(r.x * z), (int)(r.y * z), (int)(r.w * z), (int)(r.h * z) };
     SDL_SetTextInputArea(ui->win, &area, (int)(cursor * z));
 }
@@ -320,12 +328,12 @@ bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
     if (to && to != SDL_GetWindowID(ui->win)) return false;  // another window's
     if (ui->place && gs_window_state_track(&ui->placed, ui->win, e)) ui->placed_at = SDL_max(SDL_GetTicks(), 1);
     switch (e->type) {
-    case SDL_EVENT_MOUSE_MOTION: p->x = e->motion.x / ui->zoom, p->y = e->motion.y / ui->zoom; return false;
+    case SDL_EVENT_MOUSE_MOTION: p->x = e->motion.x / window_units(ui), p->y = e->motion.y / window_units(ui); return false;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
-        if (e->button.button == SDL_BUTTON_LEFT) p->down = p->pressed = true, p->clicks = e->button.clicks, p->x = e->button.x / ui->zoom, p->y = e->button.y / ui->zoom;
+        if (e->button.button == SDL_BUTTON_LEFT) p->down = p->pressed = true, p->clicks = e->button.clicks, p->x = e->button.x / window_units(ui), p->y = e->button.y / window_units(ui);
         return false;
     case SDL_EVENT_MOUSE_BUTTON_UP:
-        if (e->button.button == SDL_BUTTON_LEFT) p->down = false, p->released = true, p->x = e->button.x / ui->zoom, p->y = e->button.y / ui->zoom;
+        if (e->button.button == SDL_BUTTON_LEFT) p->down = false, p->released = true, p->x = e->button.x / window_units(ui), p->y = e->button.y / window_units(ui);
         return false;
     case SDL_EVENT_MOUSE_WHEEL: p->wheel += e->wheel.y; return false;
     case SDL_EVENT_WINDOW_MOUSE_LEAVE: p->x = p->y = OUTSIDE; return false;  // nothing is under a pointer that has left
@@ -374,8 +382,9 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     int ww, wh, pw, ph;
     SDL_GetWindowSize(ui->win, &ww, &wh);
     SDL_GetCurrentRenderOutputSize(ui->r, &pw, &ph);
-    ui->scale = (ww > 0 ? (float)pw / ww : 1) * ui->zoom;  // pixels per point, from the window's pixel density and the app's zoom
-    ui->area = (gs_rect){ 0, 0, (float)ww / ui->zoom, (float)wh / ui->zoom };
+    const float units = window_units(ui);
+    ui->scale = (ww > 0 ? (float)pw / ww : 1) * units;  // pixels per point: the window's pixel density, the display's content scale and the app's zoom
+    ui->area = (gs_rect){ 0, 0, (float)ww / units, (float)wh / units };
     ui->frame++;
     ui->now = SDL_GetTicks();
     bool down = ui->pending.down;

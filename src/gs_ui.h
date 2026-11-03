@@ -1,8 +1,12 @@
 // An immediate-mode interface for apps: layout by cutting rectangles, a few widgets, hit testing,
 // one floating layer for dropdowns, menus and tooltips, a Tab order with a visible focus mark, and
 // the window's state between runs.
-// Everything is in points, which gs_ui turns into the display's pixels (SDL_GetWindowDisplayScale),
-// so the interface keeps its size across displays and text is drawn at full resolution.
+// Everything is in points, which gs_ui turns into the display's pixels (SDL_GetWindowDisplayScale:
+// the window's pixel density times the display's content scale, which carries Windows' 125% or 150%
+// and an Android screen's density), so a point is about the same size on every display and text is
+// drawn at full resolution. A window's size given to SDL_CreateWindow is in window coordinates, which
+// are pixels on Windows and X11: a window meant to be W by H points there is W and H times
+// SDL_GetDisplayContentScale.
 //
 // Each frame: pass every event to gs_ui_event, then call gs_ui_begin, lay out and draw with the
 // functions below, and gs_ui_end. Widgets that keep state between frames (a text field's cursor, a
@@ -85,9 +89,9 @@ int gs_ui_wait_ms(const gs_ui *ui);
 // progress bar, a clock): gs_ui_wait_ms after this frame is no more than that.
 void gs_ui_wake(gs_ui *ui, int ms);
 float gs_ui_scale(const gs_ui *ui);  // pixels per point
-// Scales the whole interface by `zoom` on top of the display's pixel density (1, the default, for
-// none): text, controls, their hit areas and the window's area in points all follow, so a layout
-// made for one size fits another, or the user can make everything larger. It takes effect at the
+// Scales the whole interface by `zoom` on top of the display's scale (1, the default, for none):
+// text, controls, their hit areas and the window's area in points all follow, so a layout made for
+// one size fits another, or the user can make everything larger. It takes effect at the
 // next gs_ui_begin, which then returns the window divided by it; events handed in after the call
 // are read at it. A layout of fixed size W by H fits the window, letterboxed, with zoom
 // min(window_w / W, window_h / H) on the window's own size in points (zoom 1), centred by
