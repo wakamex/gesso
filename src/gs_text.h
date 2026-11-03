@@ -10,6 +10,8 @@
 typedef struct gs_font gs_font;
 typedef struct gs_glyphs gs_glyphs;
 
+// The font file mapped into memory. On Android a path that is not absolute is read whole from the
+// app's files or its APK's assets, where SDL_GetBasePath() ("./") points.
 gs_font *gs_font_load(const char *path);
 void gs_font_free(gs_font *f);
 int gs_font_glyph(const gs_font *f, uint32_t codepoint);  // 0 when the font lacks it
@@ -66,7 +68,10 @@ gs_fontset *gs_fontset_system(void);  // the platform's UI font with fallbacks f
 // the Noto fonts Fedora installs are variable fonts and are drawn at exactly the weight asked for,
 // fallback scripts included. Windows has Segoe UI as files, regular, semibold and bold, so 500 is
 // drawn regular; a Linux system with Noto as separate files gets the file of that weight where it is
-// installed, and otherwise DejaVu's bold for 600 and up and the regular face below that.
+// installed, and otherwise DejaVu's bold for 600 and up and the regular face below that. On Android
+// (API level 29 and up) each set is what the system's font matcher picks for the family, weight and
+// style, then the faces it draws other scripts and emoji with, so a phone maker's own fonts count;
+// below API level 29 it is Roboto's files and AOSP's fallbacks.
 gs_fontset *gs_fontset_system_weight(int weight);
 // The system's monospace face first, then the same fallbacks: SF Mono, Consolas (regular, and bold
 // for 600 and up), Noto Sans Mono or the first of Adwaita Mono, Liberation Mono and DejaVu Sans Mono.

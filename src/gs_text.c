@@ -18,11 +18,18 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+#if defined(__ANDROID__) && __ANDROID_API__ >= 29
+typedef struct AFont AFont;  // (the NDK's headers name these only as structs when included from C)
+typedef struct AFontMatcher AFontMatcher;
+#include <android/font.h>
+#include <android/font_matcher.h>
+#endif
 
 struct gs_font {
     stbtt_fontinfo info;
     void *data;
-    size_t len;  // of the mapping (or of the file read into memory, on the web)
+    size_t len;  // of the mapping, or of the file read into memory
+    bool read;   // read into memory (on the web, and from an Android app's assets) rather than mapped
     kbts_font kb;  // the shaper's copy of the tables it needs (a few hundred KB), made on first shaping
     bool kb_tried;
     // Colour glyph tables, as offsets into the data (0 when absent): layered outlines (COLR's version 0
@@ -74,8 +81,11 @@ static bool init_bitmap_font(stbtt_fontinfo *info, unsigned char *d, size_t len,
 }
 
 // The file mapped read-only rather than read in: a system font can be tens of MB (a CJK font's whole
-// character set), and only the pages holding the glyphs drawn are ever read.
-static void *font_map(const char *path, size_t *len) {
+// character set), and only the pages holding the glyphs drawn are ever read. *read says it was read in
+// instead: on the web, and on Android for a path that is not absolute, which SDL finds in the app's
+// files or its APK's assets (SDL_GetBasePath() there is "./", the assets).
+static void *font_map(const char *path, size_t *len, bool *read) {
+    *read = false;
 #if defined(_WIN32)
     wchar_t wide[1024];
     if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, 1024)) return NULL;
@@ -90,8 +100,12 @@ static void *font_map(const char *path, size_t *len) {
     *len = (size_t)size.QuadPart;
     return data;
 #elif defined(__EMSCRIPTEN__)
+    *read = true;
     return SDL_LoadFile(path, len);
 #else
+#if defined(__ANDROID__)
+    if (path[0] != '/') return *read = true, SDL_LoadFile(path, len);
+#endif
     int fd = open(path, O_RDONLY);
     if (fd < 0) return NULL;
     struct stat st;
@@ -102,29 +116,31 @@ static void *font_map(const char *path, size_t *len) {
 #endif
 }
 
-static void font_unmap(void *data, size_t len) {
+static void font_unmap(void *data, size_t len, bool read) {
+    if (read) {
+        SDL_free(data);
+        return;
+    }
 #if defined(_WIN32)
     (void)len;
     UnmapViewOfFile(data);
-#elif defined(__EMSCRIPTEN__)
-    (void)len;
-    SDL_free(data);
-#else
+#elif !defined(__EMSCRIPTEN__)
     munmap(data, len);
 #endif
 }
 
 gs_font *gs_font_load(const char *path) {
     size_t len;
-    void *data = font_map(path, &len);
+    bool read;
+    void *data = font_map(path, &len, &read);
     if (!data) return NULL;
     gs_font *f = calloc(1, sizeof *f);
-    f->data = data, f->len = len;
+    f->data = data, f->len = len, f->read = read;
     int start = len >= 12 ? stbtt_GetFontOffsetForIndex(data, 0) : -1;
     bool bitmap_only = start >= 0 && !find_table(data, len, start, "glyf") && !find_table(data, len, start, "CFF ") &&
                        (find_table(data, len, start, "CBDT") || find_table(data, len, start, "sbix"));
     if (start < 0 || !(bitmap_only ? init_bitmap_font(&f->info, data, len, start) : stbtt_InitFont(&f->info, data, start))) {
-        font_unmap(data, len);
+        font_unmap(data, len, read);
         free(f);
         return NULL;
     }
@@ -140,7 +156,7 @@ void gs_font_free(gs_font *f) {
     if (!f) return;
     free(f->coords);
     if (kbts_FontIsValid(&f->kb)) kbts_FreeFont(&f->kb);
-    font_unmap(f->data, f->len);
+    font_unmap(f->data, f->len, f->read);
     free(f);
 }
 
@@ -906,6 +922,20 @@ static void add_in(gs_fontset *fs, const char *dir, const char *name) {
     gs_fontset_add(fs, path);
 }
 
+#if defined(__ANDROID__) && __ANDROID_API__ >= 29
+// The file Android's font matcher draws `text` (UTF-16) with in a family, added once.
+static void add_match(gs_fontset *fs, AFontMatcher *fm, const char *family, const uint16_t *text, uint32_t len) {
+    uint32_t run;
+    AFont *font = AFontMatcher_match(fm, family, text, len, &run);
+    if (!font) return;
+    const char *path = AFont_getFontFilePath(font);
+    bool known = false;
+    for (int i = 0; i < fs->n && !known; i++) known = !SDL_strcmp(fs->path[i], path);
+    if (!known) gs_fontset_add(fs, path);
+    AFont_close(font);
+}
+#endif
+
 // The system's fonts: its interface face (or a monospace one) at a weight first, then its fonts for
 // other scripts and emoji. A face is a file of that weight where the system has one, and a variable
 // font set to it otherwise.
@@ -937,6 +967,37 @@ static gs_fontset *system_fonts(int weight, bool mono, bool italic) {
                                          "/System/Library/Fonts/Supplemental/GeezaPro.ttc", "/System/Library/Fonts/Kohinoor.ttc",
                                          "/System/Library/Fonts/Supplemental/Arial Unicode.ttf" };
     for (size_t i = 0; i < sizeof paths / sizeof *paths; i++) gs_fontset_add(fs, paths[i]);
+#elif defined(__ANDROID__)
+    (void)bold, (void)semi, (void)medium;
+#if __ANDROID_API__ >= 29
+    // What Android's own font matcher picks, so a phone maker's fonts count: the face of the family at
+    // the weight, then the faces it draws other scripts and emoji with.
+    AFontMatcher *fm = AFontMatcher_create();
+    AFontMatcher_setStyle(fm, (uint16_t)weight, italic);
+    static const uint16_t latin[] = { 'a' };
+    if (mono) add_match(fs, fm, "monospace", latin, 1);
+    add_match(fs, fm, "sans-serif", latin, 1);
+    AFontMatcher_setStyle(fm, 400, false);
+    static const uint16_t samples[][2] = {
+        { 0xD83D, 0xDE00 },  // an emoji
+        { 0x4E2D }, { 0x3042 }, { 0xD55C },  // Chinese, Japanese kana, Korean
+        { 0x0639 }, { 0x05D0 }, { 0x0915 }, { 0x0995 }, { 0x0E01 }, { 0x0BA4 },  // Arabic, Hebrew, Devanagari, Bengali, Thai, Tamil
+        { 0x0531 }, { 0x10D0 }, { 0x1200 }, { 0x1780 }, { 0x1000 },  // Armenian, Georgian, Ethiopic, Khmer, Myanmar
+        { 0x2605 }, { 0x2192 },  // symbols, arrows
+    };
+    for (size_t i = 0; i < sizeof samples / sizeof *samples; i++) add_match(fs, fm, "sans-serif", samples[i], samples[i][1] ? 2 : 1);
+    AFontMatcher_destroy(fm);
+#else
+    if (mono) gs_fontset_add(fs, "/system/fonts/DroidSansMono.ttf");
+    if (italic) gs_fontset_add(fs, bold || semi ? "/system/fonts/Roboto-BoldItalic.ttf" : "/system/fonts/Roboto-Italic.ttf");
+    if (bold || semi) gs_fontset_add(fs, "/system/fonts/Roboto-Bold.ttf");
+    else if (medium) gs_fontset_add(fs, "/system/fonts/Roboto-Medium.ttf");
+    static const char *const paths[] = { "/system/fonts/Roboto-Regular.ttf", "/system/fonts/NotoColorEmoji.ttf", "/system/fonts/NotoSansCJK-Regular.ttc",
+                                         "/system/fonts/NotoNaskhArabic-Regular.ttf", "/system/fonts/NotoSansHebrew-Regular.ttf",
+                                         "/system/fonts/NotoSansDevanagari-Regular.ttf", "/system/fonts/NotoSansThai-Regular.ttf",
+                                         "/system/fonts/DroidSansFallback.ttf" };
+    for (size_t i = 0; i < sizeof paths / sizeof *paths; i++) gs_fontset_add(fs, paths[i]);
+#endif
 #else
     // Noto's variable fonts take any weight (Fedora); elsewhere a file of the weight, where it is installed.
     const char *style = bold ? "Bold" : semi ? "SemiBold" : medium ? "Medium" : "Regular";
