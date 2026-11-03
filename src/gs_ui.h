@@ -75,7 +75,11 @@ gs_glyphs *gs_ui_glyphs(gs_ui *ui);
 // True when the interface took the event (text typed into a focused field, say). Events of another
 // window are left alone, and a pointer that leaves the window is over nothing in it.
 bool gs_ui_event(gs_ui *ui, const SDL_Event *e);
-gs_rect gs_ui_begin(gs_ui *ui);  // the window, in points
+// The window's safe area, in points (SDL_GetWindowSafeArea): the whole window on a desktop, and clear
+// of the status and navigation bars, a notch and rounded corners on a phone. Lay out from its x and y,
+// which are 0 only where nothing covers the window's top left; what lies outside it is the app's
+// clear colour.
+gs_rect gs_ui_begin(gs_ui *ui);
 void gs_ui_end(gs_ui *ui);
 // Milliseconds until the interface wants to be drawn again on its own (a blinking cursor, a tooltip
 // about to show), or -1 when it waits for events; for apps that draw only when something changes.

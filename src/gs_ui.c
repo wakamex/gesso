@@ -103,7 +103,8 @@ struct gs_ui {
     gs_ui_style style;
     float scale, opacity;
     float zoom;              // points to window coordinates: the app's own scale on top of the display's
-    gs_rect area;
+    gs_rect area;            // the window's safe area, in points: what gs_ui_begin returns
+    gs_rect window;          // the whole window, in points
     uint64_t frame, now;
     input pending, in;
     bool taken[KEYS];
@@ -384,7 +385,12 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     SDL_GetCurrentRenderOutputSize(ui->r, &pw, &ph);
     const float units = window_units(ui);
     ui->scale = (ww > 0 ? (float)pw / ww : 1) * units;  // pixels per point: the window's pixel density, the display's content scale and the app's zoom
-    ui->area = (gs_rect){ 0, 0, (float)ww / units, (float)wh / units };
+    // Within the safe area, clear of the system's bars, a notch and rounded corners (all of the
+    // window on a desktop); the app's clear fills the rest.
+    SDL_Rect safe;
+    if (!SDL_GetWindowSafeArea(ui->win, &safe) || safe.w <= 0 || safe.h <= 0) safe = (SDL_Rect){ 0, 0, ww, wh };
+    ui->window = (gs_rect){ 0, 0, (float)ww / units, (float)wh / units };
+    ui->area = (gs_rect){ (float)safe.x / units, (float)safe.y / units, (float)safe.w / units, (float)safe.h / units };
     ui->frame++;
     ui->now = SDL_GetTicks();
     bool down = ui->pending.down;
@@ -582,7 +588,7 @@ float gs_ui_text_wrapped(gs_ui *ui, gs_rect r, const char *text, float size, SDL
     float lh = gs_ui_line_height(ui, size);
     c = ink(ui, c);
     int first = r.y < 0 ? (int)(-r.y / lh) : 0;  // (only the lines on screen are drawn)
-    for (int i = first; i < w->count && r.y + i * lh < ui->area.h; i++)
+    for (int i = first; i < w->count && r.y + i * lh < ui->area.y + ui->area.h; i++)
         wrapped_line(ui, text, &w->lines[i], size, r.x, r.w, r.y + i * lh, lh, c);
     return w->count * lh;
 }
@@ -760,7 +766,7 @@ static float rich_select(gs_ui *ui, gs_rect r, const char *id, const rich *t, SD
     int lo = SDL_min(*from, *to), hi = SDL_max(*from, *to);
     c = ink(ui, c);
     int first = r.y < 0 ? (int)(-r.y / lh) : 0;  // (only the lines on screen are drawn)
-    for (int i = first; i < w->count && r.y + i * lh < ui->area.h; i++) {
+    for (int i = first; i < w->count && r.y + i * lh < ui->area.y + ui->area.h; i++) {
         const gs_wrap_line *ln = &w->lines[i];
         part parts[PARTS];
         int n = line_parts(ui, t, ln, r.x, r.w, parts);
@@ -1703,7 +1709,7 @@ bool gs_ui_dropdown(gs_ui *ui, gs_rect r, const char *id, const char *const *ite
     if (!w->open) return changed;
     float row = ui->style.row;
     gs_rect list = { r.x, r.y + r.h + 2, r.w, row * count };
-    if (list.y + list.h > ui->area.h) list.y = r.y - list.h - 2;  // above when there is no room below
+    if (list.y + list.h > ui->area.y + ui->area.h) list.y = r.y - list.h - 2;  // above when there is no room below
     ui->in_float = true;
     gs_ui_round(ui, list, ui->style.radius, ui->style.panel);
     gs_ui_outline(ui, list, ui->style.radius, 1, ui->style.border);
@@ -1744,12 +1750,12 @@ bool gs_ui_menu_begin(gs_ui *ui, const char *id, gs_rect anchor, float width) {
     while (n && gs_ui_key(ui, SDLK_UP, 0)) w->cursor = w->cursor <= 1 ? n : w->cursor - 1;
     ui->menu_choose = w->cursor && w->opened != ui->frame && (gs_ui_key(ui, SDLK_SPACE, 0) || gs_ui_key(ui, SDLK_RETURN, 0) || gs_ui_key(ui, SDLK_KP_ENTER, 0));
     ui->menu_at = w->cursor, ui->menu_count = 0;
-    ui->menu_rect = (gs_rect){ fminf(anchor.x, ui->area.w - width - 4), anchor.y + anchor.h + 2, width, 0 };
+    ui->menu_rect = (gs_rect){ fminf(anchor.x, ui->area.x + ui->area.w - width - 4), anchor.y + anchor.h + 2, width, 0 };
     // Below what it hangs from, or above when it would not fit below and does above (its height is
     // its rows', as counted last frame; in its first frame gs_ui_menu_end moves it instead).
     ui->menu_above = anchor.y - 2;
     const float h = (float)n * ui->style.row;
-    if (n && ui->menu_rect.y + h > ui->area.h - 4 && ui->menu_above - h >= 4) ui->menu_rect.y = ui->menu_above - h;
+    if (n && ui->menu_rect.y + h > ui->area.y + ui->area.h - 4 && ui->menu_above - h >= ui->area.y + 4) ui->menu_rect.y = ui->menu_above - h;
     ui->menu_y = ui->menu_rect.y;
     ui->in_float = true;
     // Its background goes first; its height is known once the items are in.
@@ -1773,7 +1779,7 @@ void gs_ui_menu_end(gs_ui *ui) {
     ui->menu_rect.h = ui->menu_y - ui->menu_rect.y;
     if (ui->menu_background < ui->nfl) ui->fl[ui->menu_background].r.h = ui->menu_rect.h;
     widget *counted = state(ui, ui->menu);
-    if (!counted->anchor && ui->menu_rect.y + ui->menu_rect.h > ui->area.h - 4 && ui->menu_above - ui->menu_rect.h >= 4) {
+    if (!counted->anchor && ui->menu_rect.y + ui->menu_rect.h > ui->area.y + ui->area.h - 4 && ui->menu_above - ui->menu_rect.h >= ui->area.y + 4) {
         // (its first frame, with its rows not yet counted: what it drew is moved above)
         const float up = ui->menu_rect.y - (ui->menu_above - ui->menu_rect.h);
         for (int i = ui->menu_background; i < ui->nfl; i++) ui->fl[i].r.y -= up;
@@ -2110,9 +2116,9 @@ gs_rect gs_ui_modal_begin(gs_ui *ui, float width, float height) {
     ui->in_modal = ui->modal_now = true;
     ui->disabled = first;  // the click or key that opened it is not an answer to it
     if (first) ui->modal_focus = ui->focus, set_focus(ui, 0), wake_within(ui, 0);
-    fill_now(ui, ui->area, (SDL_FColor){ 0, 0, 0, 0.55f });
+    fill_now(ui, ui->window, (SDL_FColor){ 0, 0, 0, 0.55f });
     width = fminf(width, ui->area.w - 32), height = fminf(height, ui->area.h - 32);
-    gs_rect box = { (ui->area.w - width) / 2, (ui->area.h - height) / 2, width, height };
+    gs_rect box = { ui->area.x + (ui->area.w - width) / 2, ui->area.y + (ui->area.h - height) / 2, width, height };
     gs_ui_round(ui, box, ui->style.radius * 2, ui->style.panel);
     gs_ui_outline(ui, box, ui->style.radius * 2, 1, ui->style.border);
     return box;
@@ -2159,8 +2165,8 @@ void gs_ui_end(gs_ui *ui) {
             const gs_wrap *wrap = one > TOOLTIP_W ? wrap_of(ui, ui->tip_text, size, TOOLTIP_W) : NULL;
             int lines = wrap ? wrap->count : 1;
             float w = (wrap ? TOOLTIP_W : one) + 16, h = lines * lh + 8;
-            gs_rect r = { fmaxf(4, fminf(ui->tip_rect.x, ui->area.w - w - 4)), ui->tip_rect.y + ui->tip_rect.h + 4, w, h };
-            if (r.y + r.h > ui->area.h - 4) r.y = ui->tip_rect.y - r.h - 4;
+            gs_rect r = { fmaxf(ui->area.x + 4, fminf(ui->tip_rect.x, ui->area.x + ui->area.w - w - 4)), ui->tip_rect.y + ui->tip_rect.h + 4, w, h };
+            if (r.y + r.h > ui->area.y + ui->area.h - 4) r.y = ui->tip_rect.y - r.h - 4;
             fl_item *f = defer(ui, FL_ROUND, r, ui->style.raised, NULL, 0, 0);
             f->radius = ui->style.radius;
             f = defer(ui, FL_OUTLINE, r, ui->style.border, NULL, 0, 0);
