@@ -26,8 +26,9 @@
         },
         // Fetched only for -Dvideo: FFmpeg's sources, and NASM to assemble its x86 code.
         .ffmpeg = .{
-            .url = "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
-            .hash = "N-V-__8AAEfCYgUDQ6luB9hrkgnNTDdtUDuoJziZIZSfT1_m",
+            // (FFmpeg's own mirror of the n9.0.2 tag: ffmpeg.org's TLS is one Zig's fetcher cannot negotiate)
+            .url = "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n9.0.2.tar.gz",
+            .hash = "N-V-__8AAC_PYgU2fBPFfRSAGEehM_B90ufg1Xcsu1nUv6dh",
             .lazy = true,
         },
         .nasm = .{
