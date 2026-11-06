@@ -32,6 +32,7 @@ static void compose(const char *t) {
 
 static char field[64];
 static int selected, choice;
+static gs_ui_rows listed;
 static bool on, activated, changed;
 static const char *const items[] = { "Viewers", "Channel", "Category" };
 
@@ -42,7 +43,7 @@ static void frame(void) {
     if (gs_ui_field(ui, gs_cut_left(&top, 200), "field", field, sizeof field, "Search")) changed = true;
     gs_ui_toggle(ui, gs_cut_left(&top, 80), "18+", &on);
     gs_ui_dropdown(ui, gs_cut_left(&top, 120), "sort", items, 3, &choice);
-    gs_ui_rows rows = gs_ui_list(ui, r, "list", 50, 20, &selected);
+    gs_ui_rows rows = listed = gs_ui_list(ui, r, "list", 50, 20, &selected);
     gs_ui_list_end(ui);
     activated = rows.activated;
     gs_ui_end(ui);
@@ -577,6 +578,41 @@ static void test_ui_place(gs_fontset *fs) {
 
 // Zoomed, the interface is larger by that much: the area in points shrinks, a fill covers that many
 // more pixels, and a click lands on the control drawn under it.
+// A finger, as SDL hands touch over: the left button of the touch mouse.
+static void finger(Uint32 type, float x, float y) {
+    SDL_Event e = { .type = type };
+    if (type == SDL_EVENT_MOUSE_MOTION) e.motion = (SDL_MouseMotionEvent){ .type = type, .which = SDL_TOUCH_MOUSEID, .x = x, .y = y };
+    else e.button = (SDL_MouseButtonEvent){ .type = type, .which = SDL_TOUCH_MOUSEID, .button = SDL_BUTTON_LEFT, .down = type == SDL_EVENT_MOUSE_BUTTON_DOWN, .clicks = 1, .x = x, .y = y };
+    gs_ui_event(ui, &e);
+}
+
+// On a touch screen a drag scrolls and flings, a tap clicks, and a long press presses.
+static void test_ui_touch(void) {
+    selected = -1;
+    frame();
+    // A drag up the list scrolls it by as much, and selects nothing.
+    finger(SDL_EVENT_MOUSE_BUTTON_DOWN, 50, 250), frame();
+    for (int i = 1; i <= 6; i++) SDL_Delay(16), finger(SDL_EVENT_MOUSE_MOTION, 50, 250 - 20 * i), frame();
+    CHECK(listed.first >= 5 && selected == -1);
+    // Lifted while moving, it flings on, more slowly each frame, and stops.
+    finger(SDL_EVENT_MOUSE_BUTTON_UP, 50, 130), frame();
+    int lifted = listed.first;
+    for (int i = 0; i < 10; i++) SDL_Delay(16), frame();
+    CHECK(listed.first > lifted && selected == -1);
+    // A tap on a row selects it, as a click does; the tap that stops a fling does not.
+    for (int i = 0; i < 100 && gs_ui_wait_ms(ui) == 0; i++) SDL_Delay(16), frame();  // (the fling has run out)
+    int first = listed.first, row = (int)((40 - listed.y) / 20);
+    finger(SDL_EVENT_MOUSE_BUTTON_DOWN, 50, 40), frame(), finger(SDL_EVENT_MOUSE_BUTTON_UP, 50, 40), frame();
+    CHECK(selected == row && listed.first == first);
+    // Held still, it waits for the long press, which presses there; lifted, it releases, a click.
+    finger(SDL_EVENT_MOUSE_BUTTON_DOWN, 50, 100), frame();
+    CHECK(selected == row && gs_ui_wait_ms(ui) >= 0 && gs_ui_wait_ms(ui) <= 500);
+    SDL_Delay(520), frame(), frame();
+    CHECK(selected == row);
+    finger(SDL_EVENT_MOUSE_BUTTON_UP, 50, 100), frame();
+    CHECK(selected == (int)((100 - listed.y) / 20) && selected != row);
+}
+
 static void test_ui_zoom(SDL_Renderer *r) {
     gs_ui_set_zoom(ui, 2);
     gs_rect area = gs_ui_begin(ui);
@@ -1221,6 +1257,7 @@ void test_ui(void) {
     test_ui_hotkey();
     test_ui_draw(r);
     test_ui_zoom(r);
+    test_ui_touch();
     test_ui_windows(w, fs);
     test_ui_place(fs);
     gs_ui_free(ui);

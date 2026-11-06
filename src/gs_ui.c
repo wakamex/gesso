@@ -86,6 +86,7 @@ typedef struct { gs_rect r; bool on; } clip_state;
 
 typedef struct {
     float x, y, wheel;
+    float pan;   // points a finger dragged the content under it down (up when negative)
     bool down, pressed, released;
     int clicks;  // of the last press: 2 for a double click, 3 for a triple
     SDL_Keycode keys[KEYS];
@@ -107,6 +108,15 @@ struct gs_ui {
     gs_rect window;          // the whole window, in points
     uint64_t frame, now;
     input pending, in;
+    // A finger on a touch screen, which SDL hands over as the left button. It scrolls what is under
+    // where it went down, and a fling carries on after it lifts; held still for a long press, it
+    // presses there, so a drag then selects; lifted before it moved, it is a tap, a click.
+    struct {
+        enum { TOUCH_NONE, TOUCH_WAIT, TOUCH_PAN, TOUCH_HOLD } mode;
+        float x, y, last_y, velocity, fling;  // velocity and fling in points a second
+        uint64_t at, moved_at, fling_at;
+        bool stopping;  // it went down on a fling, which it stops rather than tapping
+    } touch;
     bool taken[KEYS];
     float press_x, press_y;  // where the left button went down
     uint64_t press_at, press_before;  // when it went down, and the time before that, for a double click
@@ -323,11 +333,52 @@ static SDL_WindowID event_window(const SDL_Event *e) {
     }
 }
 
+#define TOUCH_SLOP 8         // points a finger moves before it scrolls
+#define TOUCH_LONG_MS 500    // how long it is held still for a long press
+#define FLING_DECAY 3.0f     // a fling's speed falls by e each 1/FLING_DECAY s
+
+static void touch_event(gs_ui *ui, const SDL_Event *e) {
+    input *p = &ui->pending;
+    float x = (e->type == SDL_EVENT_MOUSE_MOTION ? e->motion.x : e->button.x) / window_units(ui);
+    float y = (e->type == SDL_EVENT_MOUSE_MOTION ? e->motion.y : e->button.y) / window_units(ui);
+    uint64_t now = SDL_GetTicks();
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        ui->touch.stopping = ui->touch.fling != 0;
+        ui->touch.mode = TOUCH_WAIT, ui->touch.x = x, ui->touch.y = y, ui->touch.last_y = y;
+        ui->touch.at = ui->touch.moved_at = now, ui->touch.velocity = ui->touch.fling = 0;
+        p->x = x, p->y = y;
+    } else if (e->type == SDL_EVENT_MOUSE_MOTION) {
+        if (ui->touch.mode == TOUCH_WAIT && hypotf(x - ui->touch.x, y - ui->touch.y) > TOUCH_SLOP) ui->touch.mode = TOUCH_PAN;
+        if (ui->touch.mode == TOUCH_PAN) {  // (the pointer stays where the finger went down, on what it scrolls)
+            float dy = y - ui->touch.last_y, dt = (float)(now - ui->touch.moved_at) / 1000;
+            p->pan += dy;
+            if (dt > 0) ui->touch.velocity = 0.7f * (dy / dt) + 0.3f * ui->touch.velocity;
+            ui->touch.last_y = y, ui->touch.moved_at = now;
+        } else if (ui->touch.mode == TOUCH_HOLD) {
+            p->x = x, p->y = y;
+        }
+    } else if (ui->touch.mode == TOUCH_WAIT && !ui->touch.stopping) {  // a tap: a click where it went down
+        p->down = false, p->pressed = p->released = true, p->clicks = e->button.clicks, p->x = ui->touch.x, p->y = ui->touch.y;
+        ui->touch.mode = TOUCH_NONE;
+    } else if (ui->touch.mode == TOUCH_PAN) {  // lifted while still moving: it flings on
+        if (now - ui->touch.moved_at < 100 && fabsf(ui->touch.velocity) > 100) ui->touch.fling = ui->touch.velocity, ui->touch.fling_at = now;
+        ui->touch.mode = TOUCH_NONE;
+    } else if (ui->touch.mode == TOUCH_HOLD) {
+        p->down = false, p->released = true, p->x = x, p->y = y;
+        ui->touch.mode = TOUCH_NONE;
+    } else {
+        ui->touch.mode = TOUCH_NONE;
+    }
+}
+
 bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
     input *p = &ui->pending;
     SDL_WindowID to = event_window(e);
     if (to && to != SDL_GetWindowID(ui->win)) return false;  // another window's
     if (ui->place && gs_window_state_track(&ui->placed, ui->win, e)) ui->placed_at = SDL_max(SDL_GetTicks(), 1);
+    if ((e->type == SDL_EVENT_MOUSE_MOTION && e->motion.which == SDL_TOUCH_MOUSEID) ||
+        ((e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_UP) && e->button.which == SDL_TOUCH_MOUSEID))
+        return touch_event(ui, e), false;
     switch (e->type) {
     case SDL_EVENT_MOUSE_MOTION: p->x = e->motion.x / window_units(ui), p->y = e->motion.y / window_units(ui); return false;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -393,14 +444,26 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     ui->area = (gs_rect){ (float)safe.x / units, (float)safe.y / units, (float)safe.w / units, (float)safe.h / units };
     ui->frame++;
     ui->now = SDL_GetTicks();
+    if (ui->touch.mode == TOUCH_WAIT && !ui->touch.stopping && ui->now - ui->touch.at >= TOUCH_LONG_MS) {  // a long press presses
+        ui->touch.mode = TOUCH_HOLD;
+        ui->pending.down = ui->pending.pressed = true, ui->pending.clicks = 1, ui->pending.x = ui->touch.x, ui->pending.y = ui->touch.y;
+    }
+    if (ui->touch.fling) {
+        float dt = (float)(ui->now - ui->touch.fling_at) / 1000;
+        ui->pending.pan += ui->touch.fling * dt;
+        ui->touch.fling *= expf(-FLING_DECAY * dt), ui->touch.fling_at = ui->now;
+        if (fabsf(ui->touch.fling) < 20) ui->touch.fling = 0;
+    }
     bool down = ui->pending.down;
     ui->in = ui->pending;
     ui->pending = (input){ .x = ui->in.x, .y = ui->in.y, .down = down };
-    ui->had_input = ui->in.pressed || ui->in.released || ui->in.wheel != 0 || ui->in.nkeys || ui->in.text[0];
+    ui->had_input = ui->in.pressed || ui->in.released || ui->in.wheel != 0 || ui->in.pan != 0 || ui->in.nkeys || ui->in.text[0];
     if (ui->in.pressed) ui->before_x = ui->press_x, ui->before_y = ui->press_y, ui->press_before = ui->press_at, ui->press_x = ui->in.x, ui->press_y = ui->in.y, ui->press_at = ui->now;
     memset(ui->taken, 0, sizeof ui->taken);
     ui->float_last = ui->float_now, ui->float_last_on = ui->float_now_on;
     ui->float_now_on = false, ui->nfl = 0, ui->tip_wanted = false, ui->wait_ms = -1, ui->opacity = 1;
+    if (ui->touch.fling) wake_within(ui, 0);
+    if (ui->touch.mode == TOUCH_WAIT && !ui->touch.stopping) wake_within(ui, (int)SDL_max(0, TOUCH_LONG_MS - (int64_t)(ui->now - ui->touch.at)));  // (to see the long press)
     ui->group = 0, ui->select_began = false;
     if (!down) ui->drag = 0;
     ui->disabled = ui->dim = false, ui->clip.on = false, ui->page = 0, ui->cursor_want = 0, ui->fonts = ui->own_fonts;
@@ -903,8 +966,8 @@ bool gs_ui_clicked(gs_ui *ui, gs_rect r) { return ui->in.released && pointer_ove
 // Scrolls by the wheel as far as the ends allow and takes the wheel only when that moved something,
 // so a list or text area at its end, or too short to scroll, leaves the wheel to the page it is in.
 static void wheel_scroll(gs_ui *ui, float *scroll, float max_scroll, float step) {
-    float to = SDL_clamp(*scroll - ui->in.wheel * step, 0, max_scroll);
-    if (to != SDL_clamp(*scroll, 0, max_scroll)) *scroll = to, ui->in.wheel = 0;
+    float to = SDL_clamp(*scroll - ui->in.wheel * step - ui->in.pan, 0, max_scroll);
+    if (to != SDL_clamp(*scroll, 0, max_scroll)) *scroll = to, ui->in.wheel = ui->in.pan = 0;
 }
 
 static gs_rect outset(gs_rect r, float d) { return (gs_rect){ r.x - d, r.y - d, r.w + 2 * d, r.h + 2 * d }; }
@@ -1625,7 +1688,7 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
     const gs_wrap *wr = wrap_of(ui, buf, px, inner.w);
     int lines = wr ? wr->count : 1;
     float max_scroll = fmaxf(0, lines * lh - inner.h);
-    if (gs_ui_hovered(ui, r) && ui->in.wheel) wheel_scroll(ui, &w->scroll, max_scroll, lh * 3);
+    if (gs_ui_hovered(ui, r) && (ui->in.wheel || ui->in.pan)) wheel_scroll(ui, &w->scroll, max_scroll, lh * 3);
     int cline = wr ? line_at(wr, w->cursor) : 0;
     if (moved && focused) {  // keep the cursor's line in view
         if (cline * lh < w->scroll) w->scroll = cline * lh;
@@ -1806,7 +1869,7 @@ gs_ui_rows gs_ui_list(gs_ui *ui, gs_rect area, const char *id, int count, float 
     gs_ui_rows rows = { 0 };
     float max_scroll = fmaxf(0, count * row_h - area.h);
     bool moved = false, focused = stop_at(ui, h, area);
-    if (gs_ui_hovered(ui, area) && ui->in.wheel) wheel_scroll(ui, &w->scroll, max_scroll, row_h * 1.5f);
+    if (gs_ui_hovered(ui, area) && (ui->in.wheel || ui->in.pan)) wheel_scroll(ui, &w->scroll, max_scroll, row_h * 1.5f);
     if (focused && count) {
         int page = (int)fmaxf(1, area.h / row_h - 1), sel = *selected;
         while (gs_ui_key(ui, SDLK_DOWN, 0)) sel++, moved = true;  // (every press since the last frame)
@@ -1861,7 +1924,7 @@ gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const 
         w->show = 0;
     }
     bool over = gs_ui_hovered(ui, area);
-    if (over && ui->in.wheel) wheel_scroll(ui, &w->scroll, max_scroll, ui->style.row * 1.5f);
+    if (over && (ui->in.wheel || ui->in.pan)) wheel_scroll(ui, &w->scroll, max_scroll, ui->style.row * 1.5f);
     if (over || focused) {
         while (gs_ui_key(ui, SDLK_PAGEUP, 0)) w->scroll -= page;
         while (gs_ui_key(ui, SDLK_PAGEDOWN, 0)) w->scroll += page;
@@ -2082,7 +2145,7 @@ void gs_ui_page_end(gs_ui *ui, float bottom) {
     float max = fmaxf(0, w->extent - area.h);
     // What its content left of the wheel and the keys is the page's, from the next frame on.
     if (gs_ui_hovered(ui, area)) {
-        if (ui->in.wheel) w->scroll -= ui->in.wheel * 48, ui->in.wheel = 0, w->eased = false;
+        if (ui->in.wheel || ui->in.pan) w->scroll -= ui->in.wheel * 48 + ui->in.pan, ui->in.wheel = ui->in.pan = 0, w->eased = false;
         while (gs_ui_key(ui, SDLK_PAGEDOWN, 0)) w->scroll += area.h * 0.9f, w->eased = false;
         while (gs_ui_key(ui, SDLK_PAGEUP, 0)) w->scroll -= area.h * 0.9f, w->eased = false;
     }

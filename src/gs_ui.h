@@ -12,6 +12,11 @@
 // functions below, and gs_ui_end. Widgets that keep state between frames (a text field's cursor, a
 // list's scroll, an open dropdown) take an id string, unique among those drawn in a frame.
 //
+// On a touch screen (the mouse events SDL makes from touch) a finger works as on a phone: a drag
+// scrolls the list, text area or page under where it went down, and a fling carries on after it
+// lifts; a tap clicks, and a tap during a fling only stops it; held still for half a second it
+// presses there, so a drag then selects text as a mouse drag does. The mouse is unchanged.
+//
 // A process can have several windows, each with a gs_ui of its own on that window's renderer, sharing
 // one gs_fontset: pass every event to every gs_ui, and each takes those of its own window and leaves
 // the rest (an event that names no window goes to all). Each gs_ui keeps a glyph atlas for its
