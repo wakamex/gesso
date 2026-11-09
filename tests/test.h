@@ -39,3 +39,4 @@ void test_stream_clock(void);
 void test_text(void);
 void test_ui(void);
 void test_voice(void);
+void test_loopback(void);

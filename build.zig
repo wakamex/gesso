@@ -286,7 +286,7 @@ pub fn build(b: *std.Build) void {
 
     // zig build test: every module's checks (tests/), with the video modules' under -Dvideo.
     const tests = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
-    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "eta.c", "ed25519.c", "gif.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "movie.c", "notify.c", "nowplaying.c", "oauth.c", "secret.c", "sound.c", "stream.c", "text.c", "ui.c", "update.c", "voice.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
+    tests.addCSourceFiles(.{ .root = b.path("tests"), .files = &.{ "main.c", "abr.c", "eta.c", "loopback.c", "ed25519.c", "gif.c", "hls.c", "http.c", "image.c", "json.c", "live.c", "desk.c", "media.c", "movie.c", "notify.c", "nowplaying.c", "oauth.c", "secret.c", "sound.c", "stream.c", "text.c", "ui.c", "update.c", "voice.c" }, .flags = if (av != null) flags ++ &[_][]const u8{"-DGS_TEST_VIDEO"} else flags });
     tests.addIncludePath(b.path("src"));
     if (av) |a| for (a.include) |dir| tests.addIncludePath(dir);
     useSdk(tests, macos_sdk);

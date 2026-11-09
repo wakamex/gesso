@@ -23,8 +23,10 @@ typedef struct gs_loopback gs_loopback;
 gs_loopback *gs_loopback_open(const char *device, int rate, char *error, size_t error_size);
 // The next `frames` samples, oldest first, always all of them: what was recorded, and silence where
 // nothing was (the system sends nothing while nothing plays), so that read once for each block of
-// microphone samples it stays in step with them. When the app has fallen behind by more than 200 ms,
-// the oldest samples go. Returns how many of them were recorded rather than silence.
+// microphone samples it stays in step with them. It keeps the reference ahead of the microphone's
+// echo: what was recorded before the first read is dropped, and so is any backlog that does not drain
+// within half a second of reads, down to 10 ms kept for uneven delivery; an app that has fallen behind
+// by more than 200 ms loses the oldest samples. Returns how many were recorded rather than silence.
 int gs_loopback_read(gs_loopback *l, float *out, int frames);
 // Why recording stopped, or "" while it goes on (a device that went away and could not be replaced).
 void gs_loopback_error(gs_loopback *l, char *error, size_t size);

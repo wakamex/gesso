@@ -3,12 +3,11 @@
 #include <SDL3/SDL.h>
 #include <string.h>
 
-#define KEEP_MS 200  // the most kept for a reader that has fallen behind
+#include "gs_loopback_queue.h"
 
 struct gs_loopback {
     int rate;
-    float *ring;  // what was recorded and not yet read
-    int cap, start, count;
+    gs_loopback_queue queue;  // what was recorded and not yet read
     SDL_Mutex *lock;
     SDL_Thread *thread;
     SDL_AtomicInt stop;
@@ -19,10 +18,7 @@ struct gs_loopback {
 // Recorded samples in, from the recording thread.
 static void put(gs_loopback *l, const float *s, int n) {
     SDL_LockMutex(l->lock);
-    for (int i = 0; i < n; i++) {
-        if (l->count == l->cap) l->start = (l->start + 1) % l->cap, l->count--;  // (the oldest go)
-        l->ring[(l->start + l->count++) % l->cap] = s[i];
-    }
+    gs_loopback_put(&l->queue, s, n);
     SDL_UnlockMutex(l->lock);
 }
 
@@ -34,13 +30,8 @@ static void fail(gs_loopback *l, const char *why) {
 
 int gs_loopback_read(gs_loopback *l, float *out, int frames) {
     SDL_LockMutex(l->lock);
-    int keep = l->rate * KEEP_MS / 1000 + frames;
-    if (l->count > keep) l->start = (l->start + l->count - keep) % l->cap, l->count = keep;
-    int got = SDL_min(frames, l->count);
-    for (int i = 0; i < got; i++) out[i] = l->ring[(l->start + i) % l->cap];
-    l->start = (l->start + got) % l->cap, l->count -= got;
+    int got = gs_loopback_take(&l->queue, out, frames);
     SDL_UnlockMutex(l->lock);
-    for (int i = got; i < frames; i++) out[i] = 0;
     return got;
 }
 
@@ -262,10 +253,10 @@ gs_loopback *gs_loopback_open(const char *device, int rate, char *error, size_t 
     if (rate < 8000 || rate > 192000) return SDL_strlcpy(error, "the rate is not one gs_loopback takes", error_size), NULL;
     gs_loopback *l = SDL_calloc(1, sizeof *l);
     if (!l) return NULL;
-    l->rate = rate, l->cap = rate;  // (a second, of which gs_loopback_read keeps 200 ms)
-    l->ring = SDL_malloc(sizeof *l->ring * (size_t)l->cap), l->lock = SDL_CreateMutex();
+    l->rate = l->queue.rate = rate, l->queue.cap = rate;  // (a second, of which gs_loopback_read keeps 200 ms)
+    l->queue.ring = SDL_malloc(sizeof *l->queue.ring * (size_t)l->queue.cap), l->lock = SDL_CreateMutex();
     if (device) SDL_strlcpy(l->device, device, sizeof l->device);
-    if (!l->ring || !l->lock || !start_system(l, error, error_size)) return gs_loopback_close(l), NULL;
+    if (!l->queue.ring || !l->lock || !start_system(l, error, error_size)) return gs_loopback_close(l), NULL;
     return l;
 }
 
@@ -275,5 +266,5 @@ void gs_loopback_close(gs_loopback *l) {
     SDL_WaitThread(l->thread, NULL);
     stop_system(l);
     SDL_DestroyMutex(l->lock);
-    SDL_free(l->ring), SDL_free(l);
+    SDL_free(l->queue.ring), SDL_free(l);
 }

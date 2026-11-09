@@ -16,6 +16,7 @@ static const struct { const char *name; void (*run)(void); } tests[] = {
     { "gs_image", test_image },
     { "gs_json", test_json },
     { "gs_live", test_live },
+    { "gs_loopback", test_loopback },
     { "gs_media", test_media },
     { "gs_movie", test_movie },
     { "gs_notify", test_notify },
