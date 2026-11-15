@@ -599,6 +599,26 @@ static void test_ui_text_input(SDL_Window *w) {
     CHECK(!SDL_TextInputActive(w));
 }
 
+// Links found in a text and styled ranges that overlap them become spans of one style each.
+static void test_ui_styled(void) {
+    const char *text = "read (https://example.com/a), or www.example.org. Not http://x";
+    gs_ui_styled found[4];
+    int n = gs_ui_find_links(text, found, 4);
+    CHECK(n == 2 && !SDL_strncmp(text + found[0].start, "https://example.com/a", (size_t)(found[0].end - found[0].start)) && found[0].end - found[0].start == 21);
+    CHECK(!SDL_strncmp(text + found[1].start, "www.example.org", 15) && found[1].end - found[1].start == 15);  // (too short: http://x)
+    // "bold link": bold over [0, 9), a link over [5, 13), code over [14, 18).
+    const char *t = "bold link up code";
+    gs_ui_styled ranges[] = { { 0, 9, GS_UI_BOLD }, { 5, 13, GS_UI_LINK }, { 14, 18, GS_UI_CODE | GS_UI_ITALIC } };
+    gs_ui_text_span spans[8];
+    int link_of[8];
+    n = gs_ui_styled_spans(ui, t, ranges, 3, spans, 8, link_of);
+    CHECK(n == 4);
+    CHECK(spans[0].start == 0 && spans[0].end == 5 && spans[0].font == GS_UI_FONT_BOLD && !spans[0].link && link_of[0] == -1);
+    CHECK(spans[1].start == 5 && spans[1].end == 9 && spans[1].font == GS_UI_FONT_BOLD && spans[1].link && link_of[1] == 1);
+    CHECK(spans[2].start == 9 && spans[2].end == 13 && spans[2].font == GS_UI_FONT_PLAIN && spans[2].link);
+    CHECK(spans[3].start == 14 && spans[3].end == 17 && spans[3].font == GS_UI_FONT_CODE && spans[3].back.a > 0);
+}
+
 // A finger, as SDL hands touch over: the left button of the touch mouse.
 static void finger(Uint32 type, float x, float y) {
     SDL_Event e = { .type = type };
@@ -1280,6 +1300,7 @@ void test_ui(void) {
     test_ui_zoom(r);
     test_ui_touch();
     test_ui_text_input(w);
+    test_ui_styled();
     test_ui_windows(w, fs);
     test_ui_place(fs);
     gs_ui_free(ui);

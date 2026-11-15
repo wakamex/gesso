@@ -884,6 +884,53 @@ float gs_ui_text_spans(gs_ui *ui, gs_rect r, const char *id, const char *text, f
     return rich_select(ui, r, id, &t, c, from, to, clicked);
 }
 
+int gs_ui_find_links(const char *text, gs_ui_styled *out, int max) {
+    int n = 0;
+    for (const char *p = text; *p && n < max; p++) {
+        bool starts = p == text || SDL_isspace((unsigned char)p[-1]) || p[-1] == '(' || p[-1] == '<';
+        if (!starts || (SDL_strncmp(p, "http://", 7) && SDL_strncmp(p, "https://", 8) && SDL_strncmp(p, "www.", 4))) continue;
+        const char *end = p;
+        while (*end && !SDL_isspace((unsigned char)*end) && *end != '<' && *end != '>') end++;
+        while (end > p && SDL_strchr(".,;:!?)]}'\"", end[-1])) end--;
+        if (end - p > 8) out[n++] = (gs_ui_styled){ (int)(p - text), (int)(end - text), GS_UI_LINK };
+        p = end - 1;
+    }
+    return n;
+}
+
+static int compare_ints(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
+
+int gs_ui_styled_spans(gs_ui *ui, const char *text, const gs_ui_styled *ranges, int count, gs_ui_text_span *out, int max, int *link_of) {
+    int len = (int)SDL_strlen(text), nedge = 0, n = 0;
+    int *edge = SDL_malloc(sizeof *edge * (size_t)(2 * count + 2));
+    if (!edge) return 0;
+    // Each stretch between two consecutive edges has one set of styles.
+    edge[nedge++] = 0, edge[nedge++] = len;
+    for (int i = 0; i < count; i++) edge[nedge++] = SDL_clamp(ranges[i].start, 0, len), edge[nedge++] = SDL_clamp(ranges[i].end, 0, len);
+    SDL_qsort(edge, (size_t)nedge, sizeof *edge, compare_ints);
+    for (int i = 0; i + 1 < nedge && n < max; i++) {
+        int from = edge[i], to = edge[i + 1], style = 0, link = -1;
+        if (from >= to) continue;
+        for (int k = 0; k < count; k++)
+            if (ranges[k].start <= from && to <= ranges[k].end) {
+                style |= ranges[k].style;
+                if ((ranges[k].style & GS_UI_LINK) && link < 0) link = k;
+            }
+        if (!style) continue;
+        bool bold = style & GS_UI_BOLD, italic = style & GS_UI_ITALIC;
+        gs_ui_text_span *span = &out[n];
+        *span = (gs_ui_text_span){ .start = from, .end = to, .link = link >= 0 };
+        span->font = style & GS_UI_CODE ? GS_UI_FONT_CODE : bold && italic ? GS_UI_FONT_BOLD_ITALIC : bold ? GS_UI_FONT_BOLD : italic ? GS_UI_FONT_ITALIC : GS_UI_FONT_PLAIN;
+        if (style & GS_UI_CODE) span->back = ui->style.raised;
+        if (style & GS_UI_STRUCK) span->color = ui->style.muted;
+        if (link >= 0) span->color = ui->style.accent;
+        if (link_of) link_of[n] = link;
+        n++;
+    }
+    SDL_free(edge);
+    return n;
+}
+
 float gs_ui_text_spans_height(gs_ui *ui, const char *text, float size, float width, gs_fontset *const *fonts, int nfonts, const gs_ui_text_span *spans, int count) {
     gs_fontset *own[1] = { ui->fonts };
     rich t = { text, size, fonts && nfonts > 0 ? fonts : own, fonts && nfonts > 0 ? nfonts : 1, spans, count };

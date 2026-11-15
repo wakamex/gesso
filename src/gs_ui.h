@@ -183,6 +183,19 @@ typedef struct { int start, end, font; SDL_FColor color, back; bool link; } gs_u
 float gs_ui_text_spans(gs_ui *ui, gs_rect r, const char *id, const char *text, float px, SDL_FColor c, gs_fontset *const *fonts, int nfonts,
                        const gs_ui_text_span *spans, int count, int *from, int *to, int *clicked);
 float gs_ui_text_spans_height(gs_ui *ui, const char *text, float px, float width, gs_fontset *const *fonts, int nfonts, const gs_ui_text_span *spans, int count);
+// Styled stretches of a text, as a chat or Markdown gives them, which may overlap: bytes [start, end)
+// with any of these styles. gs_ui_styled_spans turns them into the spans gs_ui_text_spans draws, in
+// the fonts at these indices of its `fonts` (plain, bold, italic, bold italic, code), code on the
+// style's raised colour, struck text in its muted colour (no line is drawn through it) and links in
+// its accent colour. link_of (or NULL) gets, for each span, the range that made it a link, or -1, so
+// *clicked's span leads back to its address. Returns how many spans, at most max.
+enum { GS_UI_BOLD = 1, GS_UI_ITALIC = 2, GS_UI_CODE = 4, GS_UI_STRUCK = 8, GS_UI_LINK = 16 };
+enum { GS_UI_FONT_PLAIN, GS_UI_FONT_BOLD, GS_UI_FONT_ITALIC, GS_UI_FONT_BOLD_ITALIC, GS_UI_FONT_CODE, GS_UI_FONTS };
+typedef struct { int start, end, style; } gs_ui_styled;
+int gs_ui_styled_spans(gs_ui *ui, const char *text, const gs_ui_styled *ranges, int count, gs_ui_text_span *out, int max, int *link_of);
+// The web addresses written in a text (from http://, https:// or www., to a space or an angle
+// bracket, without the punctuation that ends a sentence after one), as GS_UI_LINK ranges, at most max.
+int gs_ui_find_links(const char *text, gs_ui_styled *out, int max);
 float gs_ui_text_height(gs_ui *ui, const char *text, float px, float width);
 // Wrapped text held to `max_lines` lines: when it has more, the last line shown ends with an
 // ellipsis and *cut (which may be NULL) is set, for showing the whole text some other way, in a
