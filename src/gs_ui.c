@@ -170,6 +170,7 @@ struct gs_ui {
     bool tip_wanted;
     int wait_ms;
     bool focus_moved;        // the keyboard went to another control since the last frame ended
+    uint32_t text_focus;     // the field or text area that took text input this frame
     bool had_input;          // this frame was handed a press, a release, the wheel, a key or text
     history histories[HISTORIES];
     char *place;              // the file the window's place is kept in, or NULL
@@ -408,7 +409,9 @@ bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
 static void set_focus(gs_ui *ui, uint32_t h) {
     if (h == ui->focus) return;
     ui->focus = h, ui->caret_since = ui->now, ui->focus_moved = true;
-    if (SDL_TextInputActive(ui->win)) SDL_StopTextInput(ui->win);
+    // Text input stays on while the keyboard goes from one field to another (gs_ui_end stops it when
+    // none takes it): on Android a stop and a start in a row leave no on-screen keyboard.
+    if (SDL_TextInputActive(ui->win)) SDL_ClearComposition(ui->win);
     ui->composition[0] = 0;
 }
 
@@ -1421,6 +1424,7 @@ static bool field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, 
     masked = (flags & GS_UI_MASKED) && !((flags & GS_UI_REVEAL) && focused);
     if (focused) {
         if (!SDL_TextInputActive(ui->win)) SDL_StartTextInput(ui->win);
+        ui->text_focus = h;
         changed = edit(ui, w, buf, size, masked);
     }
     if (!focused) w->anchored = false;  // (a selection is the focused field's)
@@ -1682,6 +1686,7 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
     bool focused = stop_at(ui, h, r), changed = false;
     if (focused) {
         if (!SDL_TextInputActive(ui->win)) SDL_StartTextInput(ui->win);
+        ui->text_focus = h;
         changed = area_edit(ui, w, buf, size, inner, &moved);
     }
 
@@ -2212,6 +2217,8 @@ int gs_ui_confirm(gs_ui *ui, const char *question, const char *yes, const char *
 }
 
 void gs_ui_end(gs_ui *ui) {
+    if (SDL_TextInputActive(ui->win) && (!ui->text_focus || ui->text_focus != ui->focus)) SDL_StopTextInput(ui->win);
+    ui->text_focus = 0;
     if (ui->selecting && !ui->anchor_seen) ui->anchor_top = ui->anchor_top < ui->in.y ? -1e9f : 1e9f;  // (it went off the way the pointer is not)
     ui->anchor_seen = false;
     if (ui->placed_at) {  // the window's place is saved once it has rested half a second after moving

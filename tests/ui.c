@@ -578,6 +578,27 @@ static void test_ui_place(gs_fontset *fs) {
 
 // Zoomed, the interface is larger by that much: the area in points shrinks, a fill covers that many
 // more pixels, and a click lands on the control drawn under it.
+static char host[64], user[64];
+
+static void two_fields_frame(void) {
+    gs_ui_begin(ui);
+    gs_ui_field(ui, (gs_rect){ 10, 10, 200, 30 }, "host", host, sizeof host, "Host");
+    gs_ui_field(ui, (gs_rect){ 10, 50, 200, 30 }, "user", user, sizeof user, "User");
+    gs_ui_end(ui);
+}
+
+// Text input stays on while the keyboard goes from one field to another (on Android a stop and a
+// start in a row leave no on-screen keyboard), and goes off once no field has the keyboard.
+static void test_ui_text_input(SDL_Window *w) {
+    two_fields_frame();
+    click(20, 20), two_fields_frame(), two_fields_frame();
+    CHECK(SDL_TextInputActive(w));
+    click(20, 60), two_fields_frame(), two_fields_frame();
+    CHECK(SDL_TextInputActive(w));
+    click(300, 200), two_fields_frame(), two_fields_frame();
+    CHECK(!SDL_TextInputActive(w));
+}
+
 // A finger, as SDL hands touch over: the left button of the touch mouse.
 static void finger(Uint32 type, float x, float y) {
     SDL_Event e = { .type = type };
@@ -1258,6 +1279,7 @@ void test_ui(void) {
     test_ui_draw(r);
     test_ui_zoom(r);
     test_ui_touch();
+    test_ui_text_input(w);
     test_ui_windows(w, fs);
     test_ui_place(fs);
     gs_ui_free(ui);
