@@ -599,6 +599,29 @@ static void test_ui_text_input(SDL_Window *w) {
     CHECK(!SDL_TextInputActive(w));
 }
 
+static void finger(Uint32 type, float x, float y);
+
+static void touch_page_frame(void) {
+    gs_ui_begin(ui);
+    gs_rect page = gs_ui_page_begin(ui, (gs_rect){ 0, 100, 300, 100 }, "touch page");
+    gs_cut_top(&page, 600);
+    gs_ui_page_end(ui, page.y);
+    gs_ui_end(ui);
+}
+
+// On a touch screen a page's thumb shows while it scrolls and a moment after, then fades and stops
+// asking for frames.
+static void test_ui_thumb_fades(void) {
+    touch_page_frame();
+    finger(SDL_EVENT_MOUSE_BUTTON_DOWN, 50, 180), touch_page_frame();
+    for (int i = 1; i <= 4; i++) SDL_Delay(16), finger(SDL_EVENT_MOUSE_MOTION, 50, 180 - 15 * i), touch_page_frame();
+    SDL_Delay(150), finger(SDL_EVENT_MOUSE_BUTTON_UP, 50, 120);  // (held still before lifting: no fling)
+    SDL_Delay(200), touch_page_frame();
+    CHECK(gs_ui_page_scroll(ui, "touch page") > 0 && gs_ui_wait_ms(ui) > 0 && gs_ui_wait_ms(ui) <= 800);
+    SDL_Delay(1200), touch_page_frame(), touch_page_frame();
+    CHECK(gs_ui_wait_ms(ui) < 0);
+}
+
 // Links found in a text and styled ranges that overlap them become spans of one style each.
 static void test_ui_styled(void) {
     const char *text = "read (https://example.com/a), or www.example.org. Not http://x";
@@ -1301,6 +1324,7 @@ void test_ui(void) {
     test_ui_touch();
     test_ui_text_input(w);
     test_ui_styled();
+    test_ui_thumb_fades();
     test_ui_windows(w, fs);
     test_ui_place(fs);
     gs_ui_free(ui);

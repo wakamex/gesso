@@ -53,6 +53,8 @@ typedef struct {
     bool margin, strayed;   // its press was beside the picture; and the pointer then moved, or the press zoomed
     gs_rect view;           // a page's area
     float extent, grab;     // the height of its content; where on its scroll thumb the pointer holds it
+    float shown_scroll;     // where it was scrolled at the last frame...
+    uint64_t moved_at;      // ...and when it last moved, for a thumb that fades on a touch screen
 } widget;
 
 typedef enum { FL_FILL, FL_TEXT, FL_FRAME, FL_ROUND, FL_OUTLINE } fl_kind;
@@ -117,6 +119,7 @@ struct gs_ui {
         uint64_t at, moved_at, fling_at;
         bool stopping;  // it went down on a fling, which it stops rather than tapping
     } touch;
+    bool touching;  // the pointer last moved by touch rather than by a mouse
     bool taken[KEYS];
     float press_x, press_y;  // where the left button went down
     uint64_t press_at, press_before;  // when it went down, and the time before that, for a double click
@@ -343,6 +346,7 @@ static void touch_event(gs_ui *ui, const SDL_Event *e) {
     float x = (e->type == SDL_EVENT_MOUSE_MOTION ? e->motion.x : e->button.x) / window_units(ui);
     float y = (e->type == SDL_EVENT_MOUSE_MOTION ? e->motion.y : e->button.y) / window_units(ui);
     uint64_t now = SDL_GetTicks();
+    ui->touching = true;
     if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
         ui->touch.stopping = ui->touch.fling != 0;
         ui->touch.mode = TOUCH_WAIT, ui->touch.x = x, ui->touch.y = y, ui->touch.last_y = y;
@@ -380,6 +384,7 @@ bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
     if ((e->type == SDL_EVENT_MOUSE_MOTION && e->motion.which == SDL_TOUCH_MOUSEID) ||
         ((e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_UP) && e->button.which == SDL_TOUCH_MOUSEID))
         return touch_event(ui, e), false;
+    if (e->type == SDL_EVENT_MOUSE_MOTION || e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_MOUSE_WHEEL) ui->touching = false;
     switch (e->type) {
     case SDL_EVENT_MOUSE_MOTION: p->x = e->motion.x / window_units(ui), p->y = e->motion.y / window_units(ui); return false;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -2160,6 +2165,8 @@ bool gs_ui_hotkey(gs_ui *ui, gs_rect r, const char *id, const char *shown, const
 // ---- A page ----
 
 #define PAGE_BAR 10  // the width of the strip at a page's right edge that takes the pointer for its scroll thumb
+#define THUMB_HOLD_MS 800  // on a touch screen, how long the thumb stays after the page stops moving...
+#define THUMB_FADE_MS 300  // ...and how long it then takes to fade
 
 static gs_rect page_thumb(const widget *w) {
     gs_rect v = w->view;
@@ -2207,7 +2214,13 @@ void gs_ui_page_end(gs_ui *ui, float bottom) {
         gs_rect thumb = page_thumb(w), bar = { area.x + area.w - PAGE_BAR, area.y, PAGE_BAR, area.h };
         SDL_FColor c = ui->drag == ui->page || gs_ui_hovered(ui, bar) ? ui->style.text : ui->style.muted;
         c.a *= 0.5f;
-        gs_ui_round(ui, thumb, 2, c);
+        if (w->scroll != w->shown_scroll || ui->drag == ui->page) w->moved_at = ui->now, w->shown_scroll = w->scroll;
+        if (ui->touching) {  // as on a phone: shown while the page moves and a moment after, then faded
+            uint64_t still = ui->now - w->moved_at;
+            c.a *= still < THUMB_HOLD_MS ? 1 : still < THUMB_HOLD_MS + THUMB_FADE_MS ? 1 - (float)(still - THUMB_HOLD_MS) / THUMB_FADE_MS : 0;
+            if (c.a > 0) wake_within(ui, still < THUMB_HOLD_MS ? (int)(THUMB_HOLD_MS - still) : 16);
+        }
+        if (c.a > 0) gs_ui_round(ui, thumb, 2, c);
     }
     clip_pop(ui, ui->page_clip);
     ui->page = 0;
