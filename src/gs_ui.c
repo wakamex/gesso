@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __ANDROID__
+#include "gs_android.h"
+#endif
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -448,6 +451,10 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     // window on a desktop); the app's clear fills the rest.
     SDL_Rect safe;
     if (!SDL_GetWindowSafeArea(ui->win, &safe) || safe.w <= 0 || safe.h <= 0) safe = (SDL_Rect){ 0, 0, ww, wh };
+#ifdef __ANDROID__
+    // and above the on-screen keyboard, which SDL's safe area leaves out (window coordinates are pixels there)
+    if (SDL_ScreenKeyboardShown(ui->win)) safe.h = SDL_max(0, SDL_min(safe.y + safe.h, wh - gs_android_keyboard_height()) - safe.y);
+#endif
     ui->window = (gs_rect){ 0, 0, (float)ww / units, (float)wh / units };
     ui->area = (gs_rect){ (float)safe.x / units, (float)safe.y / units, (float)safe.w / units, (float)safe.h / units };
     ui->frame++;

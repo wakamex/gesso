@@ -30,3 +30,15 @@ jclass gs_android_class(JNIEnv *env, const char *name) {
     (*env)->DeleteLocalRef(env, activity);
     return global;
 }
+
+int gs_android_keyboard_height(void) {
+    static jclass keyboard;
+    static bool missing;
+    JNIEnv *env = SDL_GetAndroidJNIEnv();
+    if (missing || (!keyboard && !(keyboard = gs_android_class(env, "dev.wakamex.gesso.Keyboard")))) return missing = true, 0;
+    jobject activity = SDL_GetAndroidActivity();
+    int height = (*env)->CallStaticIntMethod(env, keyboard, (*env)->GetStaticMethodID(env, keyboard, "height", "(Landroid/app/Activity;)I"), activity);
+    if (gs_android_threw(env)) height = 0;
+    (*env)->DeleteLocalRef(env, activity);
+    return height;
+}

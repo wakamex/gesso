@@ -10,3 +10,5 @@
 jclass gs_android_class(JNIEnv *env, const char *name);
 // True, with the exception logged and cleared, when the last call threw.
 bool gs_android_threw(JNIEnv *env);
+// The on-screen keyboard's height in pixels from the bottom of the window; 0 when it is hidden.
+int gs_android_keyboard_height(void);
