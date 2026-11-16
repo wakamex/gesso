@@ -104,3 +104,12 @@ void gs_android_toolbar_hide(void) {
 }
 
 bool gs_android_toolbar_closed(void) { return SDL_SetAtomicInt(&toolbar_closed, 0) != 0; }
+
+void gs_android_magnify(bool show, float x, float y) {
+    JNIEnv *env = SDL_GetAndroidJNIEnv();
+    if (!toolbar_class(env)) return;
+    jobject activity = SDL_GetAndroidActivity();
+    (*env)->CallStaticVoidMethod(env, selection, (*env)->GetStaticMethodID(env, selection, "magnify", "(Landroid/app/Activity;ZFF)V"), activity, (jboolean)show, x, y);
+    gs_android_threw(env);
+    (*env)->DeleteLocalRef(env, activity);
+}

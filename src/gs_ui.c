@@ -129,6 +129,15 @@ struct gs_ui {
     // what is selected and the caret, whether in a field, and where the toolbar was put.
     gs_rect selected_at, caret_at, toolbar_at;
     bool selected_any, selected_editable, caret_any, long_pressed, toolbar_shown;
+    // The two ends of what is selected, as drawn this frame and the last: the field, text area or text
+    // each is in (and the text's selection group), its offset there, and its stretch of the line,
+    // where its handle hangs. While a handle is dragged (1 the start's, 2 the end's) the other end
+    // anchors the selection and the pointer is read `lift` points higher, on the line the finger is under.
+    struct { uint32_t id, group; int offset; gs_rect r; bool editable; } ends_now[2], ends[2];
+    gs_rect handle_at[2];
+    bool handles_shown, handle_begins, magnifying;
+    int handle;
+    float lift;
     bool taken[KEYS];
     float press_x, press_y;  // where the left button went down
     uint64_t press_at, press_before;  // when it went down, and the time before that, for a double click
@@ -348,6 +357,8 @@ static SDL_WindowID event_window(const SDL_Event *e) {
     }
 }
 
+static gs_rect outset(gs_rect r, float d);
+
 #define TOUCH_SLOP 8         // points a finger moves before it scrolls
 #define TOUCH_LONG_MS 500    // how long it is held still for a long press
 #define FLING_DECAY 3.0f     // a fling's speed falls by e each 1/FLING_DECAY s
@@ -358,6 +369,20 @@ static void touch_event(gs_ui *ui, const SDL_Event *e) {
     float y = (e->type == SDL_EVENT_MOUSE_MOTION ? e->motion.y : e->button.y) / window_units(ui);
     uint64_t now = SDL_GetTicks();
     ui->touching = true;
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && ui->handles_shown)
+        for (int k = 0; k < 2; k++)
+            if (gs_rect_contains(outset(ui->handle_at[k], 8), x, y)) {  // a handle, taken: it drags its end of the selection
+                ui->handle = k + 1, ui->handle_begins = true, ui->long_pressed = false;
+                ui->lift = y - (ui->ends[k].r.y + ui->ends[k].r.h / 2);
+                ui->touch.mode = TOUCH_HOLD, ui->touch.fling = 0;
+                p->down = true, p->x = x, p->y = y;
+                return;
+            }
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_UP && ui->handle) {  // let go: the toolbar comes back over the selection
+        p->down = false, p->x = x, p->y = y;
+        ui->handle = 0, ui->touch.mode = TOUCH_NONE, ui->long_pressed = true;
+        return;
+    }
     if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
         ui->long_pressed = false;  // (the toolbar of the last selection goes)
         ui->touch.stopping = ui->touch.fling != 0;
@@ -483,6 +508,19 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     bool down = ui->pending.down;
     ui->in = ui->pending;
     ui->pending = (input){ .x = ui->in.x, .y = ui->in.y, .down = down };
+    if (ui->handle && ui->handle_begins) {  // the other end anchors the selection, which the pointer moves by characters
+        const int other = 2 - ui->handle;
+        if (ui->ends[other].editable) {
+            widget *w = state(ui, ui->ends[other].id);
+            w->anchor = ui->ends[other].offset, w->cursor = ui->ends[ui->handle - 1].offset, w->anchored = true;
+            ui->drag = ui->ends[other].id;
+        } else {
+            ui->selecting = ui->ends[other].id, ui->select_group = ui->ends[other].group, ui->select_list = 0;
+            ui->select_lo = ui->select_hi = ui->ends[other].offset;
+        }
+        ui->select_unit = 1, ui->handle_begins = false;
+    }
+    if (ui->handle && ui->in.down) ui->in.y -= ui->lift;  // (on the line, not under the finger)
     ui->had_input = ui->in.pressed || ui->in.released || ui->in.wheel != 0 || ui->in.pan != 0 || ui->in.nkeys || ui->in.text[0];
     if (ui->in.pressed) ui->before_x = ui->press_x, ui->before_y = ui->press_y, ui->press_before = ui->press_at, ui->press_x = ui->in.x, ui->press_y = ui->in.y, ui->press_at = ui->now;
     memset(ui->taken, 0, sizeof ui->taken);
@@ -812,8 +850,11 @@ static gs_rect union_rect(gs_rect a, gs_rect b) {
     return (gs_rect){ x0, y0, fmaxf(a.x + a.w, b.x + b.w) - x0, fmaxf(a.y + a.h, b.y + b.h) - y0 };
 }
 
-// What is selected, drawn at r: where the floating toolbar goes over it.
-static void selection_drawn(gs_ui *ui, gs_rect r, bool editable) {
+// What is selected, [lo, hi) of control or text `id`, drawn at r: where the floating toolbar goes
+// over it, and, the first and the last drawn in a frame, its two ends.
+static void selection_drawn(gs_ui *ui, gs_rect r, bool editable, uint32_t id, int lo, int hi) {
+    if (!ui->selected_any) ui->ends_now[0].id = id, ui->ends_now[0].group = ui->group, ui->ends_now[0].offset = lo, ui->ends_now[0].r = r, ui->ends_now[0].editable = editable;
+    ui->ends_now[1].id = id, ui->ends_now[1].group = ui->group, ui->ends_now[1].offset = hi, ui->ends_now[1].r = r, ui->ends_now[1].editable = editable;
     ui->selected_at = ui->selected_any ? union_rect(ui->selected_at, r) : r;
     ui->selected_any = true, ui->selected_editable |= editable;
 }
@@ -890,7 +931,7 @@ static float rich_select(gs_ui *ui, gs_rect r, const char *id, const rich *t, SD
                     if (x1 > x0) {
                         gs_rect fill_at = { (origin + x0) / s, top + (pass ? 0 : 1), (x1 - x0) / s, lh - (pass ? 0 : 2) };
                         gs_ui_fill(ui, fill_at, pass ? ui->style.border : ink(ui, was));
-                        if (pass) selection_drawn(ui, fill_at, false);
+                        if (pass) selection_drawn(ui, fill_at, false, h, lo, hi);
                     }
                     x0 = in ? p->x : 0, x1 = in ? p->x + p->advance : -1, was = fill;
                 }
@@ -1550,7 +1591,7 @@ static bool field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, 
         float x0 = l ? gs_line_caret(l, SDL_min(other, cursor)) / s : 0, x1 = l ? gs_line_caret(l, SDL_max(other, cursor)) / s : 0;
         gs_rect fill_at = { inner.x + x0, r.y + 5, fminf(x1 - x0, inner.w - x0), r.h - 10 };
         gs_ui_fill(ui, fill_at, ui->style.border);
-        selection_drawn(ui, fill_at, true);
+        if (!masked) selection_drawn(ui, fill_at, true, h, SDL_min(w->anchor, w->cursor), SDL_max(w->anchor, w->cursor));
     }
     if (buf[0] || ui->composition[0]) gs_ui_text(ui, (gs_rect){ inner.x, r.y, 1e6f, r.h }, shown, text_px, ui->style.text, -1);
     else if (placeholder) gs_ui_text(ui, inner, placeholder, text_px, ui->style.muted, -1);
@@ -1840,7 +1881,7 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
             if (hi > el.end) x1 += 4;  // (the line end it runs past)
             gs_rect fill_at = { fminf(x0, x1), top, fabsf(x1 - x0), lh };
             gs_ui_fill(ui, fill_at, ui->style.border);
-            selection_drawn(ui, fill_at, true);
+            selection_drawn(ui, fill_at, true, h, lo, hi);
         }
         wrapped_line(ui, buf, ln, px, inner.x, inner.w, top, lh, ink(ui, ui->style.text));
     }
@@ -2351,6 +2392,26 @@ int gs_ui_confirm(gs_ui *ui, const char *question, const char *yes, const char *
 
 void gs_ui_end(gs_ui *ui) {
 #ifdef __ANDROID__
+    // After a long press, and while one is dragged: a handle under each end of the selection, as
+    // Android draws them, a teardrop pointing up at it.
+    ui->handles_shown = false;
+    if ((ui->long_pressed || ui->handle) && ui->selected_any) {
+        SDL_memcpy(ui->ends, ui->ends_now, sizeof ui->ends);
+        const float radius = 11;
+        for (int k = 0; k < 2; k++) {
+            gs_rect r = ui->ends[k].r;
+            float x = k ? r.x + r.w : r.x, y = r.y + r.h;
+            ui->handle_at[k] = (gs_rect){ k ? x : x - 2 * radius, y, 2 * radius, 2 * radius };
+            fl_item *f = defer(ui, FL_ROUND, ui->handle_at[k], ui->style.accent, NULL, 0, 0);
+            f->radius = radius;
+            defer(ui, FL_FILL, (gs_rect){ k ? x : x - radius, y, radius, radius }, ui->style.accent, NULL, 0, 0);  // (the corner that points)
+        }
+        ui->handles_shown = true;
+    }
+    // While one is dragged, Android's magnifier shows the text under the finger.
+    float units = window_units(ui);
+    if (ui->handle && ui->in.down) gs_android_magnify(true, ui->in.x * units, ui->in.y * units), ui->magnifying = true;
+    else if (ui->magnifying) gs_android_magnify(false, 0, 0), ui->magnifying = false;
     // After a long press: the floating toolbar over what it selected (or with Paste, over a field's
     // caret), following it as it scrolls, until the next touch or a choice from it.
     if (gs_android_toolbar_closed()) ui->long_pressed = ui->toolbar_shown = false;

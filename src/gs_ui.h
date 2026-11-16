@@ -16,7 +16,10 @@
 // scrolls the list, text area or page under where it went down, and a fling carries on after it
 // lifts; a tap clicks, and a tap during a fling only stops it; held still for half a second it
 // presses there as a double click does, selecting the word under it (a link's too, which it does not
-// open), and a drag from there selects by whole words. A page's scroll thumb shows while
+// open), and a drag from there selects by whole words. On Android it then shows the system's floating
+// toolbar over the selection (Copy, and in a field Cut, Paste and Select all, which arrive as Ctrl+C,
+// Ctrl+X, Ctrl+V and Ctrl+A) and a handle under each end, which a finger drags to move that end, with
+// the system's magnifier over it. A page's scroll thumb shows while
 // the page moves and for a moment after, then fades, as on a phone. The mouse is unchanged, and with
 // it the thumb stays.
 //

@@ -6,7 +6,10 @@ import android.os.Build;
 import android.view.ActionMode;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.SurfaceView;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.Magnifier;
 
 // The floating toolbar over a selection, as Android shows over selected text (src/gs_android.c):
 // Copy, and Cut, Paste and Select all in a field. gs_ui draws the text and the selection; a choice
@@ -82,6 +85,42 @@ public final class Selection {
             @Override
             public void run() {
                 if (mode != null) mode.finish();
+            }
+        });
+    }
+
+    private static Magnifier magnifier;
+
+    // SDL's surface, which the magnifier copies from (a magnifier on another view would show a hole
+    // where the surface is).
+    private static View surface(View v) {
+        if (v instanceof SurfaceView) return v;
+        if (v instanceof ViewGroup)
+            for (int i = 0; i < ((ViewGroup) v).getChildCount(); i++) {
+                View found = surface(((ViewGroup) v).getChildAt(i));
+                if (found != null) return found;
+            }
+        return null;
+    }
+
+    // Shows the magnifier over x, y (pixels in the window), as over a handle being dragged, or
+    // puts it away.
+    public static void magnify(final Activity activity, final boolean show, final float x, final float y) {
+        if (Build.VERSION.SDK_INT < 28) return;
+        activity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (!show) {
+                    if (magnifier != null) magnifier.dismiss();
+                    magnifier = null;
+                    return;
+                }
+                if (magnifier == null) {
+                    View view = surface(activity.getWindow().getDecorView());
+                    if (view == null) return;
+                    magnifier = new Magnifier(view);
+                }
+                magnifier.show(x, y);
             }
         });
     }

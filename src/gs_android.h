@@ -22,3 +22,5 @@ void gs_android_keyboard_restart(const char *text, size_t n);
 void gs_android_toolbar_show(unsigned window, int x, int y, int w, int h, bool editable, bool selected);
 void gs_android_toolbar_hide(void);
 bool gs_android_toolbar_closed(void);
+// Android's magnifier over x, y in window pixels, as over a selection handle being dragged; or away.
+void gs_android_magnify(bool show, float x, float y);
