@@ -97,6 +97,8 @@ typedef struct {
     SDL_Keycode keys[KEYS];
     SDL_Keymod mods[KEYS];
     SDL_Scancode scans[KEYS];
+    int text_at[KEYS];  // how much of text had come before each key: an on-screen keyboard's
+                        // corrections come as backspaces between pieces of text, in an order that counts
     int nkeys;
     char text[256];
 } input;
@@ -401,7 +403,7 @@ bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
     case SDL_EVENT_WINDOW_FOCUS_LOST: ui->composition[0] = 0, ui->capture = 0, ui->away = true; return false;  // (keys pressed elsewhere are not a hotkey field's)
     case SDL_EVENT_WINDOW_FOCUS_GAINED: ui->away = false, ui->caret_since = SDL_GetTicks(); return false;  // (the caret shows at once)
     case SDL_EVENT_KEY_DOWN:  // (whether a key is taken is settled while drawing: see gs_ui_key)
-        if (p->nkeys < KEYS) p->keys[p->nkeys] = e->key.key, p->scans[p->nkeys] = e->key.scancode, p->mods[p->nkeys++] = e->key.mod;
+        if (p->nkeys < KEYS) p->keys[p->nkeys] = e->key.key, p->scans[p->nkeys] = e->key.scancode, p->text_at[p->nkeys] = (int)strlen(p->text), p->mods[p->nkeys++] = e->key.mod;
         return false;
     case SDL_EVENT_TEXT_INPUT:
         SDL_strlcat(p->text, e->text.text, sizeof p->text);
@@ -1366,14 +1368,30 @@ static void pointer_select(gs_ui *ui, widget *w, const char *buf, int at, int un
 }
 
 // The field's edits: typed text, and the keys that move the cursor or change the text.
+// Typed text in the selection's place, at the cursor; a paste (`one`) is one step to undo.
+static bool field_put(gs_ui *ui, history *h, widget *w, char *buf, size_t size, size_t *len, const char *typed, size_t n, bool one) {
+    bool has = w->anchored && w->anchor != w->cursor;
+    int lo = has ? SDL_min(w->anchor, w->cursor) : w->cursor, hi = has ? SDL_max(w->anchor, w->cursor) : w->cursor;
+    if (!n || *len - (size_t)(hi - lo) + n >= size) return false;
+    char piece_of[256];  // (what before_edit reads of it: its first characters)
+    SDL_strlcpy(piece_of, typed, SDL_min(n + 1, sizeof piece_of));
+    before_edit(ui, h, w, buf, one || has ? EDIT_ONE : EDIT_TYPE, piece_of);
+    memmove(buf + lo + n, buf + hi, *len - (size_t)hi + 1);
+    memcpy(buf + lo, typed, n);
+    *len = *len - (size_t)(hi - lo) + n, w->cursor = lo + (int)n, w->anchored = false, ui->caret_since = ui->now;
+    return true;
+}
+
 static bool edit(gs_ui *ui, widget *w, char *buf, size_t size, bool secret) {
-    bool changed = false, pasted = false;
+    bool changed = false;
     size_t len = strlen(buf);
     w->cursor = SDL_clamp(w->cursor, 0, (int)len), w->anchor = SDL_clamp(w->anchor, 0, (int)len);
     history *h = history_of(ui, w, buf, secret);
     char clean[512];
     const char *typed = ui->in.text;
+    int done = 0;  // of typed, put in
     for (int i = 0; i < ui->in.nkeys; i++) {
+        if (ui->in.text_at[i] > done) changed |= field_put(ui, h, w, buf, size, &len, typed + done, (size_t)(ui->in.text_at[i] - done), false), done = ui->in.text_at[i];
         SDL_Keycode k = ui->in.keys[i];
         SDL_Keymod mods = ui->in.mods[i];
         bool ctrl = mods & (SDL_KMOD_CTRL | SDL_KMOD_GUI), shift = mods & SDL_KMOD_SHIFT;
@@ -1388,7 +1406,7 @@ static bool edit(gs_ui *ui, widget *w, char *buf, size_t size, bool secret) {
             for (const char *p = paste ? paste : ""; *p && n + 1 < sizeof clean; p++) clean[n++] = *p == '\n' || *p == '\r' || *p == '\t' ? ' ' : *p;
             clean[n] = 0;
             SDL_free(paste);
-            typed = clean, pasted = true;
+            changed |= field_put(ui, h, w, buf, size, &len, clean, n, true);
         } else if (ctrl && k == SDLK_A) {
             w->anchor = 0, w->cursor = (int)len, w->anchored = true;
         } else if (ctrl && (k == SDLK_C || k == SDLK_X)) {
@@ -1421,17 +1439,7 @@ static bool edit(gs_ui *ui, widget *w, char *buf, size_t size, bool secret) {
         }
         ui->taken[i] = true, ui->caret_since = ui->now;
     }
-    if (typed[0]) {  // typed text takes the selection's place
-        size_t n = strlen(typed);
-        bool has = w->anchored && w->anchor != w->cursor;
-        int lo = has ? SDL_min(w->anchor, w->cursor) : w->cursor, hi = has ? SDL_max(w->anchor, w->cursor) : w->cursor;
-        if (len - (size_t)(hi - lo) + n < size) {
-            before_edit(ui, h, w, buf, pasted || has ? EDIT_ONE : EDIT_TYPE, typed);
-            memmove(buf + lo + n, buf + hi, len - (size_t)hi + 1);
-            memcpy(buf + lo, typed, n);
-            len = len - (size_t)(hi - lo) + n, w->cursor = lo + (int)n, w->anchored = false, changed = true, ui->caret_since = ui->now;
-        }
-    }
+    changed |= field_put(ui, h, w, buf, size, &len, typed + done, strlen(typed + done), false);
     after_edits(h, w, buf);
     return changed;
 }
@@ -1644,11 +1652,22 @@ static char *clipboard_lines(void) {
     return out;
 }
 
+// Typed text into a text area, in the selection's place.
+static bool area_put(gs_ui *ui, history *h, widget *w, char *buf, size_t size, const char *typed, size_t n) {
+    char piece_of[256];  // (what before_edit reads of it: its first characters)
+    SDL_strlcpy(piece_of, typed, SDL_min(n + 1, sizeof piece_of));
+    before_edit(ui, h, w, buf, w->anchored && w->anchor != w->cursor ? EDIT_ONE : EDIT_TYPE, piece_of);
+    ui->caret_since = ui->now;
+    return put(buf, size, w, typed, n);
+}
+
 static bool area_edit(gs_ui *ui, widget *w, char *buf, size_t size, gs_rect inner, bool *moved) {
     bool changed = false;
     w->cursor = SDL_clamp(w->cursor, 0, (int)strlen(buf));
     history *h = history_of(ui, w, buf, false);
+    int done = 0;  // of the typed text, put in
     for (int i = 0; i < ui->in.nkeys; i++) {
+        if (ui->in.text_at[i] > done) changed |= area_put(ui, h, w, buf, size, ui->in.text + done, (size_t)(ui->in.text_at[i] - done)), *moved = true, done = ui->in.text_at[i];
         SDL_Keycode k = ui->in.keys[i];
         SDL_Keymod mods = ui->in.mods[i];
         bool ctrl = mods & (SDL_KMOD_CTRL | SDL_KMOD_GUI), shift = mods & SDL_KMOD_SHIFT;
@@ -1708,10 +1727,7 @@ static bool area_edit(gs_ui *ui, widget *w, char *buf, size_t size, gs_rect inne
         if (!vertical) w->want = false;
         ui->taken[i] = true, ui->caret_since = ui->now, *moved = true;
     }
-    if (ui->in.text[0]) {
-        before_edit(ui, h, w, buf, w->anchored && w->anchor != w->cursor ? EDIT_ONE : EDIT_TYPE, ui->in.text);
-        changed |= put(buf, size, w, ui->in.text, strlen(ui->in.text)), ui->caret_since = ui->now, *moved = true;
-    }
+    if (ui->in.text[done]) changed |= area_put(ui, h, w, buf, size, ui->in.text + done, strlen(ui->in.text + done)), *moved = true;
     after_edits(h, w, buf);
     return changed;
 }

@@ -601,6 +601,24 @@ static void test_ui_text_input(SDL_Window *w) {
 
 static void finger(Uint32 type, float x, float y);
 
+// An on-screen keyboard's composing, as SDL hands it over on Android: each change to the word is
+// backspaces over what was sent and the word again, several of them arriving within one frame.
+static void test_ui_composing(void) {
+    SDL_memset(host, 0, sizeof host);
+    two_fields_frame(), click(20, 20), two_fields_frame();
+    text("c"), key(SDLK_BACKSPACE, 0), text("cl"), key(SDLK_BACKSPACE, 0), key(SDLK_BACKSPACE, 0), text("cli"), two_fields_frame();
+    CHECK(!SDL_strcmp(host, "cli"));
+    // An autocorrection replacing the word, then more typing at the cursor.
+    for (int i = 0; i < 3; i++) key(SDLK_BACKSPACE, 0);
+    text("click"), text(" "), text("i"), two_fields_frame();
+    CHECK(!SDL_strcmp(host, "click i"));
+    multiline_frame(), click(10, 130), multiline_frame();
+    SDL_memset(area, 0, sizeof area), multiline_frame();
+    text("x"), key(SDLK_BACKSPACE, 0), text("xl"), key(SDLK_BACKSPACE, 0), key(SDLK_BACKSPACE, 0), text("clicking"), multiline_frame();
+    CHECK(!SDL_strcmp(area, "clicking"));
+    SDL_memset(area, 0, sizeof area), SDL_memset(host, 0, sizeof host), gs_ui_focus(ui, NULL), multiline_frame();
+}
+
 static void touch_page_frame(void) {
     gs_ui_begin(ui);
     gs_rect page = gs_ui_page_begin(ui, (gs_rect){ 0, 100, 300, 100 }, "touch page");
@@ -1325,6 +1343,7 @@ void test_ui(void) {
     test_ui_text_input(w);
     test_ui_styled();
     test_ui_thumb_fades();
+    test_ui_composing();
     test_ui_windows(w, fs);
     test_ui_place(fs);
     gs_ui_free(ui);
