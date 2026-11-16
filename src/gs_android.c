@@ -42,3 +42,19 @@ int gs_android_keyboard_height(void) {
     (*env)->DeleteLocalRef(env, activity);
     return height;
 }
+
+void gs_android_keyboard_restart(const char *text, size_t n) {
+    static jclass keyboard;
+    static bool missing;
+    JNIEnv *env = SDL_GetAndroidJNIEnv();
+    if (missing || (!keyboard && !(keyboard = gs_android_class(env, "dev.wakamex.gesso.Keyboard")))) { missing = true; return; }
+    const size_t most = 2000;  // (the context a keyboard reads is the last few words)
+    size_t from = n > most ? n - most : 0;
+    while (from < n && ((unsigned char)text[from] & 0xC0) == 0x80) from++;  // (not from the middle of a character)
+    jbyteArray before = (*env)->NewByteArray(env, (jsize)(n - from));
+    if (!before) { gs_android_threw(env); return; }
+    (*env)->SetByteArrayRegion(env, before, 0, (jsize)(n - from), (const jbyte *)text + from);
+    (*env)->CallStaticVoidMethod(env, keyboard, (*env)->GetStaticMethodID(env, keyboard, "restart", "([B)V"), before);
+    gs_android_threw(env);
+    (*env)->DeleteLocalRef(env, before);
+}

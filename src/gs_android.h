@@ -12,3 +12,6 @@ jclass gs_android_class(JNIEnv *env, const char *name);
 bool gs_android_threw(JNIEnv *env);
 // The on-screen keyboard's height in pixels from the bottom of the window; 0 when it is hidden.
 int gs_android_keyboard_height(void);
+// Starts the on-screen keyboard's input again at a cursor after the first n bytes of text, which it
+// takes as what comes before it (SDLActivity.restartTextInput).
+void gs_android_keyboard_restart(const char *text, size_t n);

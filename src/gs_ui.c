@@ -179,6 +179,8 @@ struct gs_ui {
     int wait_ms;
     bool focus_moved;        // the keyboard went to another control since the last frame ended
     uint32_t text_focus;     // the field or text area that took text input this frame
+    uint32_t keyboard_at;    // the control whose cursor the on-screen keyboard was last told of
+    bool cursor_moved;       // a key moved a cursor other than by typing (an arrow, Home, a paste)
     bool had_input;          // this frame was handed a press, a release, the wheel, a key or text
     history histories[HISTORIES];
     char *place;              // the file the window's place is kept in, or NULL
@@ -1368,6 +1370,19 @@ static void pointer_select(gs_ui *ui, widget *w, const char *buf, int at, int un
 }
 
 // The field's edits: typed text, and the keys that move the cursor or change the text.
+// The on-screen keyboard composes and corrects at the cursor of the field or text area `h` with the
+// text before it, told again when the keyboard comes to the control and whenever its cursor moves
+// other than by typing (Android's keyboard otherwise keeps working where typing last left it).
+static void keyboard_follows(gs_ui *ui, uint32_t h, const char *buf, int cursor, bool moved) {
+    if (!moved && ui->keyboard_at == h) return;
+    ui->keyboard_at = h;
+#ifdef __ANDROID__
+    gs_android_keyboard_restart(buf, (size_t)cursor);
+#else
+    (void)buf, (void)cursor;
+#endif
+}
+
 // Typed text in the selection's place, at the cursor; a paste (`one`) is one step to undo.
 static bool field_put(gs_ui *ui, history *h, widget *w, char *buf, size_t size, size_t *len, const char *typed, size_t n, bool one) {
     bool has = w->anchored && w->anchor != w->cursor;
@@ -1438,6 +1453,7 @@ static bool edit(gs_ui *ui, widget *w, char *buf, size_t size, bool secret) {
             continue;
         }
         ui->taken[i] = true, ui->caret_since = ui->now;
+        if (k != SDLK_BACKSPACE && k != SDLK_DELETE && !(k >= 32 && k < 127 && !ctrl)) ui->cursor_moved = true;
     }
     changed |= field_put(ui, h, w, buf, size, &len, typed + done, strlen(typed + done), false);
     after_edits(h, w, buf);
@@ -1492,7 +1508,10 @@ static bool field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, 
     if (focused) {
         if (!SDL_TextInputActive(ui->win)) SDL_StartTextInput(ui->win);
         ui->text_focus = h;
+        ui->cursor_moved = false;
         changed = edit(ui, w, buf, size, masked);
+        bool secret = flags & GS_UI_MASKED;  // (a secret is not the keyboard's to learn)
+        keyboard_follows(ui, h, secret ? "" : buf, secret ? 0 : w->cursor, press || ui->cursor_moved);
     }
     if (!focused) w->anchored = false;  // (a selection is the focused field's)
     int cursor = masked ? bullets(buf, w->cursor, dots, sizeof dots) : w->cursor;
@@ -1726,6 +1745,7 @@ static bool area_edit(gs_ui *ui, widget *w, char *buf, size_t size, gs_rect inne
         }
         if (!vertical) w->want = false;
         ui->taken[i] = true, ui->caret_since = ui->now, *moved = true;
+        if (k != SDLK_BACKSPACE && k != SDLK_DELETE && k != SDLK_RETURN && k != SDLK_KP_ENTER && !(k >= 32 && k < 127 && !ctrl)) ui->cursor_moved = true;
     }
     if (ui->in.text[done]) changed |= area_put(ui, h, w, buf, size, ui->in.text + done, strlen(ui->in.text + done)), *moved = true;
     after_edits(h, w, buf);
@@ -1762,7 +1782,9 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
     if (focused) {
         if (!SDL_TextInputActive(ui->win)) SDL_StartTextInput(ui->win);
         ui->text_focus = h;
+        ui->cursor_moved = false;
         changed = area_edit(ui, w, buf, size, inner, &moved);
+        keyboard_follows(ui, h, buf, w->cursor, pressed(ui, r) || ui->cursor_moved);
     }
 
     const gs_wrap *wr = wrap_of(ui, buf, px, inner.w);
@@ -2300,7 +2322,7 @@ int gs_ui_confirm(gs_ui *ui, const char *question, const char *yes, const char *
 }
 
 void gs_ui_end(gs_ui *ui) {
-    if (SDL_TextInputActive(ui->win) && (!ui->text_focus || ui->text_focus != ui->focus)) SDL_StopTextInput(ui->win);
+    if (SDL_TextInputActive(ui->win) && (!ui->text_focus || ui->text_focus != ui->focus)) SDL_StopTextInput(ui->win), ui->keyboard_at = 0;
     ui->text_focus = 0;
     if (ui->selecting && !ui->anchor_seen) ui->anchor_top = ui->anchor_top < ui->in.y ? -1e9f : 1e9f;  // (it went off the way the pointer is not)
     ui->anchor_seen = false;
