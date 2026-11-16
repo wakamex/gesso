@@ -15,3 +15,10 @@ int gs_android_keyboard_height(void);
 // Starts the on-screen keyboard's input again at a cursor after the first n bytes of text, which it
 // takes as what comes before it (SDLActivity.restartTextInput).
 void gs_android_keyboard_restart(const char *text, size_t n);
+// The floating toolbar over a selection, at x, y, w, h in window pixels: Copy when something is
+// selected, and Cut, Paste and Select all when it is in a field. A choice arrives in `window` as its
+// keyboard shortcut (Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+A). gs_android_toolbar_closed says, once, that the
+// user dismissed it or chose from it.
+void gs_android_toolbar_show(unsigned window, int x, int y, int w, int h, bool editable, bool selected);
+void gs_android_toolbar_hide(void);
+bool gs_android_toolbar_closed(void);

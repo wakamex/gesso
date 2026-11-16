@@ -125,6 +125,10 @@ struct gs_ui {
         bool stopping;  // it went down on a fling, which it stops rather than tapping
     } touch;
     bool touching;  // the pointer last moved by touch rather than by a mouse
+    // The floating toolbar over a selection made by a long press (Android): where this frame drew
+    // what is selected and the caret, whether in a field, and where the toolbar was put.
+    gs_rect selected_at, caret_at, toolbar_at;
+    bool selected_any, selected_editable, caret_any, long_pressed, toolbar_shown;
     bool taken[KEYS];
     float press_x, press_y;  // where the left button went down
     uint64_t press_at, press_before;  // when it went down, and the time before that, for a double click
@@ -355,6 +359,7 @@ static void touch_event(gs_ui *ui, const SDL_Event *e) {
     uint64_t now = SDL_GetTicks();
     ui->touching = true;
     if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        ui->long_pressed = false;  // (the toolbar of the last selection goes)
         ui->touch.stopping = ui->touch.fling != 0;
         ui->touch.mode = TOUCH_WAIT, ui->touch.x = x, ui->touch.y = y, ui->touch.last_y = y;
         ui->touch.at = ui->touch.moved_at = now, ui->touch.velocity = ui->touch.fling = 0;
@@ -377,7 +382,7 @@ static void touch_event(gs_ui *ui, const SDL_Event *e) {
         ui->touch.mode = TOUCH_NONE;
     } else if (ui->touch.mode == TOUCH_HOLD) {
         p->down = false, p->released = true, p->x = x, p->y = y;
-        ui->touch.mode = TOUCH_NONE;
+        ui->touch.mode = TOUCH_NONE, ui->long_pressed = true;  // (the toolbar comes over what it selected)
     } else {
         ui->touch.mode = TOUCH_NONE;
     }
@@ -484,6 +489,7 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     ui->float_last = ui->float_now, ui->float_last_on = ui->float_now_on;
     ui->float_now_on = false, ui->nfl = 0, ui->tip_wanted = false, ui->wait_ms = -1, ui->opacity = 1;
     if (ui->touch.fling) wake_within(ui, 0);
+    ui->selected_any = ui->selected_editable = ui->caret_any = false;
     if (ui->touch.mode == TOUCH_WAIT && !ui->touch.stopping) wake_within(ui, (int)SDL_max(0, TOUCH_LONG_MS - (int64_t)(ui->now - ui->touch.at)));  // (to see the long press)
     ui->group = 0, ui->select_began = false;
     if (!down) ui->drag = 0;
@@ -801,6 +807,17 @@ static const gs_wrap *rich_wrap(gs_ui *ui, const rich *t, float width) {
 void gs_ui_select_group(gs_ui *ui, const char *group) { ui->group = group ? hash(group) : 0; }
 bool gs_ui_select_began(gs_ui *ui, const char *group) { return ui->select_began && group && ui->select_group == hash(group); }
 
+static gs_rect union_rect(gs_rect a, gs_rect b) {
+    float x0 = fminf(a.x, b.x), y0 = fminf(a.y, b.y);
+    return (gs_rect){ x0, y0, fmaxf(a.x + a.w, b.x + b.w) - x0, fmaxf(a.y + a.h, b.y + b.h) - y0 };
+}
+
+// What is selected, drawn at r: where the floating toolbar goes over it.
+static void selection_drawn(gs_ui *ui, gs_rect r, bool editable) {
+    ui->selected_at = ui->selected_any ? union_rect(ui->selected_at, r) : r;
+    ui->selected_any = true, ui->selected_editable |= editable;
+}
+
 static float rich_select(gs_ui *ui, gs_rect r, const char *id, const rich *t, SDL_FColor c, int *from, int *to, int *clicked) {
     if (clicked) *clicked = -1;
     const char *text = t->text;
@@ -870,7 +887,11 @@ static float rich_select(gs_ui *ui, gs_rect r, const char *id, const rich *t, SD
                     bool in = p && (pass ? hi > lo && at >= lo && at < hi : sp >= 0 && t->spans[sp].back.a > 0);
                     if (in && !pass) fill = t->spans[sp].back;
                     if (in && x1 >= x0 && fabsf(p->x - x1) < 0.5f && (pass || !memcmp(&fill, &was, sizeof fill))) { x1 = p->x + p->advance; continue; }
-                    if (x1 > x0) gs_ui_fill(ui, (gs_rect){ (origin + x0) / s, top + (pass ? 0 : 1), (x1 - x0) / s, lh - (pass ? 0 : 2) }, pass ? ui->style.border : ink(ui, was));
+                    if (x1 > x0) {
+                        gs_rect fill_at = { (origin + x0) / s, top + (pass ? 0 : 1), (x1 - x0) / s, lh - (pass ? 0 : 2) };
+                        gs_ui_fill(ui, fill_at, pass ? ui->style.border : ink(ui, was));
+                        if (pass) selection_drawn(ui, fill_at, false);
+                    }
                     x0 = in ? p->x : 0, x1 = in ? p->x + p->advance : -1, was = fill;
                 }
             }
@@ -1229,6 +1250,7 @@ bool gs_ui_slider(gs_ui *ui, gs_rect r, const char *id, float *value, float min,
 // A text cursor, on for BLINK_MS and off for as long from when it last moved, with a frame asked for
 // at each change; none in a window without the keyboard, which typing would not reach.
 static void caret(gs_ui *ui, gs_rect r) {
+    ui->caret_at = r, ui->caret_any = true;  // (where a toolbar with Paste goes in a field with nothing selected)
     if (ui->away) return;
     uint64_t t = ui->now - ui->caret_since;
     if (t % (2 * BLINK_MS) < BLINK_MS) gs_ui_fill(ui, r, ui->style.text);
@@ -1526,7 +1548,9 @@ static bool field(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size, 
     if (other != cursor) {  // what is selected
         const gs_line *l = gs_fontset_line(ui->fonts, text_px * s, shown);
         float x0 = l ? gs_line_caret(l, SDL_min(other, cursor)) / s : 0, x1 = l ? gs_line_caret(l, SDL_max(other, cursor)) / s : 0;
-        gs_ui_fill(ui, (gs_rect){ inner.x + x0, r.y + 5, fminf(x1 - x0, inner.w - x0), r.h - 10 }, ui->style.border);
+        gs_rect fill_at = { inner.x + x0, r.y + 5, fminf(x1 - x0, inner.w - x0), r.h - 10 };
+        gs_ui_fill(ui, fill_at, ui->style.border);
+        selection_drawn(ui, fill_at, true);
     }
     if (buf[0] || ui->composition[0]) gs_ui_text(ui, (gs_rect){ inner.x, r.y, 1e6f, r.h }, shown, text_px, ui->style.text, -1);
     else if (placeholder) gs_ui_text(ui, inner, placeholder, text_px, ui->style.muted, -1);
@@ -1814,7 +1838,9 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
             int from = SDL_max(lo, ln->start), to = SDL_min(hi, el.end);
             float x0 = caret_x(ui, buf, &el, from, inner.x, inner.w), x1 = caret_x(ui, buf, &el, to, inner.x, inner.w);
             if (hi > el.end) x1 += 4;  // (the line end it runs past)
-            gs_ui_fill(ui, (gs_rect){ fminf(x0, x1), top, fabsf(x1 - x0), lh }, ui->style.border);
+            gs_rect fill_at = { fminf(x0, x1), top, fabsf(x1 - x0), lh };
+            gs_ui_fill(ui, fill_at, ui->style.border);
+            selection_drawn(ui, fill_at, true);
         }
         wrapped_line(ui, buf, ln, px, inner.x, inner.w, top, lh, ink(ui, ui->style.text));
     }
@@ -2324,6 +2350,21 @@ int gs_ui_confirm(gs_ui *ui, const char *question, const char *yes, const char *
 }
 
 void gs_ui_end(gs_ui *ui) {
+#ifdef __ANDROID__
+    // After a long press: the floating toolbar over what it selected (or with Paste, over a field's
+    // caret), following it as it scrolls, until the next touch or a choice from it.
+    if (gs_android_toolbar_closed()) ui->long_pressed = ui->toolbar_shown = false;
+    bool field_caret = ui->caret_any && ui->text_focus && ui->text_focus == ui->focus;
+    if (ui->long_pressed && (ui->selected_any || field_caret)) {
+        gs_rect at = ui->selected_any ? ui->selected_at : ui->caret_at;
+        float u = window_units(ui);
+        if (!ui->toolbar_shown || fabsf(at.x - ui->toolbar_at.x) + fabsf(at.y - ui->toolbar_at.y) + fabsf(at.w - ui->toolbar_at.w) + fabsf(at.h - ui->toolbar_at.h) > 1)
+            gs_android_toolbar_show(SDL_GetWindowID(ui->win), (int)(at.x * u), (int)(at.y * u), (int)(at.w * u), (int)(at.h * u), ui->selected_any ? ui->selected_editable : true, ui->selected_any),
+                ui->toolbar_at = at, ui->toolbar_shown = true;
+    } else if (ui->toolbar_shown) {
+        gs_android_toolbar_hide(), ui->toolbar_shown = false;
+    }
+#endif
     if (SDL_TextInputActive(ui->win) && (!ui->text_focus || ui->text_focus != ui->focus)) SDL_StopTextInput(ui->win), ui->keyboard_at = 0;
     ui->text_focus = 0;
     if (ui->selecting && !ui->anchor_seen) ui->anchor_top = ui->anchor_top < ui->in.y ? -1e9f : 1e9f;  // (it went off the way the pointer is not)

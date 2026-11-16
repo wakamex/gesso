@@ -58,3 +58,49 @@ void gs_android_keyboard_restart(const char *text, size_t n) {
     gs_android_threw(env);
     (*env)->DeleteLocalRef(env, before);
 }
+
+// ---- The selection toolbar ----
+
+static jclass selection;
+static SDL_AtomicInt toolbar_window, toolbar_closed;
+
+static void JNICALL toolbar_chosen(JNIEnv *env, jclass c, jint action) {
+    static const SDL_Keycode keys[] = { 0, SDLK_C, SDLK_X, SDLK_V, SDLK_A };
+    if (action < 1 || action > 4) return;
+    SDL_Event e = { .key = { .type = SDL_EVENT_KEY_DOWN, .windowID = (SDL_WindowID)SDL_GetAtomicInt(&toolbar_window), .key = keys[action], .mod = SDL_KMOD_LCTRL, .down = true } };
+    SDL_PushEvent(&e);
+    e.key.type = SDL_EVENT_KEY_UP, e.key.down = false;
+    SDL_PushEvent(&e);
+}
+
+static void JNICALL toolbar_gone(JNIEnv *env, jclass c) { SDL_SetAtomicInt(&toolbar_closed, 1); }
+
+static bool toolbar_class(JNIEnv *env) {
+    static bool missing;
+    if (selection || missing) return selection != NULL;
+    if (!(selection = gs_android_class(env, "dev.wakamex.gesso.Selection"))) return !(missing = true);
+    JNINativeMethod natives[] = { { "chosen", "(I)V", (void *)toolbar_chosen }, { "closed", "()V", (void *)toolbar_gone } };
+    if ((*env)->RegisterNatives(env, selection, natives, 2) != 0) gs_android_threw(env), selection = NULL, missing = true;
+    return selection != NULL;
+}
+
+void gs_android_toolbar_show(unsigned window, int x, int y, int w, int h, bool editable, bool selected) {
+    JNIEnv *env = SDL_GetAndroidJNIEnv();
+    if (!toolbar_class(env)) return;
+    SDL_SetAtomicInt(&toolbar_window, (int)window);
+    jobject activity = SDL_GetAndroidActivity();
+    (*env)->CallStaticVoidMethod(env, selection, (*env)->GetStaticMethodID(env, selection, "show", "(Landroid/app/Activity;IIIIZZ)V"), activity, x, y, w, h, (jboolean)editable, (jboolean)selected);
+    gs_android_threw(env);
+    (*env)->DeleteLocalRef(env, activity);
+}
+
+void gs_android_toolbar_hide(void) {
+    JNIEnv *env = SDL_GetAndroidJNIEnv();
+    if (!toolbar_class(env)) return;
+    jobject activity = SDL_GetAndroidActivity();
+    (*env)->CallStaticVoidMethod(env, selection, (*env)->GetStaticMethodID(env, selection, "hide", "(Landroid/app/Activity;)V"), activity);
+    gs_android_threw(env);
+    (*env)->DeleteLocalRef(env, activity);
+}
+
+bool gs_android_toolbar_closed(void) { return SDL_SetAtomicInt(&toolbar_closed, 0) != 0; }
