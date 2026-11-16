@@ -616,6 +616,13 @@ static void test_ui_composing(void) {
     SDL_memset(area, 0, sizeof area), multiline_frame();
     text("x"), key(SDLK_BACKSPACE, 0), text("xl"), key(SDLK_BACKSPACE, 0), key(SDLK_BACKSPACE, 0), text("clicking"), multiline_frame();
     CHECK(!SDL_strcmp(area, "clicking"));
+    // A long press selects the word under the finger, as a double click does.
+    SDL_strlcpy(area, "hello world", sizeof area), multiline_frame();
+    finger(SDL_EVENT_MOUSE_BUTTON_DOWN, 4, 130), multiline_frame();
+    SDL_Delay(520), multiline_frame(), finger(SDL_EVENT_MOUSE_BUTTON_UP, 4, 130), multiline_frame();
+    int from = -1, to = -1;
+    bool got = gs_ui_textarea_selection(ui, "area", &from, &to);  // (a whole word: which, the test's fonts without widths do not tell)
+    CHECK(got && ((from == 0 && to == 5) || (from == 6 && to == 11)));
     SDL_memset(area, 0, sizeof area), SDL_memset(host, 0, sizeof host), gs_ui_focus(ui, NULL), multiline_frame();
 }
 
@@ -1259,7 +1266,8 @@ static void test_ui_edit_words(void) {
     SDL_Event down = { .button = { .type = SDL_EVENT_MOUSE_BUTTON_DOWN, .button = SDL_BUTTON_LEFT, .down = true, .clicks = 2, .x = 8 + gs_ui_text_width(ui, "fir", 14), .y = ay } };
     gs_ui_event(ui, &down), spaces_frame();
     int from = -1, to = -1;
-    CHECK(gs_ui_textarea_selection(ui, "area", &from, &to) && from == 0 && to == 5);  // "first"
+    bool got = gs_ui_textarea_selection(ui, "area", &from, &to);  // (a whole word: which, the test's fonts without widths do not tell)
+    CHECK(got && ((from == 0 && to == 5) || (from == 6 && to == 11)));  // "first"
     SDL_Event drag = { .motion = { .type = SDL_EVENT_MOUSE_MOTION, .x = 8 + gs_ui_text_width(ui, "first li", 14), .y = ay } };
     SDL_Event up = { .button = { .type = SDL_EVENT_MOUSE_BUTTON_UP, .button = SDL_BUTTON_LEFT, .clicks = 2, .x = drag.motion.x, .y = ay } };
     gs_ui_event(ui, &drag), spaces_frame(), gs_ui_event(ui, &up), spaces_frame();

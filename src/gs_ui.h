@@ -15,7 +15,8 @@
 // On a touch screen (the mouse events SDL makes from touch) a finger works as on a phone: a drag
 // scrolls the list, text area or page under where it went down, and a fling carries on after it
 // lifts; a tap clicks, and a tap during a fling only stops it; held still for half a second it
-// presses there, so a drag then selects text as a mouse drag does. A page's scroll thumb shows while
+// presses there as a double click does, selecting the word under it (a link's too, which it does not
+// open), and a drag from there selects by whole words. A page's scroll thumb shows while
 // the page moves and for a moment after, then fades, as on a phone. The mouse is unchanged, and with
 // it the thumb stays.
 //

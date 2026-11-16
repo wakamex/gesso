@@ -463,9 +463,11 @@ gs_rect gs_ui_begin(gs_ui *ui) {
     ui->area = (gs_rect){ (float)safe.x / units, (float)safe.y / units, (float)safe.w / units, (float)safe.h / units };
     ui->frame++;
     ui->now = SDL_GetTicks();
-    if (ui->touch.mode == TOUCH_WAIT && !ui->touch.stopping && ui->now - ui->touch.at >= TOUCH_LONG_MS) {  // a long press presses
+    if (ui->touch.mode == TOUCH_WAIT && !ui->touch.stopping && ui->now - ui->touch.at >= TOUCH_LONG_MS) {
+        // A long press presses as a double click does: it selects the word under it, and a drag from
+        // it selects by whole words, as on a phone.
         ui->touch.mode = TOUCH_HOLD;
-        ui->pending.down = ui->pending.pressed = true, ui->pending.clicks = 1, ui->pending.x = ui->touch.x, ui->pending.y = ui->touch.y;
+        ui->pending.down = ui->pending.pressed = true, ui->pending.clicks = 2, ui->pending.x = ui->touch.x, ui->pending.y = ui->touch.y;
     }
     if (ui->touch.fling) {
         float dt = (float)(ui->now - ui->touch.fling_at) / 1000;
