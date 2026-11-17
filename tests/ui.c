@@ -693,6 +693,20 @@ static void test_ui_touch(void) {
     int first = listed.first, row = (int)((40 - listed.y) / 20);
     finger(SDL_EVENT_MOUSE_BUTTON_DOWN, 50, 40), frame(), finger(SDL_EVENT_MOUSE_BUTTON_UP, 50, 40), frame();
     CHECK(selected == row && listed.first == first);
+    // A tap outside what a fling scrolls is a tap, fling or not; one on it while it visibly moves only
+    // stops it.
+    finger(SDL_EVENT_MOUSE_BUTTON_DOWN, 50, 250), frame();
+    for (int i = 1; i <= 4; i++) SDL_Delay(16), finger(SDL_EVENT_MOUSE_MOTION, 50, 250 - 25 * i), frame();
+    finger(SDL_EVENT_MOUSE_BUTTON_UP, 50, 150), frame();
+    bool was_on = on;
+    finger(SDL_EVENT_MOUSE_BUTTON_DOWN, 240, 15), frame(), finger(SDL_EVENT_MOUSE_BUTTON_UP, 240, 15), frame();
+    CHECK(on != was_on);
+    finger(SDL_EVENT_MOUSE_BUTTON_DOWN, 50, 250), frame();
+    for (int i = 1; i <= 4; i++) SDL_Delay(16), finger(SDL_EVENT_MOUSE_MOTION, 50, 250 - 25 * i), frame();
+    finger(SDL_EVENT_MOUSE_BUTTON_UP, 50, 150), frame();
+    int before = selected;
+    finger(SDL_EVENT_MOUSE_BUTTON_DOWN, 50, 100), frame(), finger(SDL_EVENT_MOUSE_BUTTON_UP, 50, 100), frame();
+    CHECK(selected == before);
     // Held still, it waits for the long press, which presses there; lifted, it releases, a click.
     finger(SDL_EVENT_MOUSE_BUTTON_DOWN, 50, 100), frame();
     CHECK(selected == row && gs_ui_wait_ms(ui) >= 0 && gs_ui_wait_ms(ui) <= 500);

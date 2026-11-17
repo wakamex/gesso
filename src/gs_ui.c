@@ -123,6 +123,7 @@ struct gs_ui {
         float x, y, last_y, velocity, fling;  // velocity and fling in points a second
         uint64_t at, moved_at, fling_at;
         bool stopping;  // it went down on a fling, which it stops rather than tapping
+        gs_rect flung;  // what the fling scrolls
     } touch;
     bool touching;  // the pointer last moved by touch rather than by a mouse
     // The floating toolbar over a selection made by a long press (Android): where this frame drew
@@ -362,6 +363,7 @@ static gs_rect outset(gs_rect r, float d);
 #define TOUCH_SLOP 8         // points a finger moves before it scrolls
 #define TOUCH_LONG_MS 500    // how long it is held still for a long press
 #define FLING_DECAY 3.0f     // a fling's speed falls by e each 1/FLING_DECAY s
+#define FLING_VISIBLE 150    // points a second below which a fling no longer visibly moves, and a press on it taps
 
 static void touch_event(gs_ui *ui, const SDL_Event *e) {
     input *p = &ui->pending;
@@ -385,7 +387,9 @@ static void touch_event(gs_ui *ui, const SDL_Event *e) {
     }
     if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
         ui->long_pressed = false;  // (the toolbar of the last selection goes)
-        ui->touch.stopping = ui->touch.fling != 0;
+        // A press stops a fling that visibly moves what it went down on, and is no tap; elsewhere, or
+        // on a fling's slow tail, it is a tap as any other.
+        ui->touch.stopping = fabsf(ui->touch.fling) >= FLING_VISIBLE && gs_rect_contains(ui->touch.flung, x, y);
         ui->touch.mode = TOUCH_WAIT, ui->touch.x = x, ui->touch.y = y, ui->touch.last_y = y;
         ui->touch.at = ui->touch.moved_at = now, ui->touch.velocity = ui->touch.fling = 0;
         p->x = x, p->y = y;
@@ -1095,9 +1099,12 @@ bool gs_ui_hovered(gs_ui *ui, gs_rect r) { return pointer_over(ui, r, ui->in.x, 
 bool gs_ui_clicked(gs_ui *ui, gs_rect r) { return ui->in.released && pointer_over(ui, r, ui->in.x, ui->in.y) && pointer_over(ui, r, ui->press_x, ui->press_y); }
 // Scrolls by the wheel as far as the ends allow and takes the wheel only when that moved something,
 // so a list or text area at its end, or too short to scroll, leaves the wheel to the page it is in.
-static void wheel_scroll(gs_ui *ui, float *scroll, float max_scroll, float step) {
+static void wheel_scroll(gs_ui *ui, gs_rect r, float *scroll, float max_scroll, float step) {
     float to = SDL_clamp(*scroll - ui->in.wheel * step - ui->in.pan, 0, max_scroll);
-    if (to != SDL_clamp(*scroll, 0, max_scroll)) *scroll = to, ui->in.wheel = ui->in.pan = 0;
+    if (to != SDL_clamp(*scroll, 0, max_scroll)) {
+        if (ui->in.pan) ui->touch.flung = r;  // (what a fling scrolls)
+        *scroll = to, ui->in.wheel = ui->in.pan = 0;
+    }
 }
 
 static gs_rect outset(gs_rect r, float d) { return (gs_rect){ r.x - d, r.y - d, r.w + 2 * d, r.h + 2 * d }; }
@@ -1857,7 +1864,7 @@ bool gs_ui_textarea(gs_ui *ui, gs_rect r, const char *id, char *buf, size_t size
     const gs_wrap *wr = wrap_of(ui, buf, px, inner.w);
     int lines = wr ? wr->count : 1;
     float max_scroll = fmaxf(0, lines * lh - inner.h);
-    if (gs_ui_hovered(ui, r) && (ui->in.wheel || ui->in.pan)) wheel_scroll(ui, &w->scroll, max_scroll, lh * 3);
+    if (gs_ui_hovered(ui, r) && (ui->in.wheel || ui->in.pan)) wheel_scroll(ui, r, &w->scroll, max_scroll, lh * 3);
     int cline = wr ? line_at(wr, w->cursor) : 0;
     if (moved && focused) {  // keep the cursor's line in view
         if (cline * lh < w->scroll) w->scroll = cline * lh;
@@ -2040,7 +2047,7 @@ gs_ui_rows gs_ui_list(gs_ui *ui, gs_rect area, const char *id, int count, float 
     gs_ui_rows rows = { 0 };
     float max_scroll = fmaxf(0, count * row_h - area.h);
     bool moved = false, focused = stop_at(ui, h, area);
-    if (gs_ui_hovered(ui, area) && (ui->in.wheel || ui->in.pan)) wheel_scroll(ui, &w->scroll, max_scroll, row_h * 1.5f);
+    if (gs_ui_hovered(ui, area) && (ui->in.wheel || ui->in.pan)) wheel_scroll(ui, area, &w->scroll, max_scroll, row_h * 1.5f);
     if (focused && count) {
         int page = (int)fmaxf(1, area.h / row_h - 1), sel = *selected;
         while (gs_ui_key(ui, SDLK_DOWN, 0)) sel++, moved = true;  // (every press since the last frame)
@@ -2095,7 +2102,7 @@ gs_ui_rows gs_ui_flow(gs_ui *ui, gs_rect area, const char *id, int count, const 
         w->show = 0;
     }
     bool over = gs_ui_hovered(ui, area);
-    if (over && (ui->in.wheel || ui->in.pan)) wheel_scroll(ui, &w->scroll, max_scroll, ui->style.row * 1.5f);
+    if (over && (ui->in.wheel || ui->in.pan)) wheel_scroll(ui, area, &w->scroll, max_scroll, ui->style.row * 1.5f);
     if (over || focused) {
         while (gs_ui_key(ui, SDLK_PAGEUP, 0)) w->scroll -= page;
         while (gs_ui_key(ui, SDLK_PAGEDOWN, 0)) w->scroll += page;
@@ -2318,6 +2325,7 @@ void gs_ui_page_end(gs_ui *ui, float bottom) {
     float max = fmaxf(0, w->extent - area.h);
     // What its content left of the wheel and the keys is the page's, from the next frame on.
     if (gs_ui_hovered(ui, area)) {
+        if (ui->in.pan) ui->touch.flung = area;  // (what a fling scrolls)
         if (ui->in.wheel || ui->in.pan) w->scroll -= ui->in.wheel * 48 + ui->in.pan, ui->in.wheel = ui->in.pan = 0, w->eased = false;
         while (gs_ui_key(ui, SDLK_PAGEDOWN, 0)) w->scroll += area.h * 0.9f, w->eased = false;
         while (gs_ui_key(ui, SDLK_PAGEUP, 0)) w->scroll -= area.h * 0.9f, w->eased = false;
