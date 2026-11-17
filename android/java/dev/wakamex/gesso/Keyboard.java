@@ -21,4 +21,16 @@ public final class Keyboard {
     public static void restart(byte[] before) {
         SDLActivity.restartTextInput(new String(before, StandardCharsets.UTF_8));
     }
+
+    static native void heard(String line);
+
+    // Each call the keyboard makes on SDL's input connection, with its text after it, to gs_android_keyboard_log.
+    public static void watch() {
+        SDLActivity.setKeyboardWatcher(new SDLActivity.KeyboardWatcher() {
+            @Override
+            public void call(String line) {
+                heard(line);
+            }
+        });
+    }
 }

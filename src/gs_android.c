@@ -113,3 +113,38 @@ void gs_android_magnify(bool show, float x, float y) {
     gs_android_threw(env);
     (*env)->DeleteLocalRef(env, activity);
 }
+
+// ---- The keyboard's log ----
+
+enum { LOG_LINES = 128, LOG_LINE = 512 };
+static struct { SDL_Mutex *lock; char lines[LOG_LINES][LOG_LINE]; int start, count; } heard_log;
+
+static void JNICALL keyboard_heard(JNIEnv *env, jclass c, jstring line) {
+    const char *s = (*env)->GetStringUTFChars(env, line, NULL);
+    if (!s) return;
+    SDL_LockMutex(heard_log.lock);
+    if (heard_log.count == LOG_LINES) heard_log.start = (heard_log.start + 1) % LOG_LINES, heard_log.count--;  // (the oldest go)
+    SDL_strlcpy(heard_log.lines[(heard_log.start + heard_log.count++) % LOG_LINES], s, LOG_LINE);
+    SDL_UnlockMutex(heard_log.lock);
+    (*env)->ReleaseStringUTFChars(env, line, s);
+}
+
+bool gs_android_keyboard_log(char *line, size_t size) {
+    static SDL_InitState once;
+    if (SDL_ShouldInit(&once)) {
+        JNIEnv *env = SDL_GetAndroidJNIEnv();
+        jclass keyboard = gs_android_class(env, "dev.wakamex.gesso.Keyboard");
+        heard_log.lock = SDL_CreateMutex();
+        JNINativeMethod native = { "heard", "(Ljava/lang/String;)V", (void *)keyboard_heard };
+        if (keyboard && heard_log.lock && (*env)->RegisterNatives(env, keyboard, &native, 1) == 0)
+            (*env)->CallStaticVoidMethod(env, keyboard, (*env)->GetStaticMethodID(env, keyboard, "watch", "()V"));
+        gs_android_threw(env);
+        SDL_SetInitialized(&once, true);
+    }
+    if (!heard_log.lock) return false;
+    SDL_LockMutex(heard_log.lock);
+    bool any = heard_log.count > 0;
+    if (any) SDL_strlcpy(line, heard_log.lines[heard_log.start], size), heard_log.start = (heard_log.start + 1) % LOG_LINES, heard_log.count--;
+    SDL_UnlockMutex(heard_log.lock);
+    return any;
+}

@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .sdl = .{
-            .url = "git+https://github.com/wakamex/SDL.git#24dbdc0253897eb9c44b07691cef680f19dcea15",
-            .hash = "sdl-0.6.1-dev+3.4.18-SDL--iNLrAGyrvC34UfjEs9vgQVH4R2wAwItONyLaneV",
+            .url = "git+https://github.com/wakamex/SDL.git#0d18d764c0d6d894e33235e640188210bc433422",
+            .hash = "sdl-0.6.1-dev+3.4.18-SDL--oZVrAG0WEP7rMIpc-4_kLGXYX8jHkbXgdeQGnsJ",
         },
         .opus = .{
             .url = "https://github.com/xiph/opus/releases/download/v1.5.2/opus-1.5.2.tar.gz",
