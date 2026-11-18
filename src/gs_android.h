@@ -27,5 +27,6 @@ void gs_android_magnify(bool show, float x, float y);
 // For finding out what the on-screen keyboard did: the next line of its log, oldest first, into line
 // (false when there is none). Each line is a call the keyboard made on SDL's input connection, such as
 // commitText or sendKeyEvent with its arguments, and the connection's text, selection and composing
-// span after it. The first call starts the log; it keeps the last 128 lines.
+// span after it. Each begins with when the call came in, in milliseconds on SDL_GetTicksNS's clock,
+// which events' timestamps are on. The first call starts the log; it keeps the last 128 lines.
 bool gs_android_keyboard_log(char *line, size_t size);

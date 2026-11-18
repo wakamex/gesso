@@ -1,6 +1,8 @@
 #include "gs_android.h"
 
 #include <SDL3/SDL.h>
+#include <stdlib.h>
+#include <time.h>
 
 bool gs_android_threw(JNIEnv *env) {
     if (!(*env)->ExceptionCheck(env)) return false;
@@ -122,9 +124,22 @@ static struct { SDL_Mutex *lock; char lines[LOG_LINES][LOG_LINE]; int start, cou
 static void JNICALL keyboard_heard(JNIEnv *env, jclass c, jstring line) {
     const char *s = (*env)->GetStringUTFChars(env, line, NULL);
     if (!s) return;
+    // The call's time, in nanoseconds on the monotonic clock, becomes milliseconds on SDL's: the clock
+    // of SDL_GetTicksNS and of events' timestamps.
+    char *rest = (char *)s;
+    long long at = *s == '@' ? strtoll(s + 1, &rest, 10) : 0;
+    char stamped[LOG_LINE];
+    if (at) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long long offset = (long long)now.tv_sec * 1000000000 + now.tv_nsec - (long long)SDL_GetTicksNS();
+        SDL_snprintf(stamped, sizeof stamped, "%.3f ms%s", (double)(at - offset) / 1e6, rest);
+    } else {
+        SDL_strlcpy(stamped, s, sizeof stamped);
+    }
     SDL_LockMutex(heard_log.lock);
     if (heard_log.count == LOG_LINES) heard_log.start = (heard_log.start + 1) % LOG_LINES, heard_log.count--;  // (the oldest go)
-    SDL_strlcpy(heard_log.lines[(heard_log.start + heard_log.count++) % LOG_LINES], s, LOG_LINE);
+    SDL_strlcpy(heard_log.lines[(heard_log.start + heard_log.count++) % LOG_LINES], stamped, LOG_LINE);
     SDL_UnlockMutex(heard_log.lock);
     (*env)->ReleaseStringUTFChars(env, line, s);
 }
