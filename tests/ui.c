@@ -1,5 +1,6 @@
 // gs_ui driven by synthetic events in an offscreen window: clicks, keys, typed and composed text.
 #include <SDL3/SDL.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "gs_draw.h"
