@@ -1162,6 +1162,22 @@ static void area_frame(void) {
     gs_ui_end(ui);
 }
 
+// A paste from an on-screen keyboard comes as one piece of typed text, which goes in whole however long.
+static char long_area[8000];
+static void test_ui_long_text(void) {
+    char *t = malloc(5001);
+    memset(t, 'x', 5000), t[5000] = 0;
+    for (int i = 0; i < 3; i++) {  // (a click to take the keyboard, then the paste, then a frame after it)
+        gs_ui_begin(ui);
+        gs_ui_textarea(ui, (gs_rect){ 0, 120, 300, 60 }, "long", long_area, sizeof long_area, NULL);
+        gs_ui_end(ui);
+        if (i == 0) click(50, 130);
+        if (i == 1) text(t);
+    }
+    CHECK(strlen(long_area) == 5000);
+    free(t);
+}
+
 // Undo and redo: typing goes back a word at a time, a paste and the deletion of a selection a step
 // each, the cursor and selection with them; a text the app puts in starts a fresh history.
 static void test_ui_undo(void) {
@@ -1379,6 +1395,7 @@ void test_ui(void) {
     test_ui_trailing_spaces(w);
     test_ui_edit_words();
     test_ui_undo();
+    test_ui_long_text();
     test_ui_text_select(r);
     test_ui_select_across();
     fonts_of_ui = fs, test_ui_text_spans(r);

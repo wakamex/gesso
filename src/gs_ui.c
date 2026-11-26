@@ -100,8 +100,21 @@ typedef struct {
     int text_at[KEYS];  // how much of text had come before each key: an on-screen keyboard's
                         // corrections come as backspaces between pieces of text, in an order that counts
     int nkeys;
-    char text[256];
+    char *text;  // what was typed, grown as it needs: an on-screen keyboard's paste comes as one piece
+    size_t text_cap;
 } input;
+
+static input input_new(void) { return (input){ .text = calloc(1, 256), .text_cap = 256 }; }
+
+static void typed_add(input *p, const char *more) {
+    size_t have = strlen(p->text), n = strlen(more);
+    if (have + n + 1 > p->text_cap) {
+        char *bigger = realloc(p->text, have + n + 256);
+        if (!bigger) return;
+        p->text = bigger, p->text_cap = have + n + 256;
+    }
+    memcpy(p->text + have, more, n + 1);
+}
 
 struct gs_ui {
     SDL_Window *win;
@@ -283,6 +296,8 @@ gs_ui *gs_ui_new(SDL_Window *win, SDL_Renderer *r, gs_fontset *fonts) {
     gs_ui *ui = calloc(1, sizeof *ui);
     if (!ui) return NULL;
     ui->win = win, ui->r = r, ui->fonts = ui->own_fonts = fonts;
+    ui->in = input_new(), ui->pending = input_new();
+    if (!ui->in.text || !ui->pending.text) { free(ui->in.text), free(ui->pending.text), free(ui); return NULL; }
     ui->glyphs = gs_glyphs_new(r, 2048);
     ui->style = (gs_ui_style){
         .background = { 0.067f, 0.075f, 0.071f, 1 }, .panel = { 0.098f, 0.110f, 0.106f, 1 }, .raised = { 0.153f, 0.169f, 0.165f, 1 },
@@ -304,6 +319,7 @@ void gs_ui_free(gs_ui *ui) {
     if (!ui) return;
     if (ui->placed_at) gs_window_state_save(ui->place, &ui->placed);
     SDL_free(ui->place);
+    free(ui->in.text), free(ui->pending.text);
     gs_glyphs_free(ui->glyphs);
     for (int i = 1; i < 4; i++) SDL_DestroyCursor(ui->cursors[i]);
     for (int i = 0; i < WRAPS; i++) SDL_free(ui->wraps[i].text), gs_wrap_free(ui->wraps[i].wrap);
@@ -442,7 +458,7 @@ bool gs_ui_event(gs_ui *ui, const SDL_Event *e) {
         if (p->nkeys < KEYS) p->keys[p->nkeys] = e->key.key, p->scans[p->nkeys] = e->key.scancode, p->text_at[p->nkeys] = (int)strlen(p->text), p->mods[p->nkeys++] = e->key.mod;
         return false;
     case SDL_EVENT_TEXT_INPUT:
-        SDL_strlcat(p->text, e->text.text, sizeof p->text);
+        typed_add(p, e->text.text);
         ui->composition[0] = 0;
         return true;
     case SDL_EVENT_TEXT_EDITING:
@@ -510,8 +526,10 @@ gs_rect gs_ui_begin(gs_ui *ui) {
         if (fabsf(ui->touch.fling) < 20) ui->touch.fling = 0;
     }
     bool down = ui->pending.down;
+    input spent = ui->in;  // (its text's buffer is the next frame's to fill)
     ui->in = ui->pending;
-    ui->pending = (input){ .x = ui->in.x, .y = ui->in.y, .down = down };
+    ui->pending = (input){ .x = ui->in.x, .y = ui->in.y, .down = down, .text = spent.text, .text_cap = spent.text_cap };
+    ui->pending.text[0] = 0;
     if (ui->handle && ui->handle_begins) {  // the other end anchors the selection, which the pointer moves by characters
         const int other = 2 - ui->handle;
         if (ui->ends[other].editable) {
