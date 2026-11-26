@@ -92,6 +92,22 @@ void test_update(void) {
     u = gs_update_start(&c);
     CHECK(!ready_within(u, 300) && holds(dir, "prog", "#!/bin/sh\necho build 1\n"));
     gs_update_free(u);
+    // A swap that cannot finish (here a directory where data.txt.old goes, as a virus scanner holding
+    // a file would, past the ten seconds of trying) puts every file back: build 1 stays whole.
+    char blocker[1200], inside[1300];
+    SDL_snprintf(blocker, sizeof blocker, "%sdata.txt.old", dir);
+    SDL_snprintf(inside, sizeof inside, "%s/x", blocker);
+    SDL_CreateDirectory(blocker), put(blocker, "/x", "");
+    c.build = "1";
+    u = gs_update_start(&c);
+    for (Uint64 t = SDL_GetTicks(); SDL_GetTicks() - t < 15000; SDL_Delay(50)) {
+        gs_update_error(u, error, sizeof error);
+        if (error[0]) break;
+    }
+    CHECK(strstr(error, "data.txt") && !gs_update_ready(u));
+    gs_update_free(u);
+    CHECK(holds(dir, "prog", "#!/bin/sh\necho build 1\n") && holds(dir, "data.txt", "data of build 1\n") && holds(dir, "prog.old", NULL));
+    SDL_RemovePath(inside), SDL_RemovePath(blocker);
     // Build 1 is brought to build 2: the files that differ are fetched, from files/SHA256 and from
     // the place the manifest names, the old ones renamed aside, and the program keeps its mode.
     c.build = "1", c.ready = tell, c.ready_user = &told;

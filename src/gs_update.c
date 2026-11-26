@@ -203,6 +203,15 @@ static void roll_back(gs_update *u) {
     u->rolled_back = true;
 }
 
+// A rename that a virus scanner holding a freshly written file open can refuse for a while (Windows
+// Defender scans a new program as it is written): tried again for up to ten seconds.
+static bool rename_patiently(const char *from, const char *to) {
+    for (Uint64 began = SDL_GetTicks();; SDL_Delay(100)) {
+        if (SDL_RenamePath(from, to)) return true;
+        if (SDL_GetTicks() - began >= 10000) return false;
+    }
+}
+
 // Looks once. True when a newer build has been put in place.
 static bool look(gs_update *u, char *error, size_t error_size) {
     char url[600], *text = NULL, *signature = NULL;
@@ -235,6 +244,9 @@ static bool look(gs_update *u, char *error, size_t error_size) {
         fetched[i] = any = true;
     }
     if (!any) return false;  // (files that all match already are this build, whatever it calls itself)
+    // Each file goes aside as NAME.old and NAME.new takes its place. When one cannot, every file
+    // already swapped goes back and the build before stays whole: a program file is never left missing.
+    bool had[MAX_FILES] = { 0 };
     for (int i = 0; i < count; i++) {
         if (!fetched[i]) continue;
         SDL_snprintf(here, sizeof here, "%s%s", u->folder, files[i].name);
@@ -247,8 +259,20 @@ static bool look(gs_update *u, char *error, size_t error_size) {
         chmod(next, !stat(here, &was) ? was.st_mode & 07777 : !SDL_strcmp(files[i].name, u->program) ? 0755 : 0644);
 #endif
         SDL_PathInfo info;
-        if (SDL_GetPathInfo(here, &info) && !SDL_RenamePath(here, old)) return SDL_snprintf(error, error_size, "%s: %s", here, SDL_GetError()), false;
-        if (!SDL_RenamePath(next, here)) return SDL_snprintf(error, error_size, "%s: %s", here, SDL_GetError()), false;
+        had[i] = SDL_GetPathInfo(here, &info);
+        bool aside = !had[i] || rename_patiently(here, old);
+        if (aside && rename_patiently(next, here)) continue;
+        SDL_snprintf(error, error_size, "%s: %s", here, SDL_GetError());
+        if (aside && had[i]) rename_patiently(old, here);
+        for (int j = 0; j < i; j++) {
+            if (!fetched[j]) continue;
+            SDL_snprintf(here, sizeof here, "%s%s", u->folder, files[j].name);
+            SDL_snprintf(next, sizeof next, "%s.new", here);
+            SDL_snprintf(old, sizeof old, "%s.old", here);
+            rename_patiently(here, next);
+            if (had[j]) rename_patiently(old, here);
+        }
+        return false;
     }
     SDL_Log("%s: updated to build %s", u->agent, build);
     SDL_LockMutex(u->lock);
