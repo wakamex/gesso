@@ -61,7 +61,9 @@ public final class Selection {
                     @Override
                     public boolean onActionItemClicked(ActionMode m, MenuItem item) {
                         chosen(item.getItemId());
-                        m.finish();
+                        // (after Select all the toolbar stays, as Android's own does, for Copy or Cut:
+                        // gs_ui moves it over the whole text and shows them)
+                        if (item.getItemId() != SELECT_ALL) m.finish();
                         return true;
                     }
 
